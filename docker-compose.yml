@@ -33,6 +33,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-ledger_sense}
     ports:
       - "8000:8000"
+    # Only one of these two exists per profile; `required: false` lets app
+    # depend on "whichever Postgres this profile started" without compose
+    # erroring on the other, out-of-profile service name.
+    depends_on:
+      postgres:
+        condition: service_started
+        required: false
+      postgres-demo:
+        condition: service_started
+        required: false
 
   # web/ (Next.js) is scaffolded by a later task; the service is declared
   # now so both profiles are complete end to end from `docker compose up`.
@@ -60,6 +70,10 @@ services:
 
   postgres-demo:
     image: postgres:16-alpine
+    # Same hostname as the `client` profile's `postgres` service, so `app`'s
+    # POSTGRES_HOST default (`postgres`) resolves under either profile —
+    # only one of the two Postgres services is ever on the network at once.
+    hostname: postgres
     profiles: ["demo"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ledger_sense}
