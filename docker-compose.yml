@@ -1,0 +1,73 @@
+# docker-compose.yml
+#
+# Two profiles, `client` and `demo` (spec §2.1 Q6):
+#   client — CLIENT_CONFIDENTIAL data. Postgres is always the container
+#            below with a named volume; never a hosted service, so
+#            "your documents never leave your infrastructure" stays true.
+#   demo   — SYNTHETIC data only. Postgres is ephemeral (tmpfs), mounts no
+#            client volume, hostable anywhere.
+#
+# `docker compose --profile demo up` or `docker compose --profile client up`.
+
+services:
+  app:
+    build:
+      context: .
+    profiles: ["client", "demo"]
+    # 00 §8: this service parses hostile, untrusted PDFs.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/scratch
+    mem_limit: 1g          # judgment call — not pinned by the brief
+    cpus: "1.0"             # judgment call — not pinned by the brief
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-ledger_sense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-ledger_sense}
+    ports:
+      - "8000:8000"
+
+  # web/ (Next.js) is scaffolded by a later task; the service is declared
+  # now so both profiles are complete end to end from `docker compose up`.
+  web:
+    build:
+      context: ./web
+    profiles: ["client", "demo"]
+    depends_on:
+      - app
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["client"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ledger_sense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-ledger_sense}
+    volumes:
+      - client_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  postgres-demo:
+    image: postgres:16-alpine
+    profiles: ["demo"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ledger_sense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-ledger_sense}
+    tmpfs:
+      - /var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  client_pgdata:

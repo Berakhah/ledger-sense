@@ -1,4 +1,4 @@
-# .github/workflows/ci.yml  (licence job only; other jobs added by later tasks)
+# .github/workflows/ci.yml
 name: ci
 on: [push, pull_request]
 jobs:
@@ -22,3 +22,24 @@ jobs:
             | tee /dev/stderr | wc -l | grep -qx 0
       - run: uv run python -m scripts.licence_audit --check-lockfile uv.lock
       - run: uv run pytest tests/test_licence_audit.py -v
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+      # F-28: VCR scrubs request headers and bodies, never responses.
+      - run: gitleaks detect --no-git --source tests/writeback/cassettes --redact
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - run: uv run pip-audit --strict
+      - run: npm audit --audit-level=high
+      - run: uv run cyclonedx-py environment -o sbom.json
+      - uses: actions/upload-artifact@v4
+        with: { name: sbom, path: sbom.json }
