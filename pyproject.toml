@@ -14,12 +14,13 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.uv]
-# Application, not a distributable library: nothing to build/install as a
-# wheel yet (ledger_sense/ doesn't exist until a later task). uv manages the
-# dependency-only venv; modules are imported straight off pythonpath below.
+# Application, not a distributable library: no wheel to build/install. uv
+# manages the dependency-only venv; modules are imported straight off
+# pythonpath below.
 package = false
 
 [tool.pytest.ini_options]
