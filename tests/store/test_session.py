@@ -60,3 +60,86 @@ def test_engine_targets_the_env_configured_database_without_connecting(monkeypat
     assert eng.url.port == 6543
     assert eng.url.username == "alice"
     assert eng.url.database == "ledger"
+
+
+# ---- fix round: connect_timeout + password escaping (review findings 1 & 2) ----
+
+SPECIAL_PASSWORD = "p@ss:w/rd%25"  # "@", ":", "/", "%" — each a URL delimiter/escape char
+
+
+def test_engine_url_survives_a_password_with_special_characters(monkeypatch):
+    """Finding 2 regression test. The old f-string URL
+    (f"...{user}:{password}@{host}...") mis-parses a password containing
+    "@"/":"/"/" — SQLAlchemy's URL parser would read past the first such
+    character as a delimiter, so eng.url.password would come back truncated
+    or wrong. URL.create() builds the URL from already-separated
+    components, so no parsing/escaping step can corrupt it — this asserts
+    the password comes back byte-for-byte, using a real (unmocked) Engine.
+    """
+    monkeypatch.setenv("POSTGRES_HOST", "db.example")
+    monkeypatch.setenv("POSTGRES_PORT", "6543")
+    monkeypatch.setenv("POSTGRES_USER", "alice")
+    monkeypatch.setenv("POSTGRES_PASSWORD", SPECIAL_PASSWORD)
+    monkeypatch.setenv("POSTGRES_DB", "ledger")
+
+    eng = session.engine()
+
+    assert eng.url.password == SPECIAL_PASSWORD
+    assert eng.url.host == "db.example"  # unaffected by the password's "@"/"/"
+
+
+def test_connect_passes_connect_timeout_and_an_unmangled_password(monkeypatch):
+    """Finding 1 + 2 for the psycopg path. Captures the real kwargs
+    connect() would hand to psycopg.connect (without opening a socket) to
+    assert connect_timeout is set and the special-character password
+    arrives intact — passing params as keyword args sidesteps URL escaping
+    entirely, so this also doubles as the connect()-side escaping check.
+    """
+    monkeypatch.setenv("POSTGRES_HOST", "db.example")
+    monkeypatch.setenv("POSTGRES_PORT", "6543")
+    monkeypatch.setenv("POSTGRES_USER", "alice")
+    monkeypatch.setenv("POSTGRES_PASSWORD", SPECIAL_PASSWORD)
+    monkeypatch.setenv("POSTGRES_DB", "ledger")
+
+    captured = {}
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return "not-a-real-connection"
+
+    monkeypatch.setattr(session.psycopg, "connect", fake_connect)
+
+    result = session.connect()
+
+    assert result == "not-a-real-connection"
+    assert captured["connect_timeout"] == 5
+    assert captured["host"] == "db.example"
+    assert captured["port"] == "6543"
+    assert captured["user"] == "alice"
+    assert captured["password"] == SPECIAL_PASSWORD
+    assert captured["dbname"] == "ledger"
+
+
+def test_engine_sets_connect_timeout_via_connect_args(monkeypatch):
+    """Finding 1 for the SQLAlchemy path. create_engine() doesn't expose
+    connect_args back through any public Engine attribute, so this
+    captures the real call create_engine() would receive."""
+    monkeypatch.setenv("POSTGRES_HOST", "db.example")
+    monkeypatch.setenv("POSTGRES_PORT", "6543")
+    monkeypatch.setenv("POSTGRES_USER", "alice")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "s3cret")
+    monkeypatch.setenv("POSTGRES_DB", "ledger")
+
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return "not-a-real-engine"
+
+    monkeypatch.setattr(session, "create_engine", fake_create_engine)
+
+    result = session.engine()
+
+    assert result == "not-a-real-engine"
+    assert captured["kwargs"]["connect_args"] == {"connect_timeout": 5}

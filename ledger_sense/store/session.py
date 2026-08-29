@@ -20,6 +20,12 @@ from typing import Any
 
 import psycopg
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.engine import URL
+
+# Fail fast against a down/misconfigured database rather than hang: verified
+# empirically that `alembic upgrade head` with no server listening hung past
+# 120s with no timeout set anywhere in this module.
+CONNECT_TIMEOUT_SECONDS = 5
 
 
 def _params() -> dict[str, str]:
@@ -34,22 +40,44 @@ def _params() -> dict[str, str]:
     }
 
 
-def _url(scheme: str = "postgresql") -> str:
-    """Connection URL for `scheme`, built from the env-configured
-    parameters. `psycopg.connect()` accepts a plain "postgresql://" URI
-    directly; SQLAlchemy needs the "postgresql+psycopg" driver prefix to
-    pick the psycopg3 dialect."""
-    p = _params()
-    return f"{scheme}://{p['user']}:{p['password']}@{p['host']}:{p['port']}/{p['dbname']}"
-
-
 def connect() -> psycopg.Connection[tuple[Any, ...]]:
-    """Open a new psycopg connection using the env-configured parameters."""
-    return psycopg.connect(_url())
+    """Open a new psycopg connection using the env-configured parameters.
+
+    Passes host/user/password/etc as keyword args rather than building a
+    "user:password@host" URL string by hand — a password containing "@",
+    ":", "/", or "%" (realistic for a generated secret) would otherwise be
+    misparsed. connect_timeout bounds how long a bad host/down database can
+    block a caller.
+    """
+    p = _params()
+    return psycopg.connect(
+        host=p["host"],
+        port=p["port"],
+        user=p["user"],
+        password=p["password"],
+        dbname=p["dbname"],
+        connect_timeout=CONNECT_TIMEOUT_SECONDS,
+    )
 
 
 def engine() -> Engine:
     """SQLAlchemy engine for Alembic (and any future ORM use), built from
     the same env-configured parameters as connect(). create_engine() is
-    lazy — this does not open a socket until the engine is used."""
-    return create_engine(_url("postgresql+psycopg"))
+    lazy — this does not open a socket until the engine is used.
+
+    Uses URL.create() rather than an f-string for the same reason connect()
+    uses keyword args: URL.create() escapes each component, so a password
+    with special characters round-trips correctly instead of being
+    misparsed as part of the host/path. connect_args carries the same
+    connect_timeout connect() sets.
+    """
+    p = _params()
+    url = URL.create(
+        "postgresql+psycopg",
+        username=p["user"],
+        password=p["password"],
+        host=p["host"],
+        port=int(p["port"]),
+        database=p["dbname"],
+    )
+    return create_engine(url, connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS})
