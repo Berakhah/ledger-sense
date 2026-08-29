@@ -7,7 +7,11 @@ license = "Apache-2.0"
 authors = [
     { name = "Berakhah", email = "77killuazoldic@gmail.com" }
 ]
-dependencies = []
+dependencies = [
+    "alembic>=1.19.1",
+    "psycopg[binary]>=3.3.4",
+    "sqlalchemy>=2.0.52",
+]
 
 # No [project.scripts]: no CLI. Dev entrypoint is `uv run python -m ledger_sense`.
 
