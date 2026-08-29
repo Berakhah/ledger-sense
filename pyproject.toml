@@ -1,0 +1,34 @@
+[project]
+name = "ledger-sense"
+version = "0.1.0"
+description = "Document intelligence with confidence routing, for construction progress billing."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [
+    { name = "Berakhah", email = "77killuazoldic@gmail.com" }
+]
+dependencies = []
+
+# No [project.scripts]: no CLI. Dev entrypoint is `uv run python -m ledger_sense`.
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+# Application, not a distributable library: nothing to build/install as a
+# wheel yet (ledger_sense/ doesn't exist until a later task). uv manages the
+# dependency-only venv; modules are imported straight off pythonpath below.
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

@@ -1,0 +1,24 @@
+# .github/workflows/ci.yml  (licence job only; other jobs added by later tasks)
+name: ci
+on: [push, pull_request]
+jobs:
+  licence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - name: Native-layer check (shared objects resolving outside the venv)
+        run: |
+          # Fail on any shared object an installed extension module resolves OUTSIDE the venv.
+          # This is a deny-list *supplement*, not full coverage: it only catches an ELF
+          # extension module that dynamic-links to something outside .venv/system libs at
+          # import time; a subprocess-invoked binary (e.g. ocrmypdf shelling out to
+          # `gs`) is caught by NATIVE_DENY instead, by name, not by this scan. See
+          # docs/methodology.md for what this does and does not cover.
+          find .venv -name '*.so' -exec ldd {} + \
+            | awk '/=>/ {print $3}' | sort -u \
+            | grep -v -e '^\.venv' -e '^/lib' -e '^/usr/lib' -e 'linux-vdso' \
+            | tee /dev/stderr | wc -l | grep -qx 0
+      - run: uv run python -m scripts.licence_audit --check-lockfile uv.lock
+      - run: uv run pytest tests/test_licence_audit.py -v
