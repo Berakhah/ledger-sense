@@ -13,8 +13,16 @@
 
 ---
 
+**Audit:** `2026-08-29-REVISIONS.md` — five defects in this phase were fixed in place, including one (F-65)
+where the signature screen's dim layer does the opposite of what it was written to do.
+
+---
+
 ## Phase preconditions
 
+- **Phase 0 complete** — in particular P2 (`register`, `require_session`, `owned`) and P6 (the Next.js scaffold,
+  the density tokens Task 33 asserts, and the demo-only seed route every Playwright test here navigates to).
+  The original plan assumed all of this existed and nothing created it (G-1, G-2, G-9).
 - **Phase 2 complete.** Claims carrying page and bbox are what this phase renders.
 - **Phase 3 is NOT required.** This phase has no domain dependency and can run ahead if the
   week-5 controller session slipped. Arithmetic and integrity findings alone populate a queue.
@@ -58,6 +66,23 @@ in Task 14, not here.
   - `ReviewException(id, doc_id, field, rule_id, message, expected, actual, page, bbox, state)`
   - `ExceptionState = Literal["open", "accepted", "edited", "rejected"]`
   - `seed_document(doc_id, exception_count)`, `get_claim(claim_id)` — test and demo seams
+  - **`ledger_sense/review/actions.py::ReviewAction(kind, field, claim_id, predicted_confidence, actor, at)`
+    — NEW (F-59).** Phase 6 Task 42 imports `ReviewAction` from `ledger_sense.review.actions`; no task created
+    that module or that class, so Phase 6 does not import. Every handler below constructs one and returns it
+    alongside the claim.
+
+**Three cross-cutting requirements this router must satisfy:**
+
+1. **Mount through `register` (F-25).** `app.include_router(router)` leaves the queue unauthenticated. Every
+   handler resolves the exception, then calls `owned(session, exception.tenant_id)` — which raises **404, not
+   403**, because a 403 tells a prober the exception exists.
+2. **Every accept and edit calls `ProfileCache.learn` (F-17).** This is the loop spec §4.3 calls *"the
+   commercial one"* and it had no implementing task: `ProfileCache` was built in Task 19 and never called.
+   `edit` writes the corrected field's bbox against the document's fingerprint; the next document from the same
+   producer extracts that field without a correction.
+3. **Every action appends a calibration label (F-46), with the basis derived from the document's sensitivity,
+   never from a parameter.** Phase 6 Task 42 asserts `"basis" not in signature(record_action).parameters`, so no
+   caller can promote a synthetic review session to field evidence.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -436,23 +461,31 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
         aria-label={`Document page ${page + 1}`}
       />
 
-      {/* Dim everything except the field under review. */}
+      {/* Dim everything except the field under review.
+       *
+       * REVISED (F-65). This was one clip-path polygon: an outer rectangle
+       * followed by the focus rectangle, comma-joined. Under the DEFAULT
+       * `nonzero` fill rule, with both subpaths wound the same direction, no
+       * hole appears — so the layer dimmed the field under review, which is the
+       * opposite of the intent, on the signature screen.
+       *
+       * Four rectangles. Fewer lines than the polygon, works everywhere, and
+       * each one animates independently under prefers-reduced-motion. */}
       {focus && (
-        <div
-          aria-hidden
-          data-testid="dim-layer"
-          className="absolute inset-0 bg-[var(--ink)]/40 pointer-events-none"
-          style={{
-            clipPath: [
-              'polygon(0% 0%, 0% 100%, 100% 100%, 100% 0%, 0% 0%',
-              `${focus.left}px ${focus.top}px`,
-              `${focus.left + focus.width}px ${focus.top}px`,
-              `${focus.left + focus.width}px ${focus.top + focus.height}px`,
-              `${focus.left}px ${focus.top + focus.height}px`,
-              `${focus.left}px ${focus.top}px)`,
-            ].join(', '),
-          }}
-        />
+        <div aria-hidden data-testid="dim-layer" className="pointer-events-none">
+          {[
+            { top: 0, left: 0, width: size.width, height: focus.top },
+            { top: focus.top + focus.height, left: 0, width: size.width,
+              height: Math.max(0, size.height - focus.top - focus.height) },
+            { top: focus.top, left: 0, width: focus.left, height: focus.height },
+            { top: focus.top, left: focus.left + focus.width,
+              width: Math.max(0, size.width - focus.left - focus.width),
+              height: focus.height },
+          ].map((rect, i) => (
+            <div key={i} className="absolute bg-[var(--ink)]/40"
+                 style={{ position: 'absolute', ...rect }} />
+          ))}
+        </div>
       )}
 
       {/* Accepted fields keep a thin rule that STAYS. */}
@@ -575,6 +608,31 @@ describe('useReviewKeys', () => {
     setup()
     expect(press('j').defaultPrevented).toBe(true)
   })
+
+  it('does not swallow Enter when a button has focus', () => {
+    // F-64: a <button> is neither INPUT nor TEXTAREA nor SELECT, so the original
+    // isTyping() returned false, preventDefault() ran, and keyboard activation
+    // of every button on the screen was suppressed. axe cannot see this.
+    const h = setup()
+    const button = document.createElement('button')
+    document.body.appendChild(button)
+    button.focus()
+    const event = press('Enter', button)
+    expect(event.defaultPrevented).toBe(false)
+    expect(h.onAccept).not.toHaveBeenCalled()
+    button.remove()
+  })
+
+  it('still handles Enter when focus is on the queue itself', () => {
+    const h = setup()
+    const queue = document.createElement('div')
+    queue.tabIndex = 0
+    queue.dataset.reviewShortcuts = 'true'
+    document.body.appendChild(queue)
+    press('Enter', queue)
+    expect(h.onAccept).toHaveBeenCalledOnce()
+    queue.remove()
+  })
 })
 ```
 
@@ -610,10 +668,24 @@ interface Handlers {
 
 const EDITABLE = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
 
-function isTyping(target: EventTarget | null): boolean {
+/**
+ * REVISED (F-64). This originally covered only INPUT/TEXTAREA/SELECT, so focus
+ * on a <button> was "not typing" — and the hook then called preventDefault() on
+ * Enter, suppressing keyboard activation of every button on the screen.
+ *
+ * An accessibility regression axe cannot detect, because it is behavioural: the
+ * button has its accessible name, its role and its focus ring, and does nothing
+ * when a keyboard user activates it.
+ */
+function handlesItsOwnEnter(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
   if (!el || !el.tagName) return false
-  return EDITABLE.has(el.tagName) || el.isContentEditable
+  if (EDITABLE.has(el.tagName) || el.isContentEditable) return true
+  if (el.tagName === 'BUTTON' || el.tagName === 'A') return true
+  if (el.getAttribute('role') === 'button' || el.getAttribute('role') === 'link') {
+    return true
+  }
+  return el.tabIndex >= 0 && el.dataset.reviewShortcuts !== 'true'
 }
 
 export function useReviewKeys({
@@ -624,7 +696,7 @@ export function useReviewKeys({
 
     function handle(event: KeyboardEvent) {
       if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (isTyping(event.target)) return
+      if (handlesItsOwnEnter(event.target)) return
 
       const actions: Record<string, (() => void) | undefined> = {
         j: onNext, k: onPrev, e: onEdit, r: onReject, enter: onAccept,
@@ -645,6 +717,16 @@ export function useReviewKeys({
 - [ ] **Step 4: Build the review page**
 
 `ledger_sense/web/app/review/[docId]/page.tsx` — split view, `bok-ui` tokens, `compact` density.
+
+**Responsive, and it is not optional — REVISED (F-63).** Task 33 asserts no horizontal page scroll at 375px,
+while this screen renders a `pdf.js` canvas at `scale = 1.5` — 792pt × 1.5 ≈ **1,188 CSS px**. The two
+requirements contradict each other unless the layout says how they coexist, and no task said:
+
+- The document pane is `overflow-x: auto` inside a `max-width: 100%` container. **The pane scrolls; the page
+  never does.**
+- Below 768px the split becomes a stack: the exception detail first, the document below it, with a
+  `data-testid="jump-to-document"` control. The keyboard model is unchanged — that is the whole point of it.
+- `scale` is derived from the container width, not fixed: `min(1.5, containerWidth / pageWidthPt)`.
 
 - **Left:** `<DocumentPane>` from Task 29, showing the current exception's page with its bbox
   focused and everything else dimmed.
@@ -1025,14 +1107,28 @@ from pydantic import BaseModel
 from ledger_sense.corpus.generate import generate
 from ledger_sense.domain.models import Contract, PayApplication
 from ledger_sense.domain.money import money
-from ledger_sense.rules.arithmetic.foot import rule_a1, rule_a9
-from ledger_sense.rules.arithmetic.lines import rule_a2, rule_a3, rule_a4
-from ledger_sense.rules.arithmetic.payment import rule_a5, rule_a6, rule_a8
+# Imported for their registration side effect only (F-67).
+from ledger_sense.rules.arithmetic import foot, lines, payment  # noqa: F401
+from ledger_sense.rules.registry import registered_rules
 
 router = APIRouter(prefix="/api/reconciliation")
 
-ARITHMETIC_RULES = [rule_a1, rule_a2, rule_a3, rule_a4,
-                    rule_a5, rule_a6, rule_a8, rule_a9]
+# A9 is a `convention` rule (F-04) but it IS a reconciliation check - scheduled
+# values against the adjusted contract sum - so it is named here rather than
+# selected by class. Named, not imported: Phase 4 may run ahead of Phase 3 if the
+# controller session slips, in which case A9 is simply not registered yet and this
+# screen shows one fewer discrepancy. An import would turn that into a 500.
+_ALSO_RECONCILES = frozenset({"A9"})
+
+
+def _reconciliation_rules():
+    """Read the registry per request, never a hand-written list.
+
+    Module-level would be wrong even so: this module can be imported before the
+    convention rules are, and the list would freeze A9 out.
+    """
+    return [r.fn for r in registered_rules().values()
+            if r.rule_class == "arithmetic" or r.rule_id in _ALSO_RECONCILES]
 
 # ponytail: in-process store. Swap for the Postgres session in Task 43.
 _DOCS: dict[str, tuple[Contract, PayApplication]] = {}
@@ -1078,7 +1174,7 @@ def reconcile(doc_id: str) -> dict[str, object]:
             delta=str(money(abs(finding.actual - finding.expected))),
             arithmetic=_arithmetic_for(finding.rule_id, app,
                                        finding.expected, finding.actual))
-        for rule in ARITHMETIC_RULES
+        for rule in _reconciliation_rules()
         for finding in rule(app, contract)
     ]
 
@@ -1219,20 +1315,45 @@ for (const screen of SCREENS) {
   }
 }
 
-test('every focusable control has a visible focus ring', async ({ page }) => {
+test('EVERY focusable control has a visible focus ring', async ({ page }) => {
+  // REVISED: the original pressed Tab once and checked one element, then called
+  // itself "every focusable control".
   await page.goto('/review/doc-3')
-  await page.keyboard.press('Tab')
-  const ring = await page.evaluate(() => {
-    const style = getComputedStyle(document.activeElement as HTMLElement)
-    return { width: style.outlineWidth, shadow: style.boxShadow }
+  const naked = await page.evaluate(() => {
+    const selector = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const offenders: string[] = []
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+      el.focus()
+      const style = getComputedStyle(el)
+      const ringed = style.outlineWidth !== '0px' || style.boxShadow !== 'none'
+      if (!ringed) offenders.push(el.outerHTML.slice(0, 80))
+    }
+    return offenders
   })
-  expect(ring.width !== '0px' || ring.shadow !== 'none').toBe(true)
+  expect(naked, naked.join('\n')).toEqual([])
+})
+
+test('the document pane scrolls internally so the page does not, at 375px', async ({ page }) => {
+  // F-63: Task 33 asserts no horizontal page scroll at 375px while Task 30
+  // renders a ~1,188px canvas. The pane scrolls; the page never does.
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.goto('/review/doc-3')
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth)).toBe(false)
+  expect(await page.getByTestId('document-pane').evaluate(
+    (el) => getComputedStyle(el.parentElement!).overflowX)).toBe('auto')
 })
 
 test('reduced motion disables the provenance rail animation', async ({ page }) => {
+  // The binding is Cmd+. on macOS and Ctrl+. elsewhere. CI Chromium runs on
+  // Linux, where Playwright's "Meta" is the Super key, not Cmd — the original
+  // pressed a chord the app never receives and would have passed vacuously if
+  // the rail simply never opened.
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/review/doc-3')
-  await page.keyboard.press('Meta+.')
+  const chord = process.platform === 'darwin' ? 'Meta+.' : 'Control+.'
+  await page.keyboard.press(chord)
+  await expect(page.getByTestId('provenance-rail')).toBeVisible()
   const duration = await page.getByTestId('provenance-rail')
     .evaluate((el) => getComputedStyle(el).animationDuration)
   expect(['0s', '0.01s']).toContain(duration)
@@ -1283,6 +1404,15 @@ git commit -m "test(a11y): axe gate across every screen, density and 375px"
 - [ ] `npx vitest run` green — `bbox`, `useReviewKeys`, `useAcceptedBoxes`
 - [ ] `npx playwright test` green — review queue, accumulating rule, reconciliation, accessibility
 - [ ] **DoD 5 satisfied** — fifty exceptions cleared with **zero mouse events**, asserted not assumed
+- [ ] `test_does_not_swallow_Enter_when_a_button_has_focus` green — **F-64**, an a11y regression axe cannot see
+- [ ] `test_the_document_pane_scrolls_internally_so_the_page_does_not` green — F-63, the contradiction between
+      Task 30's 1,188px canvas and Task 33's 375px assertion
+- [ ] The dim layer actually cuts a hole — **F-65.** Confirm by eye at least once: under the default `nonzero`
+      fill rule the original single-polygon `clip-path` dimmed the field under review, on the signature screen
+- [ ] `test_EVERY_focusable_control_has_a_visible_focus_ring` green — the original pressed Tab once
+- [ ] Every router mounted through `register` (F-25); `test_every_api_route_requires_a_session` from Phase 0
+      Task P2 still green with this phase's routers added
+- [ ] An edit teaches the profile cache — F-17, the loop spec §4.3 calls *"the commercial one"*
 - [ ] Print stylesheet verified on the reconciliation view under `emulateMedia({ media: 'print' })`
 - [ ] `axe-core`: zero serious or critical, on every screen, at all three densities, at 375px
 - [ ] Coverage ≥75% on `ledger_sense/api`

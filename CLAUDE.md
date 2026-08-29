@@ -16,6 +16,27 @@ The briefs win over anything summarised here. This file exists so a fresh sessio
 
 superpowers, in order: `brainstorming` → `using-git-worktrees` → `writing-plans` → `subagent-driven-development` → `test-driven-development` → `requesting-code-review` → `verification-before-completion`. TDD is RED-GREEN-REFACTOR, no exceptions.
 
+Off the happy path: a bug or failing test gets `systematic-debugging` before a fix is proposed, not straight to TDD. Feedback on your own work gets `receiving-code-review` — verify before implementing, don't just comply. A phase or task branch that's done gets `finishing-a-development-branch`.
+
+## Skill map
+
+Which skill to reach for, by what you're touching. Check before improvising; no row matches → default to the nearest stack skill (`ecc:python-review` backend, `ecc:react-review` frontend) rather than skipping review.
+
+| Touching | Reach for | Why |
+|---|---|---|
+| Any `.py` change | `ecc:python-review`, `ecc:python-patterns`, `ecc:python-testing` | How `mypy --strict`/`ruff` (Never #2) gets hit without a second pass |
+| FastAPI surface — gateway, review-queue API, writeback | `ecc:fastapi-review`, `ecc:fastapi-patterns` | Highest-consequence backend code in the product |
+| Postgres / alembic | `ecc:postgres-patterns`, `ecc:database-migrations` | Least-privilege role, migration safety (`00` §8) |
+| `docker-compose.yml` / packaging | `ecc:docker-patterns`, `ecc:deployment-patterns` | Must still `docker compose up` clean, zero manual steps |
+| Any `.tsx` change | `ecc:react-review`, `ecc:react-patterns`, `ecc:nextjs-turbopack` | — |
+| New screen or component | `frontend-design` | `00` §5 (editorial instrument, OKLCH tokens, provenance rail, tabular numerals) is the spec, not inspiration |
+| Any screen, before calling it done | `ecc:accessibility`, `ecc:frontend-a11y`, `webapp-testing` | WCAG 2.2 AA + axe zero serious/critical is a testing-bar line item; `webapp-testing` proves the review queue's keyboard-only path (`J`/`K`/`Enter`/`E`/`R`) |
+| Metrics screen, `docs/methodology.md` diagrams | `dataviz` | Every figure is a `Claim`; charts must survive greyscale print (`00` §5.4) |
+| `Sensitivity` gateway, redaction pass, OAuth token storage, `PaymentDetail` | `security-review` | Run before anything else touches it — `00` B2: "the code has to stop you" |
+| Synthetic-corpus PDF fixtures | `pdf` | The extraction pipeline itself (`pdfplumber`/Docling/pypdfium2/RapidOCR/img2table) is hand-rolled, not this skill |
+| Money arithmetic | none — Never-rule #2 directly | `Decimal` + `hypothesis` property tests + no-float lint, every time |
+| Lien waivers / AIA-format output | none — Never-rules #5, #7 directly | Extract, validate, flag deviation, stop |
+
 ## Two corrections that override the source report
 
 1. **This is not a vision-model-first product.** $0 budget → free-tier inference → the provider may train on inputs → a subcontractor invoice with bank details is `CLIENT_CONFIDENTIAL` and cannot go there. Extraction is deterministic-first.
