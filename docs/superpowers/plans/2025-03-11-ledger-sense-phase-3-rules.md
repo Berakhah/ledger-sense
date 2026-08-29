@@ -10,6 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §6.1, §6.3, §6.4
 **Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Audit:** `2026-08-29-REVISIONS.md` §2 and §4 — read before Task 21b. Ten defects in this phase were fixed in
+place. Four of the rules were known-wrong as written (C1/C3, C4, C13 and A9), and F-36 lost the fraud
+control's own evidence at the moment two vendor records were merged.
 
 ---
 
@@ -33,6 +36,17 @@ If the session has not happened, **do Phase 4 first.** Phase 4 has no domain dep
 | C1–C2 | Retainage is 10%, stepping to 5% at 50% | Rate and stepping are **contract terms**; read from `Contract`, flag deviation from *that* |
 | C8 | Percentage complete must never decrease | An additive change order raises the scheduled value, so it legitimately falls — **suppress when the scheduled value moved and work did not go backwards** |
 | C11 | Unconditional waiver is exchanged for payment | **Reversed.** Conditional is exchanged for payment; unconditional goes out only after funds clear |
+
+**A fourth was found by the 2026-08-29 audit — in this document, written after the diagnostic that was about not
+getting these wrong.** It is recorded here because the pattern matters more than the count:
+
+| Rule | The version this plan shipped | The correct version |
+|---|---|---|
+| C13 | `waiver.amount != app.total_completed_and_stored` | The waiver's amount matches **the payment it accompanies** — `current_payment_due(app)`. As written it fires on every application where any retainage is held or any previous payment exists: **every application after the first.** Its test was written against the implementation, so it passed. F-05 |
+
+Read `2026-08-29-REVISIONS.md` §2 before Task 22. Five further defects in this phase were fixed in place, three
+of which meant a rule that could never fire on a real document while its fixture stayed green (F-06, F-07), or a
+fraud control that loses its own evidence at the moment it is needed (F-36).
 
 ---
 
@@ -403,6 +417,38 @@ def test_c3_is_inert_when_the_contract_states_no_separate_rate():
     terms = RetainageTerms(base_rate=Decimal("0.10"), stored_materials_rate=None)
     app = _app([_line("500.00", "50.00", stored="100.00")], "50.00")
     assert rule_c3(app, _contract(terms)) == []
+
+
+# ---- F-06 regressions ----
+
+def test_c1_and_c3_never_both_fire_on_one_condition():
+    """C1 had no guard on stored_materials_rate, so a contract that sets one got
+    TWO findings for a single underlying condition. Duplicate findings are the
+    "trains a reviewer to dismiss findings" failure this plan identifies for C8."""
+    terms = RetainageTerms(base_rate=Decimal("0.10"),
+                           stored_materials_rate=Decimal("0.00"))
+    app = _app([_line("500.00", "50.00", stored="100.00")], "50.00")
+    contract = _contract(terms)
+    fired = [f.rule_id for f in rule_c1(app, contract) + rule_c3(app, contract)]
+    assert len(fired) <= 1, f"both rules fired: {fired}"
+
+
+def test_c1_tolerates_per_line_rounding():
+    """Real applications compute and round retainage PER LINE, then sum. The
+    original compared rate * grand_total for EXACT equality, so it false-positived
+    on essentially every real document."""
+    terms = RetainageTerms(base_rate=Decimal("0.10"))
+    lines = [_line("333.33", "33.33"), _line("333.33", "33.33"),
+             _line("333.34", "33.33")]
+    app = _app(lines, "99.99")             # rate * 1000.00 would be 100.00
+    assert rule_c1(app, _contract(terms)) == []
+
+
+def test_c1_still_trips_on_a_real_rate_disagreement():
+    """The tolerance is one cent per line, not a licence to miss a wrong rate."""
+    terms = RetainageTerms(base_rate=Decimal("0.10"))
+    app = _app([_line("500.00", "25.00")], "25.00")
+    assert [f.rule_id for f in rule_c1(app, _contract(terms))] == ["C1"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -442,31 +488,36 @@ RETAINAGE = ConfirmedSource(
     authority="REPLACE: client contract, General Conditions, retainage clause",
     citation="REPLACE: clause number covering rate, stepping milestone, stored materials",
     confirmed_by="REPLACE: name of the controller who confirmed this",
-    confirmed_at=date(2026, 9, 2))
+    # REVISED (F-Q7). This was date(2026, 9, 2) — a hardcoded, plausible-looking
+    # date sitting inside the mechanism built to stop hardcoded, plausible-looking
+    # values. If the session happens on another day, the provenance record is a
+    # lie of exactly the kind registry.py exists to refuse. None until a real
+    # session date exists, and `register` refuses None.
+    confirmed_at=None)
 
 STORED_MATERIALS = ConfirmedSource(
     authority="REPLACE: client contract, stored materials clause",
     citation="REPLACE: clause number covering required backup documentation",
     confirmed_by="REPLACE: name of the controller who confirmed this",
-    confirmed_at=date(2026, 9, 2))
+    confirmed_at=None)          # F-Q7 — never a plausible placeholder date
 
 CHANGE_ORDERS = ConfirmedSource(
     authority="REPLACE: client contract, Change Order procedure",
     citation="REPLACE: clause requiring approval before work is billed",
     confirmed_by="REPLACE: name of the controller who confirmed this",
-    confirmed_at=date(2026, 9, 2))
+    confirmed_at=None)          # F-Q7 — never a plausible placeholder date
 
 TAX = ConfirmedSource(
     authority="REPLACE: statute cite for the single configured jurisdiction",
     citation="REPLACE: section covering contractor material vs labour treatment",
     confirmed_by="REPLACE: name of the person who confirmed this",
-    confirmed_at=date(2026, 9, 2))
+    confirmed_at=None)          # F-Q7 — never a plausible placeholder date
 
 WAIVERS = ConfirmedSource(
     authority="REPLACE: state lien statute cite for the configured jurisdiction",
     citation="REPLACE: section prescribing conditional and unconditional forms",
     confirmed_by="REPLACE: name of the person who confirmed this",
-    confirmed_at=date(2026, 9, 2))
+    confirmed_at=None)          # F-Q7 — never a plausible placeholder date
 ```
 
 - [ ] **Step 4: Write the retainage rules**
@@ -505,13 +556,38 @@ def _held(rate: Decimal, base: Decimal) -> Decimal:
     return quantize(money(base * rate), 2)
 
 
+def _held_per_line(rate: Decimal, app: PayApplication) -> Decimal:
+    """Retainage is computed and rounded PER LINE on a real application, then
+    summed. `rate * grand_total` differs from that sum by up to n/2 cents (F-06),
+    so a zero-tolerance comparison against the grand-total product false-positives
+    on essentially every real document."""
+    return money(sum((_held(rate, ln.total_completed_and_stored) for ln in app.lines),
+                     money("0")))
+
+
+def _tolerance(app: PayApplication) -> Decimal:
+    """One cent per line. Documented in RETAINAGE's citation, not chosen by feel:
+    it is the maximum a per-line rounding can differ from the aggregate."""
+    return money(str(len(app.lines))) * money("0.01")
+
+
 @register("C1", "convention", source=RETAINAGE)
 def rule_c1(app: PayApplication, contract: Contract) -> list[Finding]:
-    """Applied retainage matches the contract's base rate. C2 owns stepped contracts."""
+    """Applied retainage matches the contract's base rate. C2 owns stepped
+    contracts; C3 owns contracts with a separate stored-materials rate.
+
+    REVISED (F-06). Two defects. C1 had no guard on `stored_materials_rate`, so
+    on a contract that sets one, C1 AND C3 both fired for a single underlying
+    condition — duplicate findings, which is the "trains a reviewer to dismiss
+    findings" failure this plan correctly identifies for C8. And it compared
+    `rate * grand_total` for EXACT equality against a figure computed per line.
+    """
     if contract.retainage.steps:
         return []
-    expected = _held(contract.retainage.base_rate, app.total_completed_and_stored)
-    if expected != app.retainage_total:
+    if contract.retainage.stored_materials_rate is not None:
+        return []                       # C3 owns this contract shape
+    expected = _held_per_line(contract.retainage.base_rate, app)
+    if abs(expected - app.retainage_total) > _tolerance(app):
         return [Finding("C1", "retainage_total",
                         f"applied retainage does not match the contract rate of "
                         f"{contract.retainage.base_rate}",
@@ -529,8 +605,8 @@ def rule_c2(app: PayApplication, contract: Contract) -> list[Finding]:
         return []
     complete = percent_complete(app, contract)
     rate = contract.retainage.rate_at(complete)
-    expected = _held(rate, app.total_completed_and_stored)
-    if expected != app.retainage_total:
+    expected = _held_per_line(rate, app)      # F-06: per line, then summed
+    if abs(expected - app.retainage_total) > _tolerance(app):
         return [Finding("C2", "retainage_total",
                         f"at {complete} complete the contract rate is {rate}; the "
                         f"applied retainage does not reflect it",
@@ -544,11 +620,12 @@ def rule_c3(app: PayApplication, contract: Contract) -> list[Finding]:
     stored_rate = contract.retainage.stored_materials_rate
     if stored_rate is None:
         return []
-    stored = money(sum((ln.stored for ln in app.lines), money("0")))
-    installed = money(app.total_completed_and_stored - stored)
-    expected = money(_held(contract.retainage.base_rate, installed)
-                     + _held(stored_rate, stored))
-    if expected != app.retainage_total:
+    expected = money(sum(
+        (_held(contract.retainage.base_rate,
+               money(ln.total_completed_and_stored - ln.stored))
+         + _held(stored_rate, ln.stored)
+         for ln in app.lines), money("0")))
+    if abs(expected - app.retainage_total) > _tolerance(app):
         return [Finding("C3", "retainage_total",
                         f"stored materials carry a separate retainage rate of "
                         f"{stored_rate} under this contract",
@@ -643,6 +720,36 @@ def test_c4_is_inert_when_nothing_is_stored():
     assert rule_c4(_app(_line("1000.00", "500.00", "0.00")), _contract()) == []
 
 
+def test_c4_trips_when_the_figures_are_not_equal():
+    """REGRESSION — F-07. The original required this_period == carried == stored,
+    an exact triple coincidence the phenomenon does not generally produce. This
+    fixture double-counts 200 of a 500 carry-over and the numbers all differ."""
+    prior = _app(_line("0.00", "1000.00", "500.00"), number=1)
+    current = _line("1000.00", "200.00", "500.00", total="1700.00")
+    findings = rule_c4(_app(current, prior=prior), _contract())
+    assert [f.rule_id for f in findings] == ["C4"]
+    assert findings[0].actual == money("200.00")
+
+
+def test_c4_is_silent_when_stored_came_down_by_what_was_installed():
+    """The clean control that makes C4 mean something: material genuinely moved
+    from stored to installed, and the stored column reflects it."""
+    prior = _app(_line("0.00", "1000.00", "500.00"), number=1)
+    current = _line("1500.00", "300.00", "200.00")
+    assert rule_c4(_app(current, prior=prior), _contract()) == []
+
+
+def test_c4_and_c5_do_not_both_fire_on_one_condition():
+    """F-07. C4's original condition was a strict subset of C5's tripping
+    fixture, so a single input produced two findings."""
+    prior = _app(_line("0.00", "1000.00", "500.00"), number=1)
+    current = _line("1500.00", "500.00", "500.00")
+    fired = [f.rule_id for f in
+             rule_c4(_app(current, prior=prior), _contract())
+             + rule_c5(_app(current, prior=prior), _contract())]
+    assert len(set(fired)) == len(fired), f"overlapping findings: {fired}"
+
+
 # ---- C5: stored must LEAVE the stored column when installed ----
 
 def test_c5_clean_control_stored_moves_out_as_work_moves_in():
@@ -722,21 +829,35 @@ def _prior_line(app: PayApplication, item_no: str):
 def rule_c4(app: PayApplication, contract: Contract) -> list[Finding]:
     """Material billed as stored must not also be billed as completed work.
 
-    Detected by comparing this period's installed work against the stored value
-    carried over: when the same amount appears in both, it is counted twice.
+    REVISED (F-07). The original required an exact triple coincidence:
+
+        carried > 0 and line.this_period == carried and line.stored == carried
+
+    The phenomenon does not generally produce three equal figures. The fixture
+    was built to satisfy the condition; the condition was not derived from the
+    phenomenon. The rule the spec calls "the classic silent pay-application
+    error" would almost never have fired on a real document, while its test
+    stayed green — and its condition is a strict subset of C5's tripping
+    fixture, so both fired on one input.
+
+    The INVARIANT, not the coincidence: material that was carried as stored and
+    is now billed as installed must have LEFT the stored column by at least the
+    amount installed. If work went in and stored did not come down, the same
+    value is in two columns.
     """
     findings = []
     for line in app.lines:
-        if line.stored == 0:
-            continue
         prior = _prior_line(app, line.item_no)
-        carried = prior.stored if prior is not None else money("0.00")
-        if carried > 0 and line.this_period == carried and line.stored == carried:
+        if prior is None or prior.stored == 0:
+            continue
+        released = money(prior.stored - line.stored)      # what left the column
+        if line.this_period > 0 and released < line.this_period:
+            double_counted = money(line.this_period - max(released, money("0.00")))
             findings.append(Finding(
                 "C4", f"line[{line.item_no}].stored",
-                "material carried as stored is also billed as completed this "
-                "period — the same value is counted twice",
-                money("0.00"), line.stored))
+                f"{double_counted} of material carried as stored is also billed "
+                f"as completed this period — the same value is counted twice",
+                money("0.00"), double_counted))
     return findings
 
 
@@ -792,17 +913,26 @@ git commit -m "feat(rules): C4-C6 stored materials, double-count and missing-bac
 
 ---
 
-### Task 24: Change orders C7–C8
+### Task 24: Change orders C7–C8, and A9 (reclassified)
 
 **C8 is a known-wrong rule.** The false-positive suppression tests are mandatory.
+
+**A9 lands here, not in Phase 1 (F-04).** The plan originally registered it `arithmetic` in
+`rules/arithmetic/foot.py`, where it needed no `RuleSource` — bypassing the gate built to stop exactly that.
+A9 fires whenever an approved change order exists and the schedule of values has not yet been revised to carry
+it, which is the normal mid-period state. So it is a convention rule with the same false-positive shape as C8,
+and it gets the same treatment: a source, and a narrow suppression. It could not ship in week 6 in any case —
+it needs `CHANGE_ORDERS` (Task 22) and `PayApplication.prior` (Task 21b).
 
 **Files:**
 - Create: `ledger_sense/rules/convention/change_orders.py`
 - Test: `tests/rules/convention/test_change_orders.py`
 
 **Interfaces:**
-- Consumes: `ChangeOrder`, `PayApplication.prior`, `CHANGE_ORDERS` source.
-- Produces: `rule_c7`, `rule_c8`.
+- Consumes: `ChangeOrder`, `PayApplication.prior`, `PayApplication.adjusted_contract_sum` (Phase 1 Task 4),
+  `CHANGE_ORDERS` source.
+- Produces: `rule_c7`, `rule_c8`, `rule_a9`. Also edits `tests/property/test_arithmetic_invariants.py`
+  (Phase 1 Task 9) to add `rule_a9` to `ALL_RULES`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -815,7 +945,7 @@ from ledger_sense.domain.models import (
     ChangeOrder, ContinuationLine, Contract, PayApplication, RetainageTerms,
 )
 from ledger_sense.domain.money import RoundingPolicy, money
-from ledger_sense.rules.convention.change_orders import rule_c7, rule_c8
+from ledger_sense.rules.convention.change_orders import rule_a9, rule_c7, rule_c8
 
 
 def _contract(change_orders=()):
@@ -907,6 +1037,55 @@ def test_c8_ignores_a_line_absent_from_the_prior_application():
     prior = _app([_line("10000.00", "4000.00", item_no="010")], number=1)
     current = _app([_line("5000.00", "0.00", item_no="020")], prior=prior)
     assert rule_c8(current, _contract()) == []
+
+
+# ---- A9: reclassified from `arithmetic` (F-04) ----
+
+def test_a9_clean_control_scheduled_values_sum_to_the_adjusted_contract_sum():
+    app = _app([_line("6000.00", "0.00", item_no="010"),
+                _line("4000.00", "0.00", item_no="020")])
+    assert rule_a9(app, _contract()) == []
+
+
+def test_a9_trips_when_the_scheduled_values_miss_the_adjusted_sum():
+    """No approved change order names a line, so nothing explains the gap."""
+    orders = [ChangeOrder(number="CO-001", amount=money("5000.00"), approved=True,
+                          approved_on=date(2026, 7, 15), affects_item_no=None)]
+    app = _app([_line("6000.00", "0.00", item_no="010"),
+                _line("4000.00", "0.00", item_no="020")], co_net="5000.00")
+    findings = rule_a9(app, _contract(orders))
+    assert [f.rule_id for f in findings] == ["A9"]
+    assert findings[0].expected == money("15000.00")
+    assert findings[0].actual == money("10000.00")
+
+
+def test_a9_does_not_fire_while_the_sov_revision_lags_an_approved_change_order():
+    """REGRESSION - the whole reason A9 is not an arithmetic rule. CO-001 is
+    approved against line 010, and 010's scheduled value has not moved yet. That
+    is the normal mid-period state, not a finding."""
+    orders = [ChangeOrder(number="CO-001", amount=money("5000.00"), approved=True,
+                          approved_on=date(2026, 7, 15), affects_item_no="010")]
+    prior = _app([_line("6000.00", "0.00", item_no="010"),
+                  _line("4000.00", "0.00", item_no="020")], number=1)
+    app = _app([_line("6000.00", "0.00", item_no="010"),
+                _line("4000.00", "0.00", item_no="020")],
+               co_net="5000.00", prior=prior)
+    assert rule_a9(app, _contract(orders)) == []
+
+
+def test_a9_still_fires_once_the_sov_has_been_revised_and_still_does_not_foot():
+    """Suppression must be narrow. 010 moved by 3000, the change order was 5000:
+    the SOV has been revised and it is still 2000 short. That is a real finding."""
+    orders = [ChangeOrder(number="CO-001", amount=money("5000.00"), approved=True,
+                          approved_on=date(2026, 7, 15), affects_item_no="010")]
+    prior = _app([_line("6000.00", "0.00", item_no="010"),
+                  _line("4000.00", "0.00", item_no="020")], number=1)
+    app = _app([_line("9000.00", "0.00", item_no="010"),
+                _line("4000.00", "0.00", item_no="020")],
+               co_net="5000.00", prior=prior)
+    findings = rule_a9(app, _contract(orders))
+    assert [f.rule_id for f in findings] == ["A9"]
+    assert findings[0].actual == money("13000.00")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -992,18 +1171,77 @@ def rule_c8(app: PayApplication, contract: Contract) -> list[Finding]:
             "percentage complete decreased and no scheduled-value change explains it",
             before, now))
     return findings
+
+
+def _scheduled_value_moved(app: PayApplication, item_no: str) -> bool:
+    """Has this line's scheduled value changed since the prior application?
+
+    With no prior application, or no matching line in it, we cannot SHOW that it
+    moved, so this returns False - which SUPPRESSES A9. That direction is
+    deliberate: F-04 exists because a rule that fires on the normal mid-period
+    state trains a reviewer to dismiss every finding it makes. A9 missing a real
+    reconciliation error on a first application is recoverable; A9 crying wolf on
+    every application that carries a change order is not.
+    """
+    if app.prior is None:
+        return False
+    prior = next((ln for ln in app.prior.lines if ln.item_no == item_no), None)
+    current = next((ln for ln in app.lines if ln.item_no == item_no), None)
+    if prior is None or current is None:
+        return False
+    return current.scheduled_value != prior.scheduled_value
+
+
+@register("A9", "convention", source=CHANGE_ORDERS)
+def rule_a9(app: PayApplication, contract: Contract) -> list[Finding]:
+    """Scheduled values must reconcile to the adjusted contract sum.
+
+    RECLASSIFIED from `arithmetic` (F-04). It looks first-principles checkable and
+    is not: the schedule of values is revised on the owner's clock, not ours, so
+    the gap between an approved change order and its SOV line is a normal state
+    with a negotiated duration. Hence `convention`, hence a RuleSource.
+    """
+    expected = app.adjusted_contract_sum(contract)
+    actual = money(sum((line.scheduled_value for line in app.lines), money("0")))
+    if expected == actual:
+        return []
+    # Approved change orders naming a line whose scheduled value has not moved yet:
+    # the SOV revision lags the change order legitimately.
+    pending = money(sum(
+        (co.amount for co in contract.change_orders
+         if co.approved and co.affects_item_no is not None
+         and not _scheduled_value_moved(app, co.affects_item_no)), money("0")))
+    if money(actual + pending) == expected:
+        return []
+    return [Finding("A9", "scheduled_value",
+                    "sum of scheduled values does not equal the adjusted contract sum",
+                    expected, actual)]
+```
+
+**One edit lands back in Phase 1 Task 9.** `tests/property/test_arithmetic_invariants.py` carries a comment
+saying A9 is added here. Add the import and extend the list - the strategy already satisfies A9 by
+construction, since it sets `original_sum` to the sum of the line totals and every `scheduled_value` to its own
+line total:
+
+```python
+# tests/property/test_arithmetic_invariants.py - edit
+from ledger_sense.rules.convention.change_orders import rule_a9
+
+ALL_RULES = [rule_a1, rule_a2, rule_a3, rule_a4, rule_a5, rule_a6, rule_a8, rule_a9]
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/rules/convention/test_change_orders.py -v`
-Expected: PASS, 10 tests — including both suppression regression tests.
+Expected: PASS, 14 tests — including all three suppression regression tests (two for C8, one for A9).
+Then `uv run pytest tests/property/ -v`: PASS, with A9 in `ALL_RULES` and no false positive.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ledger_sense/rules/convention/change_orders.py tests/rules/convention/test_change_orders.py
-git commit -m "feat(rules): C7-C8 change orders, with narrow C8 false-positive suppression"
+git add ledger_sense/rules/convention/change_orders.py tests/rules/convention/test_change_orders.py \
+        tests/property/test_arithmetic_invariants.py
+git commit -m "feat(rules): C7-C8 and A9 change orders, with narrow false-positive suppression"
 ```
 
 ---
@@ -1205,11 +1443,15 @@ def _contract():
                     change_orders=[], tax_jurisdiction=None)
 
 
-def _app(waivers, period_to=date(2026, 8, 31), payment="250.00"):
+def _app(waivers, period_to=date(2026, 8, 31), payment="250.00",
+         retainage="0.00", previous="0.00"):
+    """`payment` is total completed and stored. With retainage and previous
+    payments both zero it equals current payment due, which is what C13 compares
+    against — see F-05."""
     return PayApplication(contract_id="C-1", application_no=1, period_to=period_to,
                           lines=[], change_orders_net=money("0.00"),
-                          retainage_total=money("0.00"),
-                          previous_payments=money("0.00"),
+                          retainage_total=money(retainage),
+                          previous_payments=money(previous),
                           total_completed_and_stored=money(payment),
                           waivers=list(waivers))
 
@@ -1264,21 +1506,60 @@ def test_c12_clean_control_through_date_matches_the_billing_period():
                                   through=date(2026, 8, 31))]), _contract()) == []
 
 
-def test_c12_trips_when_the_through_date_misses_the_period():
+def test_c12_trips_when_the_through_date_stops_short_of_the_period():
+    """The claimant's exposure: work billed in the gap is not waived."""
     findings = rule_c12(_app([_waiver("conditional_progress", False,
                                       through=date(2026, 7, 31))]), _contract())
     assert [f.rule_id for f in findings] == ["C12"]
+    assert "stops short" in findings[0].message
 
 
-def test_c13_clean_control_amount_matches_the_payment():
-    assert rule_c13(_app([_waiver("conditional_progress", False, amount="250.00")],
-                         payment="250.00"), _contract()) == []
+def test_c12_does_not_flag_a_waiver_dated_the_payment_date():
+    """REGRESSION — F-08. Exact equality with period_to flagged the common case
+    of a waiver dated when the cheque was cut, a few days after period end."""
+    assert rule_c12(_app([_waiver("conditional_progress", False,
+                                  through=date(2026, 9, 5))]), _contract()) == []
 
 
-def test_c13_trips_when_the_waiver_amount_differs_from_the_payment():
-    findings = rule_c13(_app([_waiver("conditional_progress", False, amount="200.00")],
-                             payment="250.00"), _contract())
+def test_c12_is_inert_when_the_period_could_not_be_extracted():
+    """F-15. A rule that fires on a field it could not read punishes the
+    extractor for being honest."""
+    app = _app([_waiver("conditional_progress", False)], period_to=None)
+    assert rule_c12(app, _contract()) == []
+
+
+# ---- C13: THE FOURTH KNOWN-WRONG RULE (F-05) ----
+
+def test_c13_clean_control_amount_matches_the_current_payment_due():
+    """CORRECT: a waiver is exchanged for THE PAYMENT — current payment due,
+    which is total completed and stored LESS retainage LESS previous payments."""
+    app = _app([_waiver("conditional_progress", False, amount="250.00")],
+               payment="250.00")
+    assert rule_c13(app, _contract()) == []
+
+
+def test_c13_does_not_fire_merely_because_retainage_is_held():
+    """REGRESSION — F-05. `waiver.amount != app.total_completed_and_stored` fires
+    on every application where any retainage is held or any previous payment
+    exists: every application after the first. Its original test was written
+    against the implementation, so it passed."""
+    app = _app([_waiver("conditional_progress", False, amount="450.00")],
+               payment="500.00", retainage="50.00", previous="0.00")
+    assert rule_c13(app, _contract()) == []
+
+
+def test_c13_does_not_fire_merely_because_a_previous_payment_exists():
+    app = _app([_waiver("conditional_progress", False, amount="250.00")],
+               payment="500.00", retainage="50.00", previous="200.00")
+    assert rule_c13(app, _contract()) == []
+
+
+def test_c13_still_trips_on_a_genuine_mismatch():
+    app = _app([_waiver("conditional_progress", False, amount="200.00")],
+               payment="500.00", retainage="50.00", previous="200.00")
+    findings = rule_c13(app, _contract())
     assert [f.rule_id for f in findings] == ["C13"]
+    assert findings[0].expected == money("250.00")
 
 
 def test_c14_flags_statutory_deviation_without_opining_on_it():
@@ -1360,26 +1641,62 @@ def rule_c11(app: PayApplication, contract: Contract) -> list[Finding]:
 
 @register("C12", "convention", source=WAIVERS)
 def rule_c12(app: PayApplication, contract: Contract) -> list[Finding]:
-    """Through-date matches the billing period."""
-    return [
-        Finding("C12", f"waiver[{index}].through_date",
-                f"waiver through-date {waiver.through_date.isoformat()} does not "
-                f"match the billing period ending {app.period_to.isoformat()}",
-                money("0.00"), money("0.00"))
-        for index, waiver in enumerate(app.waivers)
-        if waiver.through_date != app.period_to
-    ]
+    """Through-date covers the billing period.
+
+    REVISED (F-08). The original demanded exact equality with `app.period_to`,
+    which flags the common case of a waiver dated the payment date rather than
+    the period end. The claimant's EXPOSURE is a through-date that stops SHORT of
+    the period — work covered by this payment that the waiver does not release.
+    A later date is normal and is not a finding; a much later date is a different
+    problem and gets its own message.
+
+    F-15: `app.period_to` may be None when it could not be extracted. A rule that
+    fires on a field it could not read punishes the extractor for being honest.
+    """
+    if app.period_to is None:
+        return []
+    findings = []
+    for index, waiver in enumerate(app.waivers):
+        if waiver.through_date < app.period_to:
+            findings.append(Finding(
+                "C12", f"waiver[{index}].through_date",
+                f"waiver through-date {waiver.through_date.isoformat()} stops "
+                f"short of the billing period ending {app.period_to.isoformat()}; "
+                f"work in the gap is billed but not waived",
+                money("0.00"), money("0.00")))
+        elif (waiver.through_date - app.period_to).days > 31:
+            findings.append(Finding(
+                "C12", f"waiver[{index}].through_date",
+                f"waiver through-date {waiver.through_date.isoformat()} extends "
+                f"more than a period beyond {app.period_to.isoformat()}; it may "
+                f"release work not yet billed",
+                money("0.00"), money("0.00")))
+    return findings
 
 
 @register("C13", "convention", source=WAIVERS)
 def rule_c13(app: PayApplication, contract: Contract) -> list[Finding]:
-    """Waiver amount matches the payment it accompanies."""
+    """Waiver amount matches the payment it accompanies.
+
+    REVISED (F-05) — THE FOURTH KNOWN-WRONG RULE, and it was written into this
+    plan after the diagnostic about not writing these wrong.
+
+        WRONG:   waiver.amount != app.total_completed_and_stored
+        CORRECT: waiver.amount != current_payment_due(app)
+
+    A waiver is exchanged for THE PAYMENT. Total completed and stored is the
+    gross figure before retainage and before previous payments come off. As
+    written, C13 fires on every application where any retainage is held or any
+    previous payment exists — which is every application after the first — and
+    its test was written against the implementation, so it passed.
+    """
+    payment = current_payment_due(app)
     return [
         Finding("C13", f"waiver[{index}].amount",
-                "waiver amount does not match the payment it accompanies",
-                app.total_completed_and_stored, waiver.amount)
+                "waiver amount does not match the current payment due",
+                payment, waiver.amount)
         for index, waiver in enumerate(app.waivers)
-        if waiver.amount != app.total_completed_and_stored
+        if waiver.amount != payment
     ]
 
 
@@ -1551,6 +1868,48 @@ def test_a_merge_is_reversible(ledger):
     assert ledger.get(other) is not None
 
 
+def test_a_merge_carries_the_absorbed_payment_history_across(ledger):
+    """REGRESSION — F-36. The original popped the absorbed vendor and its
+    payment_history went with it, so the keeper had no knowledge of the absorbed
+    record's bank details and the next invoice compared against the wrong
+    baseline. The fraud control lost its evidence at the moment two records were
+    reconciled."""
+    other = ledger.create("ACME Steel Co")
+    ledger.record_payment_detail(other, _detail(account="9999"),
+                                 confirmed_by="A. Bookkeeper")
+    keeper = ledger.resolve("Acme Steel Company").vendor_id
+    ledger.merge(keeper=keeper, absorbed=other, confirmed_by="A. Bookkeeper")
+    assert any(d.account_last4 == "9999"
+               for d in ledger.get(keeper).payment_history)
+
+
+def test_unmerge_is_the_exact_inverse_of_merge(ledger):
+    other = ledger.create("ACME Steel Co")
+    ledger.record_payment_detail(other, _detail(account="9999"),
+                                 confirmed_by="A. Bookkeeper")
+    keeper = ledger.resolve("Acme Steel Company").vendor_id
+    before_keeper = ledger.get(keeper).model_dump_json()
+    before_other = ledger.get(other).model_dump_json()
+
+    token = ledger.merge(keeper=keeper, absorbed=other, confirmed_by="A. Bookkeeper")
+    ledger.unmerge(token)
+
+    assert ledger.get(keeper).model_dump_json() == before_keeper
+    assert ledger.get(other).model_dump_json() == before_other
+
+
+def test_unmerge_does_not_destroy_a_legitimate_alias_of_the_same_name(ledger):
+    """F-36. `unmerge` removed keeper aliases BY NAME."""
+    keeper = ledger.resolve("Acme Steel Company").vendor_id
+    ledger.confirm_alias(keeper, "ACME Steel Co", source_document="doc://earlier",
+                         confirmed_by="A. Bookkeeper")
+    other = ledger.create("ACME Steel Co")
+    token = ledger.merge(keeper=keeper, absorbed=other, confirmed_by="A. Bookkeeper")
+    ledger.unmerge(token)
+    assert any(a.source_document == "doc://earlier"
+               for a in ledger.get(keeper).aliases)
+
+
 def test_merge_refuses_without_a_named_confirmer(ledger):
     other = ledger.create("ACME Steel Co")
     keeper = ledger.resolve("Acme Steel Company").vendor_id
@@ -1641,9 +2000,48 @@ def test_no_code_path_mutates_payment_history_outside_the_ledger():
 
 
 def test_no_full_account_number_is_ever_stored():
-    """Last four only. A full account number in our store is a breach waiting."""
+    """Last four plus an HMAC. A full account number in our store is a breach
+    waiting; four digits alone is a 1-in-10,000 miss on a fraud control (F-35)."""
     assert set(PaymentDetail.model_fields) == {
-        "account_last4", "routing_last4", "observed_at", "source_document"}
+        "account_last4", "routing_last4", "account_hmac", "observed_at",
+        "source_document", "confirmed_by", "confirmed_at"}
+    for field in ("account_number", "routing_number", "iban", "account"):
+        assert field not in PaymentDetail.model_fields
+
+
+def test_the_hmac_distinguishes_accounts_that_share_their_last_four(ledger):
+    """F-35. Comparing four digits misses one redirection in ten thousand — on
+    the rule the brief calls the single most expensive failure mode in AP."""
+    led, vendor_id = ledger
+    colliding = PaymentDetail(
+        account_last4="4321", routing_last4="8765",
+        account_hmac=payment_hmac("999994321", "128765"),
+        observed_at=datetime.now(timezone.utc), source_document="doc://current")
+    findings = check_payment_detail(led, vendor_id, colliding)
+    assert [f.rule_id for f in findings] == ["I3"]
+
+
+def test_the_confirmation_is_stored_on_the_record(ledger):
+    """F-35. record_payment_detail took confirmed_by and DISCARDED it, while
+    spec §8 item 5 renders the change with its date and B5 requires the human
+    confirmation to be on the record."""
+    led, vendor_id = ledger
+    led.record_payment_detail(vendor_id, _incoming(account="9999"),
+                              confirmed_by="A. Bookkeeper")
+    latest = led.get(vendor_id).payment_history[-1]
+    assert latest.confirmed_by == "A. Bookkeeper"
+    assert latest.confirmed_at is not None
+
+
+def test_a_change_back_to_a_previously_seen_account_is_still_surfaced(ledger):
+    """F-35. Comparing only against payment_history[-1] cannot see
+    change-then-change-back, which is a documented redirection pattern."""
+    led, vendor_id = ledger
+    led.record_payment_detail(vendor_id, _incoming(account="9999"),
+                              confirmed_by="A. Bookkeeper")
+    reverted = _incoming(account="4321")
+    assert led.seen_before(vendor_id, reverted) is True
+    assert [f.rule_id for f in check_payment_detail(led, vendor_id, reverted)] == ["I3"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1679,10 +2077,38 @@ CONFIRM_THRESHOLD = 85.0
 
 
 class PaymentDetail(BaseModel):
+    """REVISED (F-35). Two defects in the highest-consequence rule in the product.
+
+    DETECTION. Comparing four digits gives a 1-in-10,000 chance that a fraudulent
+    redirection is invisible, and the comparison ran only against
+    payment_history[-1] — so an attacker who changes details, obtains one
+    confirmation, then changes back was never flagged. `account_hmac` is
+    HMAC-SHA256 over the full normalised account+routing under a key held only in
+    the environment: an exact comparison with no collisions, and still no
+    recoverable account number in our store.
+
+    PROVENANCE. `record_payment_detail` took `confirmed_by` and DISCARDED it.
+    Spec §8 item 5 requires the vendor ledger to render bank-detail changes "as a
+    red-lined diff with the date and source document", and B5 requires human
+    confirmation ON THE RECORD. It was not on the record.
+    """
     account_last4: str
     routing_last4: str
+    account_hmac: str            # HMAC of the full details; never the details
     observed_at: datetime
     source_document: str
+    confirmed_by: str | None = None
+    confirmed_at: datetime | None = None
+
+
+def payment_hmac(account: str, routing: str) -> str:
+    """Key from LEDGER_SENSE_PAYMENT_HMAC_KEY. Never logged, never stored beside
+    the digest, never returned by any API."""
+    import hmac
+    import os
+    key = os.environ["LEDGER_SENSE_PAYMENT_HMAC_KEY"].encode()
+    normalised = f"{account.strip()}|{routing.strip()}".encode()
+    return hmac.new(key, normalised, "sha256").hexdigest()
 
 
 class VendorAlias(BaseModel):
@@ -1749,35 +2175,75 @@ class VendorLedger:
             source_document=source_document, confirmed_by=confirmed_by))
 
     def merge(self, keeper: str, absorbed: str, confirmed_by: str) -> MergeToken:
+        """REVISED (F-36). The original popped the absorbed vendor and appended a
+        single alias — so `payment_history` went with the popped record, and the
+        keeper had NO knowledge of the absorbed record's bank details. The very
+        next invoice against the keeper then compared against the wrong baseline.
+
+        The fraud control silently lost its evidence at exactly the moment two
+        records were reconciled. B6 requires "merges are reversible with
+        provenance for every alias"; neither half held.
+        """
         if not confirmed_by:
             raise ValueError("merge requires confirmed_by — B6, merges without "
                              "provenance are unrecoverable")
         snapshot = self._vendors.pop(absorbed)
-        self._vendors[keeper].aliases.append(VendorAlias(
+        keeper_record = self._vendors[keeper]
+
+        alias = VendorAlias(
             name=snapshot.name, first_seen=datetime.now(timezone.utc),
-            source_document="merge", confirmed_by=confirmed_by))
+            source_document="merge", confirmed_by=confirmed_by,
+            merged_from=snapshot.id)
+        keeper_record.aliases.append(alias)
+
+        # The payment history MIGRATES. It is the I3 baseline.
+        moved = list(snapshot.payment_history)
+        keeper_record.payment_history = sorted(
+            keeper_record.payment_history + moved, key=lambda d: d.observed_at)
+
         return MergeToken(keeper=keeper, absorbed_snapshot=snapshot,
-                          confirmed_by=confirmed_by)
+                          confirmed_by=confirmed_by,
+                          alias_id=alias.id,
+                          migrated_details=[d.observed_at for d in moved])
 
     def unmerge(self, token: MergeToken) -> None:
+        """REVISED (F-36). The original removed keeper aliases BY NAME, which
+        destroys a pre-existing alias that happened to share the absorbed
+        vendor's name. Remove by identity, and hand the migrated history back."""
         self._vendors[token.absorbed_snapshot.id] = token.absorbed_snapshot
         keeper = self._vendors[token.keeper]
-        keeper.aliases = [a for a in keeper.aliases
-                          if a.name != token.absorbed_snapshot.name]
+        keeper.aliases = [a for a in keeper.aliases if a.id != token.alias_id]
+        migrated = set(token.migrated_details)
+        keeper.payment_history = [d for d in keeper.payment_history
+                                  if d.observed_at not in migrated]
 
     def record_payment_detail(self, vendor_id: str, detail: PaymentDetail,
                               confirmed_by: str) -> None:
-        """Append-only. A CHANGED detail requires a named human confirmer."""
+        """Append-only. A CHANGED detail requires a named human confirmer, and
+        the confirmation is STORED (F-35) — spec §8 item 5 renders it.
+
+        Comparison is on the HMAC, not on four digits: last4 gives a 1-in-10,000
+        miss rate on a fraud control, and comparing only against the most recent
+        entry misses change-then-change-back.
+        """
         vendor = self._vendors[vendor_id]
         current = vendor.payment_history[-1] if vendor.payment_history else None
-        changed = current is not None and (
-            current.account_last4 != detail.account_last4
-            or current.routing_last4 != detail.routing_last4)
+        changed = current is not None and current.account_hmac != detail.account_hmac
         if changed and not confirmed_by:
             raise BankDetailChangeError(
                 "a bank-detail change requires human confirmation; this system "
                 "never auto-approves and never auto-updates a payment record")
-        vendor.payment_history.append(detail)
+        vendor.payment_history.append(detail.model_copy(update={
+            "confirmed_by": confirmed_by or None,
+            "confirmed_at": datetime.now(timezone.utc) if confirmed_by else None}))
+
+    def seen_before(self, vendor_id: str, detail: PaymentDetail) -> bool:
+        """Has this account EVER been on file for this vendor? Change-then-
+        change-back is a documented redirection pattern and comparing only
+        against payment_history[-1] cannot see it (F-35)."""
+        vendor = self._vendors[vendor_id]
+        return any(d.account_hmac == detail.account_hmac
+                   for d in vendor.payment_history[:-1])
 ```
 
 - [ ] **Step 4: Write the three rule modules**
@@ -1811,19 +2277,63 @@ class DuplicateMatch(NamedTuple):
 
 def find_duplicates(candidate: DocumentFingerprint,
                     history: list[DocumentFingerprint]) -> list[DuplicateMatch]:
+    """REVISED (F-37). Two defects.
+
+    INVOICE NUMBER WAS NOT SCOPED TO THE VENDOR. Two vendors both numbering from
+    INV-1001 produced a permanent false duplicate — and a duplicate finding that
+    is obviously wrong is how a reviewer learns to dismiss duplicate findings.
+    `line_hash` had the same defect.
+
+    `line_hash` ALSO HAD NO PRODUCER anywhere in the six plan documents. It is
+    now emitted by extract/assemble.py::line_hash — order-independent, over
+    (item_no, description, total).
+
+    Persistence and indexing (F-38, Phase 0 Task P7): "across full history"
+    cannot be a Python loop over a list. The signature below stays for the unit
+    tests; the production caller passes an indexed query result, not the world.
+    """
     matches: list[DuplicateMatch] = []
     for prior in history:
-        if (candidate.invoice_number is not None
+        same_vendor = candidate.vendor_id == prior.vendor_id
+        if (same_vendor and candidate.invoice_number is not None
                 and candidate.invoice_number == prior.invoice_number):
             matches.append(DuplicateMatch("same invoice number", prior))
             continue
-        if (candidate.vendor == prior.vendor and candidate.amount == prior.amount
+        if (same_vendor and candidate.amount == prior.amount
                 and abs(candidate.doc_date - prior.doc_date) <= DATE_WINDOW):
             matches.append(DuplicateMatch("vendor+amount within date window", prior))
             continue
-        if candidate.line_hash == prior.line_hash:
+        if same_vendor and candidate.line_hash == prior.line_hash:
             matches.append(DuplicateMatch("identical line-item fingerprint", prior))
     return matches
+```
+
+`DocumentFingerprint` carries `vendor_id: str` — the **resolved canonical** vendor from I2, not the raw name.
+Matching on a raw name means "Acme Steel Co." and "Acme Steel Company" never collide, which is the same defect
+one layer down.
+
+Add to the test module:
+
+```python
+def test_the_same_invoice_number_from_a_different_vendor_is_not_a_duplicate():
+    """REGRESSION — F-37. Two vendors both numbering from INV-1001 produced a
+    permanent false duplicate, and an obviously-wrong duplicate finding is how a
+    reviewer learns to dismiss duplicate findings."""
+    assert find_duplicates(_fp(vendor_id="v2", invoice="INV-1"),
+                           [_fp(vendor_id="v1", invoice="INV-1")]) == []
+
+
+def test_the_same_line_hash_from_a_different_vendor_is_not_a_duplicate():
+    assert find_duplicates(_fp(vendor_id="v2", invoice="INV-9", line_hash="h1"),
+                           [_fp(vendor_id="v1", line_hash="h1")]) == []
+
+
+def test_matching_uses_the_resolved_vendor_id_not_the_raw_name():
+    """'Acme Steel Co.' and 'Acme Steel Company' must collide once I2 has
+    resolved them; matching on the raw string is the same defect one layer down."""
+    assert find_duplicates(_fp(vendor_id="v1", vendor="Acme Steel Co.", invoice="INV-1"),
+                           [_fp(vendor_id="v1", vendor="Acme Steel Company",
+                                invoice="INV-1")])
 ```
 
 ```python
@@ -1909,9 +2419,34 @@ git commit -m "feat(rules): I1-I3 duplicates, vendor resolution, bank-detail har
 - [ ] `uv run pytest tests/rules -v` green — every rule has a tripping fixture and a clean control
 - [ ] `tests/rules/convention/test_sources.py` green with **real** confirmations; no `REPLACE:` left anywhere
 - [ ] `CONFIGURED_JURISDICTION` set to a real jurisdiction, statute cited in `sources.TAX`
-- [ ] The four regression tests pass: C1 five-percent contract, C2 no-stepping contract, C8 additive-change-order suppression, C11 waiver direction
+- [ ] The five regression tests pass: C1 five-percent contract, C2 no-stepping contract, C8 additive-change-order suppression, A9 SOV-revision lag, C11 waiver direction
 - [ ] `uv run mypy --strict ledger_sense` green
 - [ ] **DoD 3 satisfied** — all validation rules implemented, each with a tripping fixture and a clean control
 - [ ] Coverage ≥75% on `ledger_sense/rules`
+
+**Audit regressions that must be green (`2026-08-29-REVISIONS.md`):**
+
+- [ ] `test_c13_does_not_fire_merely_because_retainage_is_held` — **F-05, the fourth known-wrong rule.** C13
+      compared the waiver amount to total completed and stored instead of current payment due, so it fired on
+      every application after the first, and its test was written against the implementation
+- [ ] `test_c1_and_c3_never_both_fire_on_one_condition` and `test_c1_tolerates_per_line_rounding` — F-06
+- [ ] `test_c4_trips_when_the_figures_are_not_equal` — **F-07.** C4 required an exact triple coincidence, so
+      "the classic silent pay-application error" would almost never have fired on a real document
+- [ ] `test_c12_does_not_flag_a_waiver_dated_the_payment_date` — F-08
+- [ ] `test_a9_does_not_fire_while_the_sov_revision_lags_an_approved_change_order` and
+      `test_a9_still_fires_once_the_sov_has_been_revised_and_still_does_not_foot` — **F-04.** A9 was
+      registered `arithmetic` in Phase 1, where it needed no `RuleSource`, bypassing the gate built to stop
+      exactly that. It ships here instead, sourced and suppressed. `rule_a9` must not exist in
+      `rules/arithmetic/foot.py`
+- [ ] `test_a_merge_carries_the_absorbed_payment_history_across` and
+      `test_unmerge_is_the_exact_inverse_of_merge` — **F-36.** Merging lost the I3 baseline, so the fraud
+      control lost its evidence at the moment two records were reconciled
+- [ ] `test_the_hmac_distinguishes_accounts_that_share_their_last_four`,
+      `test_the_confirmation_is_stored_on_the_record`,
+      `test_a_change_back_to_a_previously_seen_account_is_still_surfaced` — F-35
+- [ ] `test_the_same_invoice_number_from_a_different_vendor_is_not_a_duplicate` — F-37
+- [ ] No `confirmed_at` in `sources.py` is a placeholder date. It is `None` until a real session happened, and
+      `register` refuses `None` — a plausible-looking date inside the mechanism built to refuse
+      plausible-looking values is the failure this phase exists to prevent
 
 **Then Phase 4.** It has no domain dependency and can run ahead of this phase if the controller session slips.

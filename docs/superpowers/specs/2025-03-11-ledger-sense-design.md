@@ -73,7 +73,7 @@ documents. If that sentence has changed, part of §1's argument changes with it.
 
 ---
 
-## 3. Verified external facts (2025-03-11)
+## 3. Verified external facts (originally verified 2025-03-11; re-verified 2026-08-29)
 
 Re-verify on the day. These are snapshots, which is the operating principle of the programme.
 
@@ -81,32 +81,47 @@ Re-verify on the day. These are snapshots, which is the operating principle of t
 
 **QuickBooks Online**
 - Production keys gated on an **app assessment questionnaire** — legal, tech, security, platform.
-  Required for every app touching production data, listed or not.
+  Required for every app touching production data, listed or not. *(2026-08-29: unchanged.)*
 - **No App Store listing is required for production keys.** A private, unlisted app can be pointed
-  at real QBO companies. This is the critical unblock.
+  at real QBO companies. This is the critical unblock. *(2026-08-29: unchanged.)*
 - Intuit's material: ~30–40 minutes to complete; "in most cases the assessment process is fast."
-  Integrator write-ups report 1–3 weeks end to end. Covers hosting, host domain, launch and
-  disconnect URLs, token storage, retention policy, API usage, authorisation, error handling.
-- **Sandbox requires no approval at all.**
+  **2026-08-29: turnaround is wider than the "1–3 weeks" originally recorded.** Intuit's own stage
+  SLAs (technical 3 business days / security 7 / marketing 5) still add up to roughly that, but
+  current integrator reports range from ~2 weeks (experienced integrator) to ~2 months (first-time
+  submission) — treat 1–3 weeks as the optimistic case, not the median. Covers hosting, host
+  domain, launch and disconnect URLs, token storage, retention policy, API usage, authorisation,
+  error handling.
+- **Sandbox requires no approval at all** — auto-provisioned on developer-account creation, up to
+  10 sandboxes, 2-year validity. *(2026-08-29: unchanged.)*
 
 **Xero**
-- Uncertified app: **25 permanent active connections** (demo company excluded). Any one
-  organisation may connect at most **2 uncertified apps**.
-- Beyond 25 → **App Partner certification**: security assessment reviewed by Xero's security team,
-  App Store listing, checkpoints across branding/naming/scopes/error handling/data integrity/tax,
-  annual re-certification, live customer connections onboarded first. Reported to take **months**.
-  ≥1000 connections triggers an advanced security assessment.
-- The clean single-org path is **Custom Connections** (client_credentials, one org, no
-  certification) — but it is a **paid subscription** (~$5/mo USD, £5 GBP, $10 AUD/NZD), sold only
-  in AU/NZ/UK/US. **Breaches the $0 recurring hard constraint and geofences.**
+- **2026-08-29: the flat 25-connection ceiling this section originally recorded no longer exists.**
+  Effective 2026-03-02, Xero replaced it with a five-tier usage-priced model: **Starter**
+  ($0/mo, ≤5 connections, self-service, no certification) → **Core** (~$22/mo USD, ≤50) →
+  **Plus** (~$152/mo USD, ≤1,000) → **Advanced** (~$895/mo USD, ≤10,000, security assessment
+  required only for premium endpoints such as Journals/XPM/Bulk Connections) → **Enterprise**
+  (negotiated, unlimited, requires an App Store listing). Certification is no longer the gate
+  between free-tier and scale — money is.
+- Any one organisation may still connect at most **2 uncertified apps**. *(2026-08-29: unchanged.)*
+- The clean single-org path is still **Custom Connections** (client_credentials, one org, no
+  certification) — still a **paid subscription** (~$5/mo USD, £5 GBP, $10 AUD/NZD), sold only in
+  AU/NZ/UK/US, explicitly exempted from the March 2026 repricing. **Still breaches the $0
+  recurring hard constraint and geofences.** *(2026-08-29: unchanged.)*
 
-**Caveat:** `developer.xero.com` is a JS SPA; every direct fetch path timed out during
-verification. Xero figures come from Xero Central, Xero Community, and three independent
-integrator docs that agree. **Verify from a browser before committing money.**
+**Caveat:** `developer.xero.com` is a JS SPA; every direct fetch path timed out during both the
+original verification and the 2026-08-29 re-verification. Xero figures come from Xero Central,
+Xero Community, and integrator write-ups that agree. **Verify from a browser before committing
+money.**
 
-**Consequence:** QBO first. Its gate is a self-service form; Xero's is either an unschedulable
-certification or a constraint breach. **Nothing in weeks 5–12 depends on the QBO gate, because
-sandbox is ungated** — so the plan never waits on an approval (B12 satisfied structurally).
+**Consequence:** QBO first, per `02` §13 Q2 — settled, not re-litigated here. **But the evidence
+that justified it has moved.** The original case was that Xero's only paths beyond 25 connections
+were an unschedulable certification or a $0-constraint breach; that dichotomy is gone. Xero's new
+free Starter tier (5 connections, self-service, zero certification, zero recurring cost) likely
+covers a single design partner outright, and the plan's own writeback architecture already treats
+Xero as a peer adapter behind the same port — so running Xero in parallel at effectively no cost
+is a legitimate v2 option, not a certification fight. **Nothing in weeks 5–12 depends on the QBO
+gate, because sandbox is ungated** — so the plan never waits on an approval (B12 satisfied
+structurally).
 
 ### 3.2 Licence status of every proposed PDF/OCR dependency
 
@@ -118,8 +133,8 @@ sandbox is ungated** — so the plan never waits on an approval (B12 satisfied s
 | `pdfminer.six` | 20260107 | MIT |
 | `pypdf` | 6.16.2 | BSD-3-Clause |
 | **`pypdfium2`** | 5.13.0 | BSD-3-Clause + Apache-2.0 |
-| `docling` | 2.123.0 | MIT |
-| `docling-core` / `-parse` / `-ibm-models` | 2.92.0 / 7.16.0 / 3.14.0 | MIT |
+| `docling` | 2.123.1 (2026-08-29, was 2.123.0) | MIT |
+| `docling-core` / `-parse` / `-ibm-models` | 2.92.0 / 7.16.0 / 4.0.0 (2026-08-29: `-ibm-models` was 3.14.0, a major bump — check its changelog before pinning) | MIT |
 | weights `ds4sd/docling-models` | — | CDLA-Permissive-2.0 + Apache-2.0 |
 | weights `ds4sd/docling-layout-heron` | — | Apache-2.0 |
 | `rapidocr-onnxruntime` | 1.4.4 | Apache-2.0 |
@@ -135,10 +150,15 @@ sandbox is ungated** — so the plan never waits on an approval (B12 satisfied s
 
 1. **`PyMuPDF` 1.28.2 — AGPL, confirmed. REJECT.** Its own PyPI metadata reads *"Dual Licensed -
    GNU AFFERO GPL 3.0 or Artifex Commercial."* `pypdfium2` is the drop-in.
-2. **`ocrmypdf` 17.10.0 — REJECT, and this is the trap.** The package is MPL-2.0, so a scan of
-   Python metadata passes it. But it **requires an external Ghostscript binary, and Ghostscript is
-   AGPL-3.0** — same rightsholder as PyMuPDF (Artifex), who litigate this question
-   (*Artifex v. Hancom*). The AGPL arrives through a native dependency no Python tool reports.
+2. **`ocrmypdf` 17.11.0 — REJECT, and this is the trap.** The package is MPL-2.0, so a scan of
+   Python metadata passes it. **2026-08-29: as of ocrmypdf 17.0.0, Ghostscript is no longer a hard
+   dependency** — pypdfium2 handles rasterisation and veraPDF handles PDF/A validation, both
+   permissive, and no Ghostscript binding appears in `requires_dist` (still invisible to a
+   metadata-only scan). But ocrmypdf's own docs call Ghostscript "highly recommended" and **use it
+   automatically if present on the system** — and Ghostscript is still **AGPL-3.0**, same
+   rightsholder as PyMuPDF (Artifex), who litigate this question (*Artifex v. Hancom*). The trap
+   is now default-on rather than inescapable: avoidable only by deliberately keeping system
+   Ghostscript off any box that runs this pipeline. REJECT stands.
 3. **`camelot-py` 2.0.0 — safe with a condition.** Camelot 2.0 moved Ghostscript to an optional
    extra and defaults to `pypdfium2` with no system dependencies. Safe **only** while the
    `ghostscript` extra is never installed.

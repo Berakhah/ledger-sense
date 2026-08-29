@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §7, §8, §12
 **Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Audit:** `2026-08-29-REVISIONS.md` §6 — read it before Task 40. Nine defects in this phase were fixed in place.
+Three of them (F-46, F-47, F-49) meant the phase built to refuse unearned automation would have granted it.
 
 ---
 
@@ -44,13 +46,67 @@ apply here. A confidence is a model score, not money. Storing it as a `Decimal` 
 precision it does not have. The AST guard in Task 2 is already scoped to the three money packages;
 do not widen it to `route/`, and do not "fix" the floats you see in this phase.
 
+### The input this phase consumes, which nothing produced — REVISED (F-46)
+
+`Router.decide(field, confidence)`, `labels_from_action(action)` and `CalibrationCurve.fit(labels)` all require a
+per-field score. `extract/assemble.py` sets `confidence=None` on every claim and **Task 18's test asserts it**.
+Nothing else produced one. **DoD 4 rested on a value the product never computed.**
+
+Phase 2 Task 18 now emits `Claim.match_quality: float` — a documented, bounded function of the evidence
+extraction actually had (label found exactly vs fuzzily; value token uniquely in the expected geometry vs one of
+several; column assignment unambiguous vs within slack; profile-cache hit vs cold anchor). `Claim.confidence`
+stays `None` for `DETERMINISTIC`, which was always correct.
+
+**Everything in this phase reads `match_quality`, never `confidence`.** That the score is explicitly not a
+probability is precisely why it must be calibrated before it routes anything — the argument this phase already
+makes, now with something to make it about.
+
+### 200 labels cannot support a 99.5% claim — REVISED (F-47)
+
+**Verified.** A 95% lower confidence bound at 99.5% accuracy requires, by the rule of three,
+`n ≥ 3 / 0.005 = 600` consecutive correct observations. With 200 labels the finest accuracy the data can resolve
+is 1/200 = 0.5% — the entire error budget.
+
+`MIN_LABELS_FOR_FIELD = 200` was asserted by a test and traced to nothing. **The phase whose stated purpose is
+"the code refuses to emit a threshold it has not earned" emitted one it had not earned.** That is the same sin
+one level up, and it is the finding this phase should be most embarrassed by.
+
+The constant is **deleted**. `threshold_for(target)` derives its own requirement: a **Clopper–Pearson lower
+bound** on observed accuracy at and above each candidate threshold, returning the lowest candidate whose *lower
+bound* meets the target. A curve with too few labels then yields `None` automatically, for a reason the code can
+state — which is what the phase wanted all along.
+
+### The curve must not be fitted and judged on the same labels — REVISED (F-48)
+
+Isotonic regression with one knot per observation interpolates its training data, so `threshold_for` read a
+fitted value that was optimistically biased — and `docs/methodology.md` shipped the resulting reliability diagram
+as evidence. Fit on a seeded random 70%; derive and check the threshold on the held-out 30%; record both n's on
+the curve and both in the methodology.
+
+### The sample censors itself the moment auto-posting starts — REVISED (F-49)
+
+Labels come only from fields routed to review. When a field type crosses its threshold, its high-confidence
+population stops producing labels — so the curve freezes on the evidence that authorised it and **can never
+detect that extraction has degraded**, which is the single most likely real-world failure (a producer changes its
+PDF template). A feedback loop that fails silently in the optimistic direction, in the product whose whole thesis
+is that optimistic silence is the industry's defining sin.
+
+**Hold-back audit sample:** a fixed fraction of above-threshold fields routes to review anyway, labelled
+`audit`. The curve refits on audit labels. If audit accuracy falls below the target's lower bound, **the
+threshold is withdrawn automatically** and the field type returns to `review`. The fraction is
+`2026-08-29-REVISIONS.md` §11 **Q4** — 5% proposed — and it goes in `docs/methodology.md`, because it is a real
+trade between straight-through rate and drift detection.
+
 ### The three states, and what each is worth
 
 | State | How it arises | `threshold_for()` | What may be said to a buyer |
 |---|---|---|---|
-| `uncalibrated` | fewer than 200 labels of any kind | `None` | "Confidence is displayed, not acted on." |
-| `calibrated:synthetic` | ≥200 labels, any of them from the generated corpus | `None` | "The machinery is built and exercised. It has never seen a real document." |
-| `calibrated:field` | ≥200 labels, all from real reviewed documents | a float | "At the threshold shown, this field type was correct N times out of M." |
+| `uncalibrated` | too few labels for the target to be **provable** — derived, never a constant | `None` | "Confidence is displayed, not acted on." |
+| `calibrated:synthetic` | enough labels, any of them from the generated corpus | `None` | "The machinery is built and exercised. It has never seen a real document." |
+| `calibrated:field` | enough real labels that the **lower bound** on accuracy meets the target, on held-out data | a float | "At the threshold shown, this field type was correct at least N% of the time with 95% confidence, over M held-out observations." |
+
+Note what the third row now says. The original promised *"correct N times out of M"* — a point estimate read off
+a curve fitted on its own training data. The revised sentence is one a controller can check.
 
 Week 12 will almost certainly end at `calibrated:synthetic`. **That is the planned outcome, not a
 failure.** The deliverable is the machinery plus the honesty, and the honesty is the harder half.
@@ -72,8 +128,8 @@ import pytest
 from datetime import datetime, timezone
 
 from ledger_sense.route.calibration import (
-    CalibrationCurve, CalibrationStore, Label, fit_isotonic,
-    MIN_LABELS_FOR_FIELD, UnknownBasisError,
+    CalibrationCurve, CalibrationStore, Label, clopper_pearson_lower,
+    fit_isotonic, UnknownBasisError,
 )
 
 
@@ -158,8 +214,70 @@ def test_an_unknown_basis_is_rejected_rather_than_defaulted():
         CalibrationCurve.fit(_labels([(0.9, True)] * 300, basis="probably-real"))
 
 
-def test_min_labels_constant_is_two_hundred():
-    assert MIN_LABELS_FOR_FIELD == 200
+def test_two_hundred_labels_cannot_support_the_target_accuracy():
+    """REGRESSION — F-47, VERIFIED. MIN_LABELS_FOR_FIELD = 200 was asserted by a
+    test and traced to nothing. By the rule of three a 95% lower bound at 99.5%
+    needs n >= 600; with 200 the finest resolvable accuracy is 0.5%, the entire
+    error budget. This phase was doing the thing it exists to prevent."""
+    curve = CalibrationCurve.fit(_labels([(0.99, True)] * 200, basis="field"))
+    assert curve.threshold_for(target_accuracy=0.995) is None
+    assert "600" in curve.refusal_reason(0.995)
+
+
+def test_six_hundred_clean_labels_do_support_it():
+    curve = CalibrationCurve.fit(_labels([(0.99, True)] * 900, basis="field"))
+    assert curve.threshold_for(target_accuracy=0.995) is not None
+
+
+def test_no_min_labels_constant_survives_anywhere_in_the_module():
+    """A derived requirement, not a number somebody picked."""
+    import ledger_sense.route.calibration as calibration
+    assert not hasattr(calibration, "MIN_LABELS_FOR_FIELD")
+
+
+def test_the_clopper_pearson_bound_matches_the_rule_of_three():
+    from ledger_sense.route.calibration import clopper_pearson_lower
+    assert clopper_pearson_lower(200, 200) < 0.995
+    assert clopper_pearson_lower(600, 600) >= 0.994
+
+
+def test_the_threshold_is_derived_on_held_out_data():
+    """F-48. Isotonic with one knot per observation interpolates its training
+    data, so a threshold read off the fit is optimistically biased — and the
+    reliability diagram built from it ships in docs/methodology.md as evidence."""
+    curve = CalibrationCurve.fit(_labels([(0.99, True)] * 900, basis="field"))
+    assert curve.holdout_n > 0
+    assert curve.fit_n + curve.holdout_n == curve.n
+
+
+def test_a_curve_fitted_on_noise_yields_no_threshold():
+    import random
+    rng = random.Random(7)
+    pairs = [(rng.random(), rng.random() < 0.5) for _ in range(900)]
+    curve = CalibrationCurve.fit(_labels(pairs, basis="field"))
+    assert curve.threshold_for(target_accuracy=0.995) is None
+
+
+def test_the_refusal_says_why_in_words():
+    """A greyed-out meter with no explanation is the thing this programme exists
+    to correct. The UI renders this string verbatim."""
+    curve = CalibrationCurve.fit(_labels([(0.9, True)] * 900, basis="synthetic"))
+    assert "synthetic" in curve.refusal_reason(0.995)
+
+
+def test_a_confidence_outside_zero_to_one_is_rejected():
+    """F-50. test_a_field_curve_that_never_reaches_the_target generated scores up
+    to 3.0 and nothing validated the range."""
+    with pytest.raises(ValueError):
+        CalibrationCurve.fit(_labels([(1.5, True)] * 900, basis="field"))
+
+
+def test_the_stored_curve_collapses_to_unique_blocks():
+    """F-51. 900 labels produced 900 xs and 900 knots, JSON-serialised into
+    SQLite and linear-scanned by calibrated(). PAVA output has few distinct
+    values by construction."""
+    curve = CalibrationCurve.fit(_labels([(0.99, True)] * 900, basis="field"))
+    assert len(curve.xs) < 50
 
 
 # --- calibrated probability ------------------------------------------------
@@ -234,8 +352,45 @@ from typing import Literal, NamedTuple, Sequence
 Basis = Literal["synthetic", "field"]
 CalibrationState = Literal["uncalibrated", "calibrated:synthetic", "calibrated:field"]
 
-MIN_LABELS_FOR_FIELD = 200
-_VALID_BASES: frozenset[str] = frozenset({"synthetic", "field"})
+# MIN_LABELS_FOR_FIELD IS GONE — REVISED (F-47).
+#
+# It was 200, asserted by a test, and traced to nothing. VERIFIED: a 95% lower
+# bound at 99.5% accuracy needs n >= 3/0.005 = 600 by the rule of three, and with
+# 200 labels the finest accuracy resolvable is 1/200 = 0.5% — the entire error
+# budget. The phase that exists to stop the code emitting a threshold it has not
+# earned was emitting one it had not earned.
+#
+# The requirement is now DERIVED from the target: threshold_for() returns a value
+# only where a Clopper-Pearson lower bound meets it. Too few labels yields None
+# automatically, and the code can say why.
+_VALID_BASES: frozenset[str] = frozenset({"synthetic", "field", "audit"})
+HOLDOUT_FRACTION = 0.30          # F-48: fit on 70%, judge on the held-out 30%
+CONFIDENCE_LEVEL = 0.95
+
+
+def clopper_pearson_lower(successes: int, trials: int,
+                          level: float = CONFIDENCE_LEVEL) -> float:
+    """Exact one-sided lower bound on a binomial proportion (F-47).
+
+    Stdlib only — the inverse Beta CDF via bisection on the regularised
+    incomplete beta, ~20 lines. Same argument as PAVA: a buyer auditing the
+    reliability claim can read the algorithm that produced it.
+
+        clopper_pearson_lower(200, 200) ~ 0.9851   -> cannot support 0.995
+        clopper_pearson_lower(600, 600) ~ 0.9950   -> can
+    """
+    if trials == 0:
+        return 0.0
+    if successes == trials:
+        return (1.0 - level) ** (1.0 / trials)
+    lo, hi = 0.0, successes / trials
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if _binom_sf(successes - 1, trials, mid) > 1.0 - level:
+            hi = mid
+        else:
+            lo = mid
+    return lo
 
 
 class UnknownBasisError(ValueError):
@@ -286,9 +441,24 @@ class CalibrationCurve:
 
     @property
     def state(self) -> CalibrationState:
-        if self.n < MIN_LABELS_FOR_FIELD:
+        # REVISED (F-47). This was `if self.n < MIN_LABELS_FOR_FIELD` — a
+        # constant of 200 traced to nothing. "Enough" is a function of the TARGET:
+        # a curve is uncalibrated when no score in it can meet the target at the
+        # 95% lower bound, which is checked, not assumed.
+        if not self._can_reach(TARGET_ACCURACY_DEFAULT):
             return "uncalibrated"
         return "calibrated:field" if self.basis == "field" else "calibrated:synthetic"
+
+    def _can_reach(self, target: float) -> bool:
+        """Is there ANY score whose held-out lower bound meets the target? With
+        too few labels the answer is no, for a reason the code can state."""
+        for x in sorted(set(self.holdout_xs)):
+            at_or_above = [(hx, hy) for hx, hy in zip(self.holdout_xs, self.holdout_ys)
+                           if hx >= x]
+            successes = sum(1 for _hx, hy in at_or_above if hy >= 0.5)
+            if clopper_pearson_lower(successes, len(at_or_above)) >= target:
+                return True
+        return False
 
     @classmethod
     def fit(cls, labels: Sequence[Label]) -> "CalibrationCurve":
@@ -324,16 +494,45 @@ class CalibrationCurve:
         return self.knots[-1]
 
     def threshold_for(self, target_accuracy: float) -> float | None:
-        """The lowest raw confidence whose calibrated probability meets the target.
+        """The lowest score whose HELD-OUT accuracy has a lower bound meeting the
+        target.
 
-        Returns ``None`` unless this curve was fitted from field labels.  This is the
-        refusal the phase exists for: synthetic evidence licenses nothing.
+        REVISED (F-47, F-48). Two changes, both about earning the number:
+
+        1. The original read the FITTED knot value — a point estimate from a
+           curve with one knot per observation, judged on its own training data.
+           This reads the held-out split (F-48) and takes a Clopper-Pearson lower
+           bound on it (F-47), so "correct at least N% of the time" is a claim a
+           controller can check rather than a number we produced.
+        2. There is no MIN_LABELS constant. Too few labels simply fails to meet
+           the bound, and `refusal_reason` says so in words.
+
+        Returns None unless the curve was fitted from field labels. That refusal
+        was always right: synthetic evidence licenses nothing.
         """
         if self.state != "calibrated:field":
             return None
-        for x, k in zip(self.xs, self.knots):
-            if k >= target_accuracy:
+        for x in sorted(set(self.holdout_xs)):
+            at_or_above = [(hx, hy) for hx, hy in zip(self.holdout_xs, self.holdout_ys)
+                           if hx >= x]
+            successes = sum(1 for _hx, hy in at_or_above if hy >= 0.5)
+            if clopper_pearson_lower(successes, len(at_or_above)) >= target_accuracy:
                 return x
+        return None
+
+    def refusal_reason(self, target_accuracy: float) -> str | None:
+        """Why there is no threshold. The UI renders this verbatim — a greyed-out
+        meter with no explanation is the thing this programme exists to correct."""
+        if self.state == "uncalibrated":
+            return (f"{self.n} labels is not enough to demonstrate "
+                    f"{target_accuracy:.1%} accuracy with 95% confidence; "
+                    f"roughly {int(3 / (1 - target_accuracy))} are needed")
+        if self.state == "calibrated:synthetic":
+            return ("this curve was fitted on generated documents; synthetic "
+                    "evidence licenses no automation on your documents")
+        if self.threshold_for(target_accuracy) is None:
+            return (f"no score in this population reaches {target_accuracy:.1%} "
+                    f"accuracy at the 95% lower bound")
         return None
 
 
@@ -524,11 +723,63 @@ def test_no_derived_threshold_is_hard_coded_anywhere_in_the_router():
     """
     src = pathlib.Path("ledger_sense/route/router.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
-    permitted = {0.0, 1.0, TARGET_ACCURACY_DEFAULT}
+    permitted = {0.0, 1.0, TARGET_ACCURACY_DEFAULT, AUDIT_FRACTION_DEFAULT}
     offenders = [n.value for n in ast.walk(tree)
                  if isinstance(n, ast.Constant) and isinstance(n.value, float)
                  and n.value not in permitted]
     assert offenders == [], f"literal thresholds found in router.py: {offenders}"
+
+
+def test_the_same_guard_covers_extract_where_a_floor_was_hiding():
+    """F-24. The principle was right and its SCOPE was wrong: extract/ocr.py
+    carried MIN_CONFIDENCE = 0.5, an uncalibrated cut-off written by feel, on the
+    noisiest path in the product, with no equivalent guard."""
+    import ast
+    import pathlib
+    offenders = []
+    for path in pathlib.Path("ledger_sense/extract").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, float):
+                if node.value not in (0.0, 1.0):
+                    offenders.append(f"{path}:{node.lineno}: {node.value}")
+    assert offenders == [], f"literal thresholds in extract/: {offenders}"
+
+
+# ---- Hold-back audit: F-49 ----
+
+def test_a_fraction_of_auto_eligible_fields_is_held_back_for_audit(store):
+    """Without it, a field type that crosses its threshold stops producing labels
+    entirely, and the curve can never see that extraction has degraded."""
+    store.save_curve(_curve("field", [(0.99, True)] * 900))
+    router = Router(store, audit_fraction=0.05)
+    routes = [router.decide("retainage_rate", confidence=0.999).route
+              for _ in range(400)]
+    held = routes.count("review")
+    assert 5 <= held <= 45, f"held back {held} of 400 at a 5% fraction"
+
+
+def test_a_held_back_decision_says_why():
+    """It is not a low-confidence review and must not read like one to the
+    reviewer, or they will 'fix' an extraction that was right."""
+    store = CalibrationStore(":memory:")
+    store.save_curve(_curve("field", [(0.99, True)] * 900))
+    router = Router(store, audit_fraction=1.0)
+    assert "audit" in router.decide("retainage_rate", confidence=0.999).reason
+
+
+def test_a_drifted_field_has_its_threshold_withdrawn_automatically(store):
+    """Seeded degradation. A human who has to notice is a human who will not."""
+    store.save_curve(_curve("field", [(0.99, True)] * 900))
+    store.add_labels(_labels([(0.99, False)] * 60, basis="audit"))
+    assert Router(store).withdraw_if_drifted("retainage_rate") is True
+    assert Router(store).decide("retainage_rate", confidence=0.999).route == "review"
+
+
+def test_audit_labels_never_promote_a_synthetic_curve(store):
+    """basis='audit' is field evidence. basis='synthetic' contaminates. Neither
+    rule may leak into the other."""
+    labels = _labels([(0.99, True)] * 900, basis="audit")
+    assert CalibrationCurve.fit(labels).state == "calibrated:field"
 ```
 
 - [ ] **Step 2: Implement (GREEN)**
@@ -555,8 +806,12 @@ from ledger_sense.route.calibration import CalibrationStore
 
 Route = Literal["auto", "review"]
 
-# Policy figure from the brief.  A THRESHOLD is derived from a curve, never written here.
+# Policy figures the product STATES OUT LOUD. A THRESHOLD is derived from a
+# curve, never written here — that distinction is the whole phase.
 TARGET_ACCURACY_DEFAULT = 0.995
+# F-49, and 2026-08-29-REVISIONS.md §11 Q4. Goes in docs/methodology.md, because
+# it is a real trade between straight-through rate and drift detection.
+AUDIT_FRACTION_DEFAULT = 0.05
 
 
 @dataclass(frozen=True)
@@ -613,9 +868,38 @@ class Router:
                                    calibrated,
                                    f"confidence {confidence:.3f} below threshold {threshold:.3f}")
 
+        # HOLD-BACK AUDIT — NEW (F-49).
+        #
+        # Labels come only from fields routed to review. The moment a field type
+        # crosses its threshold, its high-confidence population stops producing
+        # labels — so the curve freezes on the evidence that authorised it and can
+        # NEVER detect that extraction has degraded. A producer changing its PDF
+        # template is the most likely real-world failure and it would be invisible.
+        #
+        # A feedback loop failing silently in the optimistic direction, in the
+        # product whose thesis is that optimistic silence is the industry's sin.
+        if self._audit_sampler.should_hold_back(field):
+            return RoutingDecision(field, "review", curve.state, curve.basis, threshold,
+                                   calibrated,
+                                   f"held back for audit ({self._audit_fraction:.0%} "
+                                   f"of auto-eligible fields) so drift stays visible")
+
         return RoutingDecision(field, "auto", curve.state, curve.basis, threshold, calibrated,
                                f"confidence {confidence:.3f} at or above "
                                f"field-calibrated threshold {threshold:.3f}")
+
+    def withdraw_if_drifted(self, field: str) -> bool:
+        """Refit on audit labels; withdraw the threshold if the lower bound has
+        fallen below the target. Automatic, because a human who has to notice is
+        a human who will not."""
+        audit_labels = self._store.labels_for(field, basis="audit")
+        if len(audit_labels) < 30:
+            return False
+        curve = CalibrationCurve.fit(audit_labels)
+        if curve.threshold_for(self._target) is None:
+            self._store.withdraw_curve(field, reason="audit accuracy fell below target")
+            return True
+        return False
 ```
 
 - [ ] **Step 3: Run test to verify it passes**
@@ -641,6 +925,16 @@ allows, and demonstrably refuses to automate where it does not.
 - Create: `ledger_sense/route/labels.py`
 - Modify: `ledger_sense/api/review.py` (Task 28)
 - Test: `tests/route/test_labels.py`
+
+> **`ledger_sense/review/actions.py` must exist — F-59.** This task imports `ReviewAction` from
+> `ledger_sense.review.actions`, and Task 28 created `ledger_sense/api/review.py` with no such class and no such
+> module. Phase 4 Task 28 now defines it, and this task consumes it. Check it is there before writing a line.
+>
+> **Labels carry `match_quality`, not `confidence` — F-46.** `ReviewAction.predicted_confidence` reads
+> `Claim.match_quality`; `Claim.confidence` is `None` for every deterministic extraction and always was.
+>
+> **A third basis exists: `"audit"` — F-49.** Held-back fields produce audit labels, which are field evidence
+> for calibration and are what makes drift detectable after auto-posting begins.
 
 - [ ] **Step 1: Write the tests (RED)**
 
@@ -781,8 +1075,8 @@ git commit -m "feat(route): reviewer actions become calibration labels; rejectio
 
 **Files:**
 - Create: `ledger_sense/api/inbox.py`
-- Create: `ui/src/screens/Inbox.tsx`
-- Create: `ui/src/screens/Inbox.test.tsx`
+- Create: `ledger_sense/web/app/Inbox.tsx`
+- Create: `ledger_sense/web/app/Inbox.test.tsx`
 - Test: `tests/api/test_inbox.py`
 
 - [ ] **Step 1: Write the tests (RED)**
@@ -841,7 +1135,7 @@ def test_every_upload_passes_through_the_intake_door():
 ```
 
 ```tsx
-// ui/src/screens/Inbox.test.tsx  — three assertions, not a full suite
+// ledger_sense/web/app/Inbox.test.tsx  — three assertions, not a full suite
 test('a cannot_extract row is visible and labelled, not filtered out', ...)
 test('the confidence band renders as text, not colour alone', ...)      // a11y
 test('the sensitivity of each row is shown to the reviewer', ...)
@@ -858,13 +1152,13 @@ rows stay in the list with an explicit reason — hiding failures is how a demo 
 
 - [ ] **Step 3: Run test to verify it passes**
 
-Run: `uv run pytest tests/api/test_inbox.py -v && cd ui && npm test -- Inbox`
+Run: `uv run pytest tests/api/test_inbox.py -v && npx vitest run Inbox`
 Expected: PASS.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add ledger_sense/api/inbox.py ui/src/screens/Inbox.tsx ui/src/screens/Inbox.test.tsx tests/api/test_inbox.py
+git add ledger_sense/api/inbox.py ledger_sense/web/app/Inbox.tsx ledger_sense/web/app/Inbox.test.tsx tests/api/test_inbox.py
 git commit -m "feat(ui): document inbox; failures listed rather than hidden"
 ```
 
@@ -874,7 +1168,7 @@ git commit -m "feat(ui): document inbox; failures listed rather than hidden"
 
 **Files:**
 - Create: `ledger_sense/api/vendor.py`
-- Create: `ui/src/screens/VendorLedger.tsx`
+- Create: `ledger_sense/web/app/VendorLedger.tsx`
 - Test: `tests/api/test_vendor.py`
 
 - [ ] **Step 1: Write the tests (RED)**
@@ -935,7 +1229,7 @@ Expected: PASS, 6 tests.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add ledger_sense/api/vendor.py ui/src/screens/VendorLedger.tsx tests/api/test_vendor.py
+git add ledger_sense/api/vendor.py ledger_sense/web/app/VendorLedger.tsx tests/api/test_vendor.py
 git commit -m "feat(ui): vendor ledger with period-over-period red-lined diff"
 ```
 
@@ -945,9 +1239,9 @@ git commit -m "feat(ui): vendor ledger with period-over-period red-lined diff"
 
 **Files:**
 - Create: `ledger_sense/api/metrics.py`
-- Create: `ui/src/screens/Metrics.tsx`
+- Create: `ledger_sense/web/app/Metrics.tsx`
 - Test: `tests/api/test_metrics.py`
-- Test: `ui/e2e/metrics.spec.ts`
+- Test: `tests/e2e/metrics.spec.ts`
 
 - [ ] **Step 1: Write the tests (RED)**
 
@@ -987,7 +1281,7 @@ def test_no_metric_claims_full_automation():
 ```
 
 ```ts
-// ui/e2e/metrics.spec.ts
+// tests/e2e/metrics.spec.ts
 test('the misses render at the same font size as the rate', async ({ page }) => {
   const rate = await page.locator('[data-testid=straight-through-rate]')
     .evaluate(el => getComputedStyle(el).fontSize);
@@ -1011,13 +1305,13 @@ Task 46 asserts the methodology document quotes them verbatim.
 
 - [ ] **Step 3: Run test to verify it passes**
 
-Run: `uv run pytest tests/api/test_metrics.py -v && cd ui && npx playwright test metrics`
+Run: `uv run pytest tests/api/test_metrics.py -v && npx playwright test metrics`
 Expected: PASS.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add ledger_sense/api/metrics.py ui/src/screens/Metrics.tsx tests/api/test_metrics.py ui/e2e/metrics.spec.ts
+git add ledger_sense/api/metrics.py ledger_sense/web/app/Metrics.tsx tests/api/test_metrics.py tests/e2e/metrics.spec.ts
 git commit -m "feat(ui): metrics published as claims, with misses at the same weight as the rate"
 ```
 
@@ -1096,6 +1390,28 @@ the tests above assert byte-equality. Sections, in order:
    optimism bias; the convention rules are sourced to specific contracts and jurisdictions named
    in `rules/sources.py` and do not generalise; and the OCR tail has been exercised on rendered
    scans, not on photographs of paper.
+
+**Started in week 5, not written here from memory (F-57).** Phase 1 Task 11 originally specified a different
+heading set (`## Baseline study`, `## Calibration basis`, `## Straight-through rate`), so this task's test failed
+against the document that task created. Task 11 now opens **this** schema and fills `## How we measure it` and
+the first entry of `## What these numbers do not mean`; week 6 fills `## Corpus`; week 11 fills
+`## Calibration`. Written at the end, a limitations section is written from memory, which is how it ends up
+shorter than the claims it qualifies.
+
+**Six things the audit says must appear here, because each is a number a buyer might act on:**
+
+| Must state | Why | Ref |
+|---|---|---|
+| The interval covers touch-time sampling variability only, and holds the loaded rate fixed | Otherwise the published interval is narrower than the real uncertainty, in the artifact whose whole purpose is defensibility | F-53 |
+| The *t* value is tabulated to df 200, not collapsed to 1.96 above df 9 | The original understated the margin by up to 15.4% at real sample sizes, always in our favour | F-52 |
+| Thresholds come from a **Clopper–Pearson lower bound on held-out data**, and roughly how many labels a 99.5% target needs | "Correct N times out of M" off a self-fitted curve is not a claim a controller can check | F-47, F-48 |
+| The hold-back audit fraction, and that a drifted field has its threshold **withdrawn automatically** | It is a real trade between straight-through rate and drift detection, and the buyer is entitled to the number | F-49, Q4 |
+| What `match_quality` is, its four inputs, and that it is **not a probability** | It is the number the routing runs on; leaving it undefined is the sin one layer down | F-46 |
+| What we did to `DocNumber` and why | It changes what the bookkeeper sees in their own books and may disable a duplicate control they had | F-40, Q3 |
+
+**The non-affiliation notice does not go in this file.** `test_the_document_makes_no_affiliation_claim` asserts
+`"g702" not in DOC`, and the notice names G702®. It lives in the README and the UI footer, from
+`ledger_sense/notice.py`; this document links to it.
 
 - [ ] **Step 3: Run test to verify it passes**
 
@@ -1182,11 +1498,30 @@ def test_the_demo_exits_non_zero_if_a_planted_error_is_not_caught():
 
 - [ ] **Step 2: Implement (GREEN)**
 
-`scripts/demo.py` seeds a fresh SQLite database from the synthetic corpus with three planted
-errors — a duplicate invoice (I1), a retainage miscalculation (C1/C2) and a stored-materials
-double-count (C4) — runs extraction, runs the rulebook, prints each catch with its rule id and
-citation, prints what it missed, prints the calibration state, and exits non-zero if any planted
-error went uncaught.
+`scripts/demo.py` seeds a fresh database from the synthetic corpus with three planted errors — a duplicate
+invoice (I1), a retainage miscalculation (C1/C2) and a stored-materials double-count (C4) — runs extraction, runs
+the rulebook, prints each catch with its rule id and citation, prints what it missed, prints the calibration
+state, and exits non-zero if any planted error went uncaught.
+
+> **Two of those three injectors did not exist — F-62.** `corpus/errors.py` returned the application
+> **unchanged** for `I1_duplicate` and `C1_retainage_rate`:
+>
+> ```python
+> if error in ("I1_duplicate", "C1_retainage_rate"):
+>     return app
+> ```
+>
+> So `test_the_demo_catches_a_duplicate_invoice` and
+> `test_the_demo_catches_a_retainage_miscalculation` could not pass and **DoD 7 could not be met**. Phase 1
+> Task 12 now implements both: `C1_retainage_rate` mutates the contract term the applied retainage disagrees
+> with, and `generate_history(seed)` returns the pair of documents a duplicate needs — a duplicate is a
+> history-level error and cannot be expressed as a mutated field.
+>
+> Seed the demo through `generate_history`, not `generate`, or I1 has nothing to find.
+
+**The demo runs against the `demo` compose profile** (Phase 0 Task P1) — synthetic corpus only, ephemeral
+database, no client volume mounted. A demo that can reach a client volume is a demo you cannot safely run on a
+call.
 
 `docs/demo-script.md` is the sixty seconds of spoken words that go with it. Write it in the first
 person, name the three catches, name the misses, and end on the calibration state. Do not write a
@@ -1214,7 +1549,7 @@ git commit -m "feat(demo): sixty-second demo that reports its misses and fails i
 - Modify: `README.md`
 - Modify: `docker-compose.yml`
 - Modify: `.env.example`
-- Modify: `ui/src/components/Footer.tsx`
+- Modify: `ledger_sense/web/components/Footer.tsx`
 - Test: `tests/test_repo_closeout.py`
 
 - [ ] **Step 1: Write the tests (RED)**
@@ -1227,8 +1562,18 @@ import subprocess
 
 import yaml
 
+from ledger_sense.notice import NON_AFFILIATION_NOTICE
+
 README = pathlib.Path("README.md").read_text(encoding="utf-8")
-NOTICE = "not affiliated with, endorsed by, or licensed by"
+
+# REVISED (F-55). This was a SECOND, DIFFERENTLY WORDED hardcoded notice:
+#   here:              "not affiliated with, endorsed by, or licensed by"
+#   scripts/aia_guard: "not developed, endorsed, approved, sponsored by, or
+#                       affiliated with"
+# Both tests run in the same suite. They could not both pass unless the README
+# carried both strings, which is absurd. One definition (Phase 0 Task P1),
+# imported by the guard, by this test, and by the UI footer.
+NOTICE = NON_AFFILIATION_NOTICE
 
 
 def test_the_readme_states_what_the_product_does_and_does_not_do():
@@ -1242,14 +1587,32 @@ def test_the_readme_carries_the_non_affiliation_notice():
 
 def test_the_ui_carries_the_non_affiliation_notice_too():
     """A notice only in the README is a notice the user never reads."""
-    footer = pathlib.Path("ui/src/components/Footer.tsx").read_text(encoding="utf-8")
+    footer = pathlib.Path("ledger_sense/web/components/Footer.tsx").read_text(encoding="utf-8")
     assert NOTICE in footer
 
 
 def test_the_repo_contains_no_form_artifact():
-    """Spec §11. No copyrighted form reproduced, named as a template, or shipped."""
+    """Spec §11. No copyrighted form reproduced, named as a template, or shipped.
+
+    REVISED (F-56). As written this test FAILED against the plan's own code.
+    `scripts/aia_guard.py` contains `re.compile(r"g70[23]")` and a docstring
+    naming the AIA — it has to, that is what it guards — and it sat outside the
+    allowlist. The close-out test contradicted Task 12.
+
+    The thing to forbid is a rendered FORM ARTIFACT, not the letters G702. The
+    files that legitimately name the form are the guard, the notice, their tests,
+    and the design record.
+    """
     bad = re.compile(r"\bG70[23]\b|american institute of architects", re.I)
-    allowed = {"docs/superpowers", "CLAUDE.md"}   # the design record may discuss why we exclude it
+    allowed = {
+        "docs/superpowers",              # the design record explains the exclusion
+        "CLAUDE.md",
+        "scripts/aia_guard.py",          # the guard must name what it guards
+        "ledger_sense/notice.py",        # the notice names the trademarks
+        "tests/test_aia_guard.py",
+        "tests/test_repo_closeout.py",   # this file
+        "README.md",                     # carries the notice, per spec §11
+    }
     for p in pathlib.Path(".").rglob("*"):
         if not p.is_file() or ".git" in p.parts or "node_modules" in p.parts:
             continue
@@ -1257,6 +1620,12 @@ def test_the_repo_contains_no_form_artifact():
             continue
         if p.suffix in {".md", ".py", ".ts", ".tsx", ".json", ".yml", ".yaml", ".txt"}:
             assert not bad.search(p.read_text(encoding="utf-8", errors="ignore")), p
+
+
+def test_no_rendered_form_artifact_of_any_kind_is_committed():
+    """The claim that actually matters: no image, PDF or drawing of the form."""
+    from scripts.aia_guard import guard
+    assert guard(".") == []
 
 
 def test_compose_defines_both_client_and_demo_profiles():
@@ -1285,10 +1654,24 @@ def test_the_licence_is_apache_2_0():
     assert "Apache License" in pathlib.Path("LICENSE").read_text(encoding="utf-8")
 
 
-def test_a_clean_clone_passes_its_own_test_suite():
-    """The last thing that breaks is the thing that only ran on your laptop."""
-    r = subprocess.run(["uv", "run", "pytest", "-q", "--ignore=tests/test_repo_closeout.py"],
-                       capture_output=True, text=True)
+@pytest.mark.slow
+def test_a_clean_clone_passes_its_own_test_suite(tmp_path):
+    """The last thing that breaks is the thing that only ran on your laptop.
+
+    REVISED (F-65b). The original ran `pytest` in the WORKING TREE from inside
+    the suite — doubling CI time and testing nothing whatsoever about a clone. It
+    would pass with an uncommitted file the clone does not have, which is exactly
+    the failure it claims to catch.
+    """
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--depth", "1", ".", str(clone)], check=True,
+                   capture_output=True)
+    subprocess.run(["uv", "sync", "--all-extras"], cwd=clone, check=True,
+                   capture_output=True)
+    r = subprocess.run(
+        ["uv", "run", "pytest", "-q", "-m", "not slow",
+         "--ignore=tests/writeback/test_qbo_sandbox.py"],
+        cwd=clone, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout[-4000:]
 
 
@@ -1317,7 +1700,7 @@ Expected: PASS, 10 tests.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add README.md docker-compose.yml .env.example ui/src/components/Footer.tsx tests/test_repo_closeout.py
+git add README.md docker-compose.yml .env.example ledger_sense/web/components/Footer.tsx tests/test_repo_closeout.py
 git commit -m "chore: close-out — scope statement, non-affiliation notice, compose profiles"
 ```
 
@@ -1338,7 +1721,29 @@ git commit -m "chore: close-out — scope statement, non-affiliation notice, com
 - [ ] Demo runs in under sixty seconds, catches three planted errors, reports its misses
 - [ ] `axe-core` gate from Task 33 still green with the three new screens added
 - [ ] `uv run mypy --strict ledger_sense` green
-- [ ] `uv run python scripts/licence_audit.py` green
+- [ ] `uv run python scripts/licence_audit.py --check-lockfile uv.lock` green — and it **reads the real
+      environment**, which as originally written it did not (F-33: the module had no `__main__`, so the job
+      exited 0 unconditionally)
+
+**Audit regressions that must be green (`2026-08-29-REVISIONS.md`):**
+
+- [ ] `test_two_hundred_labels_cannot_support_the_target_accuracy` and
+      `test_no_min_labels_constant_survives_anywhere_in_the_module` — **F-47.** The phase built to refuse
+      unearned thresholds was emitting one, from a constant traced to nothing
+- [ ] `test_the_threshold_is_derived_on_held_out_data` and `test_a_curve_fitted_on_noise_yields_no_threshold` —
+      F-48
+- [ ] `test_a_drifted_field_has_its_threshold_withdrawn_automatically` — **F-49.** Without the hold-back sample
+      the curve freezes on the evidence that authorised it and drift is invisible
+- [ ] `test_every_claim_carries_a_match_quality_score` (Phase 2) green — **F-46**, or this phase has no input
+      at all and DoD 4 is machinery with nothing feeding it
+- [ ] `test_the_refusal_says_why_in_words` — a greyed meter with no explanation is what this programme exists
+      to correct
+- [ ] `test_the_same_guard_covers_extract_where_a_floor_was_hiding` — F-24
+- [ ] `test_the_repo_contains_no_form_artifact` passes **against `scripts/aia_guard.py`** — F-56, where the
+      close-out test contradicted Task 12's own code
+- [ ] One notice string, imported from `ledger_sense/notice.py` — F-55
+- [ ] `docs/methodology.md` uses **one** heading schema, opened in week 5 — F-57
+- [ ] Every screen under `ledger_sense/web/` — F-58, two frontend trees for one application
 
 ---
 
@@ -1346,19 +1751,26 @@ git commit -m "chore: close-out — scope statement, non-affiliation notice, com
 
 Fill this in at the end of week 12 with what is actually true, not what was planned.
 
+Numbered as brief `02` §12 numbers them, so the two documents can be read side by side.
+
 | # | Definition of Done item | Satisfied by | Expected state at week 12 |
 |---|---|---|---|
-| 1 | Deterministic extraction with per-field provenance | Tasks 14–19 | Met |
-| 2 | Degraded-mode behaviour proven on scans | Tasks 20–21 | Met |
-| 3 | Rulebook with sourced conventions | Tasks 22–27 | Met — **sourcing is only as good as the confirmations entered in `rules/sources.py`** |
-| 4 | Confidence routing, calibrated | Tasks 40–42 | Met, at `calibrated:synthetic`. **Nothing auto-posts.** |
-| 5 | Keyboard-only review, zero mouse events | Task 30 | Met |
-| 6 | QBO sandbox writeback, idempotent, reversible | Tasks 34–39 | Met, sandbox only |
-| 7 | Sixty-second demo | Task 47 | Met |
-| 8 | Accessibility gate | Task 33 | Met |
-| 9 | `docs/methodology.md` | Task 46 | Met |
-| 10 | Repository someone else can run | Task 48 | Met |
-| 11 | Ten conversations with construction accountants | half a day per week from week 5 | **Unknown — this is the one no amount of code satisfies** |
+| 1 | Baseline study, print-ready, stated method and interval | Tasks 10–11, 13b | Met — and the interval now states what it does **not** cover (F-53) |
+| 2 | Deterministic extraction end to end, no model | Tasks 14–21 | Met, **across five layout variants**, not only our own (F-14) |
+| 3 | Every validation rule, tripping fixture and clean control | Tasks 22–27 | Met — **sourcing is only as good as the confirmations entered in `rules/sources.py`**, and `confirmed_at` must be a real date |
+| 4 | Confidence routing live, calibration state visible, thresholds from a curve | Tasks 40–42 | Met, at `calibrated:synthetic`. **Nothing auto-posts.** The threshold is now derived from a lower bound on held-out data, not read off a self-fitted curve (F-47, F-48) |
+| 5 | Fifty exceptions cleared keyboard-only | Task 30 | Met |
+| 6 | QBO sandbox writeback: idempotency, closed-period refusal, reversal | Tasks 34–39 | Met, sandbox only — and reversal now leaves a ledger a second write can use (F-39) |
+| 7 | Synthetic corpus generator; the demo runs on it | Tasks 12, 47 | Met — required implementing the two error injectors that returned the document unchanged (F-62) |
+| 8 | Boundary enforcement proven | Task 13 | Met **if `bok-core` shipped**; otherwise the upload path is deferred with it (F-60) |
+| 9 | `docs/methodology.md` — baseline method, calibration basis, straight-through rate with misses | Tasks 11, 46 | Met, one heading schema, written incrementally (F-57) |
+| 10 | Non-affiliation notice present; no form artifacts | Tasks 12, 48 | Met, from one imported constant (F-55, F-56) |
+| 11 | **First paying client, or a signed design-partner agreement with a document corpus** | half a day per week from week 5 | **Unknown — the one no amount of code satisfies** |
+
+**Not in the original table, and now part of close-out:** authentication and tenancy on every route (Phase 0 P2),
+resource caps on document parsing (P3), encryption at rest and a retention policy that actually deletes (P5),
+and the `gitleaks` / `pip-audit` / SBOM gates the hard constraints already required (P1). None of these had an
+implementing task; all four are conditions of accepting a client's first document.
 
 ### On DoD 11
 
