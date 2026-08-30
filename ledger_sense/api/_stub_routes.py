@@ -11,9 +11,9 @@ resource up and hands its tenant_id to owned().
 
 So each of the six prefixes gets a trivial placeholder, mounted through
 register() like everything else, and `stub_resources` holds the bare
-(id, tenant_id) rows the two ownership-checked handlers read. Documents,
-exceptions and their real tables belong to the extraction and review-queue
-phases.
+(id, tenant_id, sensitivity) rows the three ownership-checked handlers read.
+Documents, exceptions and their real tables belong to the extraction and
+review-queue phases.
 
 **Replace, do not add alongside**: when the real /api/review router lands,
 delete this file's review entries — and delete the file outright once the last
@@ -39,6 +39,12 @@ stub_resources = sa.Table(
     STUB_METADATA,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("tenant_id", sa.Text, nullable=False),
+    # Nullable, and null for a row seeded by an ownership fixture that says
+    # nothing about provenance. api/fixtures.py writes "SYNTHETIC" here so the
+    # demo profile can prove, through the API rather than by assertion, that
+    # nothing it serves is a client document. The real column belongs to the
+    # documents table the extraction phase brings; this one dies with the file.
+    sa.Column("sensitivity", sa.Text, nullable=True),
     sa.Index("ix_stub_resources_tenant_id_id", "tenant_id", "id"),
 )
 
@@ -54,12 +60,17 @@ def seed_resource(tenant_id: str) -> str:
     return resource_id
 
 
-def _owner_of(resource_id: str) -> str | None:
+def _row_of(resource_id: str) -> sa.Row[tuple[str, str | None]] | None:
     with app_engine().connect() as conn:
         return conn.execute(
-            sa.select(stub_resources.c.tenant_id)
+            sa.select(stub_resources.c.tenant_id, stub_resources.c.sensitivity)
             .where(stub_resources.c.id == resource_id)
-        ).scalar_one_or_none()
+        ).one_or_none()
+
+
+def _owner_of(resource_id: str) -> str | None:
+    row = _row_of(resource_id)
+    return None if row is None else str(row.tenant_id)
 
 
 def _index() -> dict[str, bool]:
@@ -82,6 +93,22 @@ def _accept_exception(exc_id: str, session: CurrentSession) -> dict[str, str]:
     return {"id": exc_id, "status": "accepted"}
 
 
+def _read_inbox_document(doc_id: str, session: CurrentSession) -> dict[str, str | None]:
+    """Same ownership contract as _read_document, plus the provenance label.
+
+    Guarded exactly like every other stub route — register() applies
+    require_session, owned() answers 404 for someone else's row. The demo
+    seeder gets in here on the session its own response set, not on an
+    exemption; see api/fixtures.py.
+    """
+    row = _row_of(doc_id)
+    # owned() has already raised 404 by the time row is None; the re-test is
+    # for the type checker, not a second code path.
+    owned(session, None if row is None else str(row.tenant_id))
+    label = None if row is None else row.sensitivity
+    return {"id": doc_id, "sensitivity": None if label is None else str(label)}
+
+
 def stub_routers() -> list[APIRouter]:
     routers = []
     for prefix in PREFIXES:
@@ -89,6 +116,8 @@ def stub_routers() -> list[APIRouter]:
         router.add_api_route("/", _index, methods=["GET"])
         if prefix == "/api/reconciliation":
             router.add_api_route("/{doc_id}", _read_document, methods=["GET"])
+        if prefix == "/api/inbox":
+            router.add_api_route("/{doc_id}", _read_inbox_document, methods=["GET"])
         if prefix == "/api/review":
             router.add_api_route("/exceptions/{exc_id}/accept", _accept_exception,
                                  methods=["POST"])

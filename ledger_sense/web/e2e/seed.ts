@@ -1,0 +1,37 @@
+import type { Page } from '@playwright/test'
+
+// The API is a separate origin from the app under test, so it is not
+// baseURL-relative and has to be named. Same default as playwright.config.ts's
+// webServer brings up.
+const API_URL = process.env.PLAYWRIGHT_API_URL ?? 'http://localhost:8000'
+
+/**
+ * Mint a synthetic document and its exceptions, and leave the page logged in
+ * as the throwaway tenant that owns them.
+ *
+ * Call it through `page.request`, not a bare APIRequestContext: page.request
+ * shares cookie storage with the page's browser context, so the session cookie
+ * the seed response sets is the session the very next `page.goto` sends. That
+ * is the whole reason the seed cookie is not marked Secure — over http://
+ * localhost a Secure cookie is discarded by the client and the navigation that
+ * follows is anonymous. ledger_sense/api/fixtures.py's module docstring states
+ * the scope of that relaxation; nothing here is exempt from require_session.
+ */
+export async function seedDocument(
+  page: Page,
+  docId: string,
+  exceptions: number,
+): Promise<string> {
+  const response = await page.request.post(`${API_URL}/api/fixtures/seed`, {
+    data: { doc_id: docId, exceptions },
+  })
+  if (response.status() !== 201) {
+    throw new Error(
+      `seed failed (${response.status()}): ${await response.text()}\n` +
+        'A 404 here means the API is not running under LEDGER_SENSE_PROFILE=demo — ' +
+        'refuse to seed rather than pointing this suite at a client deployment.',
+    )
+  }
+  const body = await response.json()
+  return body.doc_id as string
+}
