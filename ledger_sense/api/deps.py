@@ -37,8 +37,10 @@ def register(app: FastAPI, router: APIRouter) -> None:
     table stops being walkable, and a walkable route table is the entire
     mechanism behind "no route without a session" — the audit test would go
     on passing with every route hidden from it. Verified: with
-    include_router, test_every_api_route_requires_a_session passes while
-    anonymous requests reach unguarded handlers.
+    include_router, test_every_api_route_requires_a_session passes over an
+    empty walk. Live requests stay guarded either way — FastAPI still
+    applies the router's dependencies at match time — it is only the
+    app.routes introspection that goes blind.
 
     test_the_audit_walk_covers_every_served_route pins that down from the
     other side, comparing the walk against the OpenAPI surface, so a future
