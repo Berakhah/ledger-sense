@@ -26,12 +26,26 @@ from ledger_sense.store.session import app_engine
 
 metadata = sa.MetaData()
 
+# The retention term a tenant row carries until onboarding transcribes the one
+# in their signed data agreement. It is a backstop, not a policy: without it a
+# tenant created before that step accumulates documents forever, which is the
+# failure `00` B7 exists to prevent. Erring short is the safer direction — we
+# hold copies, the client holds the originals — so over-retention (the
+# compliance breach) cannot happen by omission. Mirrored as the server default
+# in 0002_retention; changing it changes new rows only.
+DEFAULT_RETENTION_DAYS = 365
+
 tenants = sa.Table(
     "tenants",
     metadata,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    # How long we may hold this tenant's documents — a term in their signed
+    # data agreement, transcribed at onboarding, read by store/retention.py.
+    # Added by 0002_retention; see that migration for why it has a default.
+    sa.Column("retention_days", sa.Integer, nullable=False,
+              server_default=str(DEFAULT_RETENTION_DAYS)),
 )
 
 users = sa.Table(

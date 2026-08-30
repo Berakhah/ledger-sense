@@ -11,6 +11,10 @@ Email the maintainer at 77killuazoldic@gmail.com with a description, steps
 to reproduce, and impact. Do not open a public issue for a suspected
 vulnerability. We aim to acknowledge within 5 business days.
 
+`docs/security.md` is the longer engineering account behind this policy: the
+threat model, what data we hold, how documents are encrypted at rest, and the
+retention and deletion procedure.
+
 ## Scope highlights
 
 - The `CLIENT_CONFIDENTIAL` → free-tier-model boundary (see `CLAUDE.md`,
