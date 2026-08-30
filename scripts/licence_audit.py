@@ -66,13 +66,13 @@ def _spdx_denied(spdx: str) -> bool:
     """
     expression = spdx.replace("(", " ").replace(")", " ")
     if " OR " in expression.upper():
-        branches = (re.split(r"\s+WITH\s+", part, flags=re.I)[0]
-                    for part in re.split(r"\s+OR\s+", expression, flags=re.I))
+        branches = (re.split(r"\s+WITH\s+", part, flags=re.IGNORECASE)[0]
+                    for part in re.split(r"\s+OR\s+", expression, flags=re.IGNORECASE))
         return not any(not _atom_denied(b, allow_carveout=False) for b in branches)
     if " AND " in expression.upper():
         return any(_spdx_denied(part)
-                   for part in re.split(r"\s+AND\s+", expression, flags=re.I))
-    return _atom_denied(re.split(r"\s+WITH\s+", expression, flags=re.I)[0])
+                   for part in re.split(r"\s+AND\s+", expression, flags=re.IGNORECASE))
+    return _atom_denied(re.split(r"\s+WITH\s+", expression, flags=re.IGNORECASE)[0])
 
 
 def installed_packages() -> list[PackageInfo]:
