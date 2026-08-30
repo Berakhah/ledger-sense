@@ -10,9 +10,10 @@ connection or engine from here rather than building one itself.
 Connection parameters come from the environment, matching the POSTGRES_*
 variables docker-compose.yml already defines (see .env.example), so the same
 factory works unchanged under either the `client` or `demo` compose profile.
-No table/session model exists yet — Task P2 adds the first migration and the
-ORM metadata it needs; this module only has to hand out a working connection
-and engine for that to build on.
+
+engine() builds a fresh Engine per call, which is right for Alembic's
+one-shot use and wrong for a request path (a new pool per request leaks
+connections). app_engine() is the process-wide one every store shares.
 """
 
 import os
@@ -81,3 +82,35 @@ def engine() -> Engine:
         database=p["dbname"],
     )
     return create_engine(url, connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS})
+
+
+_app_engine: Engine | None = None
+
+
+def app_engine() -> Engine:
+    """The one Engine the running application (and its stores) share.
+
+    LEDGER_SENSE_DB_URL, when set, points it at a single SQLAlchemy URL
+    instead of the POSTGRES_* parameters — how the test suite (and a laptop
+    with no Postgres) runs the same code against a SQLite file. It holds a
+    URL, never a bare password: nothing here belongs in the repo either way.
+    """
+    global _app_engine
+    if _app_engine is None:
+        override = os.environ.get("LEDGER_SENSE_DB_URL")
+        # ponytail: a SQLite override gets SQLAlchemy's own connection
+        # handling, not sqlite.py's WAL + busy_timeout pragmas, so concurrent
+        # writers can hit "database is locked". Fine for a test suite and a
+        # single-user laptop; a deployment runs Postgres. Wire the pragmas in
+        # via a connect event if SQLite ever carries real concurrency.
+        _app_engine = create_engine(override) if override else engine()
+    return _app_engine
+
+
+def reset_app_engine() -> None:
+    """Drop the cached engine (disposing its pool). For tests that repoint
+    LEDGER_SENSE_DB_URL; the application never calls this."""
+    global _app_engine
+    if _app_engine is not None:
+        _app_engine.dispose()
+        _app_engine = None
