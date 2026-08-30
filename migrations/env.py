@@ -5,22 +5,29 @@ Postgres connection factory (F-19/G-3) instead of alembic.ini carrying its
 own hardcoded sqlalchemy.url (and, with it, a password checked into the
 repo).
 
-target_metadata is None: Task P2 adds the first migration and the ORM
-metadata it needs. Nothing exists yet to autogenerate against.
+Uses app_engine() rather than engine() so LEDGER_SENSE_DB_URL repoints
+migrations exactly as it repoints the application — which is what lets the
+suite apply 0001_tenancy to a SQLite file and assert the schema the running
+code queries is the schema the migration builds.
+
+target_metadata is the auth schema; later phases extend it with their own
+tables (each carrying tenant_id) so `alembic revision --autogenerate` has
+something to diff against.
 """
 
 from logging.config import fileConfig
 
 from alembic import context
 
-from ledger_sense.store.session import engine as ledger_sense_engine
+from ledger_sense.auth.models import metadata as auth_metadata
+from ledger_sense.store.session import app_engine as ledger_sense_engine
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = None
+target_metadata = auth_metadata
 
 
 def run_migrations_offline() -> None:
