@@ -20,6 +20,11 @@ from logging.config import fileConfig
 from alembic import context
 
 from ledger_sense.auth.models import metadata as auth_metadata
+
+# Registers documents/claims/retention_audit_log on that same MetaData. An
+# import purely for its side effect, and load-bearing: without it autogenerate
+# would diff against a schema missing three tables and propose dropping them.
+from ledger_sense.store import retention  # noqa: F401
 from ledger_sense.store.session import app_engine as ledger_sense_engine
 
 config = context.config
