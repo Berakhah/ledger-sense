@@ -12,6 +12,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "fastapi>=0.141.1",
     "psycopg[binary]>=3.3.4",
+    "pypdfium2>=5.13.0",
     "sqlalchemy>=2.0.52",
 ]
 
@@ -42,3 +43,8 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[[tool.mypy.overrides]]
+# pypdfium2 ships no py.typed marker / stubs.
+module = "pypdfium2.*"
+ignore_missing_imports = true
