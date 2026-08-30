@@ -22,6 +22,30 @@ profile is for a design partner's real documents (`CLIENT_CONFIDENTIAL`); its
 Postgres is always the container in this compose file, never a hosted
 service — **your documents never leave your infrastructure**.
 
+Under `demo`, and only under `demo`, the API mounts `POST /api/fixtures/seed`
+so the browser suite can mint the synthetic documents it navigates to. Under
+`client` that route does not exist — compose runs a different API service
+(`app-demo` vs `app`) rather than flipping an environment variable, so which
+one you are running is a property of what started, not of what you remembered
+to export.
+
+## Frontend
+
+The Next.js app lives in `ledger_sense/web` and is driven from one node
+project at the repo root — one `package.json`, one lockfile.
+
+```bash
+npm install
+npm run dev     # http://localhost:3000, expects the API on :8000
+npm test        # vitest — unit and component
+npm run test:e2e  # playwright; brings up the compose demo profile itself
+```
+
+`npm run dev`/`npm run build` first copy the `pdf.js` worker out of the pinned
+`pdfjs-dist` into `public/`. No CDN, for the same reason fonts are self-hosted:
+the demo has to run offline, and a request for the worker that renders a pay
+application tells someone else's server which document is being read.
+
 ## Data handling
 
 - `CLIENT_CONFIDENTIAL` documents never reach a free-tier or third-party

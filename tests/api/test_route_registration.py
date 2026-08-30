@@ -11,9 +11,8 @@ walkable; these tests are what stop that from silently regressing.
 
 from fastapi.routing import APIRoute
 
+from ledger_sense.api.app import UNGUARDED_PREFIXES as UNGUARDED
 from ledger_sense.api.app import app
-
-UNGUARDED = ("/api/health", "/api/auth")
 
 
 def _walked() -> set[str]:

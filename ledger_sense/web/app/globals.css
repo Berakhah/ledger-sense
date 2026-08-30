@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/* Design tokens — 00 §5.2.
+ *
+ * The literals shared with TypeScript are defined in lib/tokens.ts and
+ * restated here because CSS cannot import a module. lib/tokens.css.test.ts
+ * reads this file and fails if a shared value drifts from its counterpart, so
+ * "two copies" does not become "two truths".
+ *
+ * No @font-face pointing at a CDN and no external stylesheet import: the demo
+ * has to run offline and a font request is a request that says who is reading
+ * what, to someone else's server. Self-host or use the system stack. */
+
+@theme {
+  /* The one accent. It marks an accepted field's rule in the review queue and
+     nothing else, so seeing it on screen means one thing. */
+  --color-accent: oklch(0.58 0.11 158);
+
+  --color-ink: oklch(0.22 0.01 250);
+  --color-ink-muted: oklch(0.52 0.01 250);
+  --color-paper: oklch(0.99 0.002 250);
+  --color-rule: oklch(0.90 0.004 250);
+
+  /* An exception's own state. Deliberately not the accent: the accent means
+     "accepted", and one colour must not carry two meanings. */
+  --color-flag: oklch(0.62 0.15 45);
+
+  /* Uncalibrated confidence renders grey and labelled, never on this ramp —
+     see CLAUDE.md, "Confidence routing". The ramp exists for the day a
+     reliability curve does. */
+  --color-uncalibrated: oklch(0.72 0 0);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono",
+    "Roboto Mono", Menlo, Consolas, monospace;
+}
+
+/* Three densities — 00 §5.2. The review queue's density control steps through
+   them in this order; `compact` is what the app boots in (see app/layout.tsx,
+   which stamps data-density from tokens.defaultDensity). */
+:root,
+[data-density="compact"] {
+  --row-height: 36px;
+  --row-pad-x: 0.75rem;
+}
+
+[data-density="comfortable"] {
+  --row-height: 44px;
+  --row-pad-x: 1rem;
+}
+
+[data-density="dense"] {
+  --row-height: 28px;
+  --row-pad-x: 0.5rem;
+}
+
+/* Light is the primary mode: these screens are read next to paper. Dark is
+   supported, not the design target. */
+:root {
+  color-scheme: light;
+}
+
+[data-scheme="dark"] {
+  color-scheme: dark;
+  --color-ink: oklch(0.93 0.01 250);
+  --color-ink-muted: oklch(0.70 0.01 250);
+  --color-paper: oklch(0.19 0.01 250);
+  --color-rule: oklch(0.32 0.006 250);
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Every money and quantity cell. Proportional digits put the decimal points
+   out of line and a G703 column stops being addable by eye; slashed-zero
+   keeps 0 and O apart in a field a human is checking against a scan. Kept
+   character-for-character identical to tokens.numeric.fontVariantNumeric. */
+.numeric {
+  font-variant-numeric: tabular-nums slashed-zero lining-nums;
+  font-family: var(--font-mono);
+}
+
+/* Never rely on colour alone, and never remove the ring: WCAG 2.2 AA plus a
+   review queue whose whole point is being driven from the keyboard. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

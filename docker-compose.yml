@@ -9,49 +9,84 @@
 #
 # `docker compose --profile demo up` or `docker compose --profile client up`.
 
-services:
-  app:
-    build:
-      context: .
-    profiles: ["client", "demo"]
-    # 00 §8: this service parses hostile, untrusted PDFs.
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /app/scratch
-    mem_limit: 1g          # judgment call — not pinned by the brief
-    cpus: "1.0"             # judgment call — not pinned by the brief
-    security_opt:
-      - no-new-privileges:true
-    env_file:
-      - .env
-    environment:
-      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
-      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-      POSTGRES_USER: ${POSTGRES_USER:-ledger_sense}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      POSTGRES_DB: ${POSTGRES_DB:-ledger_sense}
-    ports:
-      - "8000:8000"
-    # Only one of these two exists per profile; `required: false` lets app
-    # depend on "whichever Postgres this profile started" without compose
-    # erroring on the other, out-of-profile service name.
-    depends_on:
-      postgres:
-        condition: service_started
-        required: false
-      postgres-demo:
-        condition: service_started
-        required: false
+# Everything the API service is regardless of profile. The two services below
+# differ in exactly one thing — LEDGER_SENSE_PROFILE — so it is worth seeing
+# that difference on its own rather than diffing two copies of this block.
+x-app: &app
+  build:
+    context: .
+  # 00 §8: this service parses hostile, untrusted PDFs.
+  read_only: true
+  tmpfs:
+    - /tmp
+    - /app/scratch
+  mem_limit: 1g          # judgment call — not pinned by the brief
+  cpus: "1.0"             # judgment call — not pinned by the brief
+  security_opt:
+    - no-new-privileges:true
+  env_file:
+    - .env
+  ports:
+    - "8000:8000"
+  # Only one of these two exists per profile; `required: false` lets app
+  # depend on "whichever Postgres this profile started" without compose
+  # erroring on the other, out-of-profile service name.
+  depends_on:
+    postgres:
+      condition: service_started
+      required: false
+    postgres-demo:
+      condition: service_started
+      required: false
 
-  # web/ (Next.js) is scaffolded by a later task; the service is declared
-  # now so both profiles are complete end to end from `docker compose up`.
+x-postgres-env: &postgres-env
+  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_USER: ${POSTGRES_USER:-ledger_sense}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  POSTGRES_DB: ${POSTGRES_DB:-ledger_sense}
+
+services:
+  # Two API services rather than one parameterised by an env var, for the same
+  # reason there are two Postgres services: which profile you are running must
+  # be a property of what compose started, not of what someone remembered to
+  # export. LEDGER_SENSE_PROFILE=demo is what mounts POST /api/fixtures/seed —
+  # a route that mints documents — so "I meant to run the demo" must not be a
+  # way to get it in front of real ones.
+  app:
+    <<: *app
+    profiles: ["client"]
+    environment:
+      <<: *postgres-env
+      LEDGER_SENSE_PROFILE: client
+
+  app-demo:
+    <<: *app
+    # Same hostname as `app`, so `web`'s API URL resolves under either profile;
+    # only one of the two is ever on the network at once.
+    hostname: app
+    profiles: ["demo"]
+    environment:
+      <<: *postgres-env
+      LEDGER_SENSE_PROFILE: demo
+
+  # The Next.js app. Root build context on purpose: one package.json and one
+  # lockfile serve the whole node side, and the app directory is passed to
+  # next as its project directory.
   web:
     build:
-      context: ./web
+      context: .
+      dockerfile: ledger_sense/web/Dockerfile
     profiles: ["client", "demo"]
+    # Same `required: false` pattern as app's own depends_on: only one of the
+    # two API services exists per profile.
     depends_on:
-      - app
+      app:
+        condition: service_started
+        required: false
+      app-demo:
+        condition: service_started
+        required: false
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
