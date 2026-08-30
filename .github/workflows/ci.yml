@@ -23,6 +23,36 @@ jobs:
       - run: uv run python -m scripts.licence_audit --check-lockfile uv.lock
       - run: uv run pytest tests/test_licence_audit.py -v
 
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ledger_sense
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: ledger_sense
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ledger_sense"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # tests/store/test_migrations.py runs the SQLite path unconditionally
+      # and, when this is set, additionally applies the same migration to
+      # this service container — the one place in CI that proves the schema
+      # alembic builds is the schema Postgres actually accepts, not just
+      # SQLite plus an offline DDL render.
+      LEDGER_SENSE_LIVE_POSTGRES_URL: postgresql+psycopg://ledger_sense:changeme@localhost:5432/ledger_sense
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - run: uv run ruff check .
+      - run: uv run mypy --strict .
+      - run: uv run pytest
+
   secrets:
     runs-on: ubuntu-latest
     steps:

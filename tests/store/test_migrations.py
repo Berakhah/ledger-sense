@@ -1,18 +1,21 @@
 """The migration is the schema a deployment actually gets; auth/models.py's
-MetaData is the schema the code queries. Nothing forces those to agree, and
-CI has no Postgres to notice when they stop — so this applies 0001_tenancy to
-a SQLite file (through LEDGER_SENSE_DB_URL, the same override the API tests
-use) and diffs the result against the Table definitions.
+MetaData is the schema the code queries. Nothing forces those to agree, so
+this applies 0001_tenancy to a database (through LEDGER_SENSE_DB_URL, the same
+override the API tests use) and diffs the result against the Table
+definitions.
 
-Docker's daemon is not running on this machine, so the migration has not been
-applied to a live Postgres. Nothing in it is dialect-specific; that is asserted
-here by the schema comparison and separately by rendering the Postgres DDL
-offline, but "it ran against Postgres" remains untested until an environment
-with a database exists.
+Always run against SQLite. When LEDGER_SENSE_LIVE_POSTGRES_URL is set (the
+`backend` CI job's Postgres service container does this; nothing sets it
+locally unless a developer opts in) the same assertions run again against
+that live Postgres — the one place anything proves the schema alembic
+builds is the schema Postgres actually accepts, not just SQLite plus an
+offline DDL render.
 """
 
+import os
 import pathlib
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -29,9 +32,7 @@ def _alembic_config() -> Config:
     return config
 
 
-def test_the_migration_builds_the_schema_the_code_queries(tmp_path, monkeypatch):
-    database = (tmp_path / "migrated.db").as_posix()
-    monkeypatch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{database}")
+def _assert_migration_builds_the_schema_the_code_queries() -> None:
     store_session.reset_app_engine()
     try:
         config = _alembic_config()
@@ -52,7 +53,26 @@ def test_the_migration_builds_the_schema_the_code_queries(tmp_path, monkeypatch)
         store_session.reset_app_engine()
 
 
-def test_no_table_escapes_the_tenancy_rule():
+def test_the_migration_builds_the_schema_the_code_queries(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = (tmp_path / "migrated.db").as_posix()
+    monkeypatch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{database}")
+    _assert_migration_builds_the_schema_the_code_queries()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LEDGER_SENSE_LIVE_POSTGRES_URL"),
+    reason="set LEDGER_SENSE_LIVE_POSTGRES_URL to validate against a live Postgres",
+)
+def test_the_migration_builds_the_schema_the_code_queries_on_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEDGER_SENSE_DB_URL", os.environ["LEDGER_SENSE_LIVE_POSTGRES_URL"])
+    _assert_migration_builds_the_schema_the_code_queries()
+
+
+def test_no_table_escapes_the_tenancy_rule() -> None:
     """The standing constraint every later phase inherits: a table without
     tenant_id cannot be ownership-checked, and owned() is the whole boundary."""
     for name, table in metadata.tables.items():

@@ -26,6 +26,7 @@ dev = [
     "pytest>=8.0",
     "pyyaml>=6.0.3",
     "ruff>=0.16.5",
+    "types-pyyaml>=6.0.12",
 ]
 
 [tool.uv]
@@ -44,6 +45,11 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# tests/ has no __init__.py (pytest doesn't need one); without this, mypy
+# names every file solely by its basename and tests/store/conftest.py
+# collides with tests/api/conftest.py under the bare module name "conftest".
+explicit_package_bases = true
+mypy_path = "."
 
 [[tool.mypy.overrides]]
 # pypdfium2 ships no py.typed marker / stubs.

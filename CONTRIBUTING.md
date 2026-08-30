@@ -26,8 +26,11 @@ uv run pytest
 pre-commit run --all-files
 ```
 
-CI additionally runs a licence audit, `gitleaks`, `pip-audit`, `npm audit`,
-and produces an SBOM. All must pass.
+CI additionally runs the full backend suite (`ruff`, `mypy --strict`,
+`pytest` — the last against a real Postgres service container, so
+`migrations/versions/*.py` is validated against Postgres on every push, not
+just SQLite), the frontend suite, a licence audit, `gitleaks`, `pip-audit`,
+`npm audit`, and produces an SBOM. All must pass.
 
 ## Licensing
 
