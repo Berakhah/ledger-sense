@@ -8,7 +8,7 @@ from ledger_sense.notice import NON_AFFILIATION_NOTICE
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def test_the_notice_has_exactly_one_definition():
+def test_the_notice_has_exactly_one_definition() -> None:
     """F-55: two documents each hardcoded their own wording; both asserted it."""
     hits = []
     for path in ROOT.rglob("*.py"):
@@ -21,13 +21,13 @@ def test_the_notice_has_exactly_one_definition():
     assert hits == [], f"notice text duplicated outside notice.py: {hits}"
 
 
-def test_compose_defines_both_client_and_demo_profiles():
+def test_compose_defines_both_client_and_demo_profiles() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     profiles = {p for svc in compose["services"].values() for p in svc.get("profiles", [])}
     assert {"client", "demo"} <= profiles
 
 
-def test_the_client_profile_uses_no_third_party_processor():
+def test_the_client_profile_uses_no_third_party_processor() -> None:
     """Spec §2.1 Q6: CLIENT = compose-only Postgres, no third-party processor ever."""
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     for name, svc in compose["services"].items():
@@ -36,7 +36,7 @@ def test_the_client_profile_uses_no_third_party_processor():
             assert not any(h in image for h in ("supabase", "planetscale", "neon")), name
 
 
-def test_env_example_contains_no_real_secret():
+def test_env_example_contains_no_real_secret() -> None:
     for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
         if "=" not in line or line.startswith("#"):
             continue
@@ -44,32 +44,32 @@ def test_env_example_contains_no_real_secret():
         assert value.strip() in {"", "changeme"} or value.strip().startswith("<"), line
 
 
-def test_gitleaks_is_wired_into_pre_commit_and_ci():
+def test_gitleaks_is_wired_into_pre_commit_and_ci() -> None:
     """Hard constraint 00 §3.4. Named in the Global Constraints, implemented nowhere."""
     assert "gitleaks" in (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
     assert "gitleaks" in (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
 
-def test_dependency_audit_and_sbom_jobs_exist():
+def test_dependency_audit_and_sbom_jobs_exist() -> None:
     """00 §8. pip-audit, npm audit, cyclonedx — none appeared in any task."""
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     for tool in ("pip-audit", "npm audit", "cyclonedx"):
         assert tool in ci, f"{tool} missing from CI"
 
 
-def test_gitleaks_scans_the_recorded_cassettes():
+def test_gitleaks_scans_the_recorded_cassettes() -> None:
     """F-28: VCR does not scrub response bodies, and that is where the token lands."""
     assert "tests/writeback/cassettes" in (
         ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
 
-def test_the_container_runs_as_a_non_root_user():
+def test_the_container_runs_as_a_non_root_user() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "USER " in dockerfile
     assert "USER root" not in "\n".join(dockerfile.splitlines()[-5:])
 
 
-def test_no_module_opens_a_database_connection_directly():
+def test_no_module_opens_a_database_connection_directly() -> None:
     """Rule 3. One connection factory; F-19 is what happens without it."""
     offenders = []
     for path in (ROOT / "ledger_sense").rglob("*.py"):
@@ -81,9 +81,9 @@ def test_no_module_opens_a_database_connection_directly():
     assert offenders == [], f"direct connection outside the factory: {offenders}"
 
 
-def test_the_licence_is_apache_2_0():
+def test_the_licence_is_apache_2_0() -> None:
     assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
 
 
-def test_the_readme_carries_the_notice_from_the_single_source():
+def test_the_readme_carries_the_notice_from_the_single_source() -> None:
     assert NON_AFFILIATION_NOTICE in (ROOT / "README.md").read_text(encoding="utf-8")

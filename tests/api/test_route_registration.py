@@ -21,7 +21,7 @@ def _walked() -> set[str]:
             if isinstance(route, APIRoute) and route.path.startswith("/api/")}
 
 
-def test_the_audit_walk_covers_every_served_route():
+def test_the_audit_walk_covers_every_served_route() -> None:
     """A route the walk cannot see is a route the audit cannot fail on.
 
     OpenAPI enumerates the whole served surface however routers were mounted,
@@ -32,13 +32,13 @@ def test_the_audit_walk_covers_every_served_route():
     assert served - _walked() == set(), "served but invisible to the session audit"
 
 
-def test_the_walk_is_not_empty():
+def test_the_walk_is_not_empty() -> None:
     """Belt and braces: openapi() and app.routes could both go empty together."""
     protected = {path for path in _walked() if not path.startswith(UNGUARDED)}
     assert len(protected) >= 6, protected
 
 
-def test_every_protected_route_carries_the_guard_in_its_dependencies():
+def test_every_protected_route_carries_the_guard_in_its_dependencies() -> None:
     """The same property the given audit asserts, stated positively."""
     for route in app.routes:
         if not isinstance(route, APIRoute):
