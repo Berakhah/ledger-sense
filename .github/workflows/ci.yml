@@ -32,6 +32,18 @@ jobs:
       # F-28: VCR scrubs request headers and bodies, never responses.
       - run: gitleaks detect --no-git --source tests/writeback/cassettes --redact
 
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: npm test
+      # `next build` typechecks the app as it compiles, so this is the type
+      # gate too — the frontend's equivalent of `mypy --strict`.
+      - run: npm run build
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:

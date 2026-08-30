@@ -1,11 +1,21 @@
 """The application object.
 
-Two routes live outside the session boundary and only two: GET /api/health,
-which a container orchestrator has to reach before anyone can log in, and
-POST /api/auth/login, which is how a session comes to exist. Everything else
-is mounted through deps.register(), which applies require_session — see
-tests/api/test_auth.py::test_every_api_route_requires_a_session, which walks
-the route table and fails on anything mounted another way.
+Three routes live outside the session boundary and only three, all of them
+mounted by hand in build_app() below so the whole exception list is one
+function you can read top to bottom:
+
+  GET  /api/health        — a container orchestrator has to reach it before
+                            anyone can log in.
+  POST /api/auth/login    — how a session comes to exist.
+  POST /api/fixtures/seed — mounted ONLY when LEDGER_SENSE_PROFILE == "demo";
+                            absent, not merely guarded, under every other
+                            value including unset. See api/fixtures.py.
+
+Everything else is mounted through deps.register(), which applies
+require_session — see tests/api/test_auth.py::test_every_api_route_requires_a_session,
+which walks the route table and fails on anything mounted another way. The
+three above are mounted with add_api_route rather than include_router so they
+stay visible to that walk instead of hiding from the audit that exempts them.
 """
 
 import threading
@@ -17,11 +27,20 @@ from pydantic import BaseModel
 
 from ledger_sense.api._stub_routes import stub_routers
 from ledger_sense.api.deps import register
+from ledger_sense.api.fixtures import SEED_PATH, demo_profile_enabled, seed
 from ledger_sense.auth.models import authenticate
 from ledger_sense.auth.session import SESSION_TTL, issue_session
 
 LOGIN_LIMIT = 10
 LOGIN_WINDOW_SECONDS = 60.0
+
+# The three exceptions named in the module docstring, as data, because two
+# separate audit suites assert against them (tests/api/test_auth.py and
+# tests/api/test_route_registration.py) and a third hand-written copy is how
+# F-55 happened. It lives here rather than in a test because it is this
+# module's claim about itself: adding a fourth entry is a change to the
+# session boundary and should read like one in the diff.
+UNGUARDED_PREFIXES = ("/api/health", "/api/auth", "/api/fixtures")
 
 # ponytail: in-process, per-worker. Two uvicorn workers means two counters and
 # an effective 20/minute; a shared counter (Redis, or a sessions-table row)
@@ -82,6 +101,13 @@ def build_app() -> FastAPI:
         # response has the session. Browser callers should ignore it and let
         # the cookie do the work.
         return {"token": token}
+
+    # Read at build time, not per request: whether this process is a demo
+    # cannot change under it, and a per-request read would let an env change
+    # open the hatch on a running client deployment.
+    if demo_profile_enabled():
+        app.add_api_route(SEED_PATH, seed, methods=["POST"], status_code=201,
+                          tags=["fixtures"])
 
     for router in stub_routers():
         register(app, router)
