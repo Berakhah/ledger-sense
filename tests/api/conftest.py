@@ -16,6 +16,7 @@ The real tables arrive with the phases that own them.
 import pathlib
 import uuid
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -84,10 +85,10 @@ class TenantClient:
         self.token = response.json()["token"]
 
     def get(self, path: str) -> Response:
-        return client.get(path, cookies={"session": self.token})
+        return cast(Response, client.get(path, cookies={"session": self.token}))
 
     def post(self, path: str) -> Response:
-        return client.post(path, cookies={"session": self.token})
+        return cast(Response, client.post(path, cookies={"session": self.token}))
 
     def create_document(self) -> str:
         return seed_resource(self.tenant_id)

@@ -3,6 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ledger_sense.api.app import UNGUARDED_PREFIXES, app
+from tests.api.conftest import TenantClient
 
 client = TestClient(app)
 
@@ -10,7 +11,7 @@ PROTECTED_PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
                       "/api/inbox", "/api/vendors", "/api/metrics")
 
 
-def test_every_api_route_requires_a_session():
+def test_every_api_route_requires_a_session() -> None:
     """The test that would have caught F-25 the day the first router landed."""
     unprotected = []
     for route in app.routes:
@@ -30,36 +31,42 @@ def test_every_api_route_requires_a_session():
 
 
 @pytest.mark.parametrize("prefix", PROTECTED_PREFIXES)
-def test_an_anonymous_request_is_refused(prefix):
+def test_an_anonymous_request_is_refused(prefix: str) -> None:
     assert client.get(f"{prefix}/").status_code == 401
 
 
-def test_a_document_from_another_tenant_is_not_found_rather_than_forbidden(two_tenants):
+def test_a_document_from_another_tenant_is_not_found_rather_than_forbidden(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
     """404, never 403. A 403 confirms the resource exists, which is the leak."""
     a, b = two_tenants
     doc_id = a.create_document()
     assert b.get(f"/api/reconciliation/{doc_id}").status_code == 404
 
 
-def test_the_owner_can_read_their_own_document(two_tenants):
+def test_the_owner_can_read_their_own_document(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
     a, _b = two_tenants
     assert a.get(f"/api/reconciliation/{a.create_document()}").status_code == 200
 
 
-def test_a_review_action_cannot_be_taken_across_tenants(two_tenants):
+def test_a_review_action_cannot_be_taken_across_tenants(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
     a, b = two_tenants
     exc_id = a.seed_exception()
     assert b.post(f"/api/review/exceptions/{exc_id}/accept").status_code == 404
 
 
-def test_the_profile_cache_cannot_be_opened_without_a_tenant():
+def test_the_profile_cache_cannot_be_opened_without_a_tenant() -> None:
     """F-18: geometry-only prevents data leakage, not influence."""
     from ledger_sense.extract.profiles import ProfileCache
     with pytest.raises(TypeError):
-        ProfileCache(db_path=":memory:")
+        ProfileCache(db_path=":memory:")  # type: ignore[call-arg]
 
 
-def test_a_session_expires():
+def test_a_session_expires() -> None:
     token = client.post("/api/auth/login",
                         json={"email": "a@example.test",
                               "password": "changeme-in-test"}).json()["token"]
@@ -68,7 +75,7 @@ def test_a_session_expires():
     assert client.get("/api/inbox/", cookies={"session": token}).status_code == 401
 
 
-def test_passwords_are_stored_as_argon2_hashes_not_plaintext():
+def test_passwords_are_stored_as_argon2_hashes_not_plaintext() -> None:
     from ledger_sense.auth.models import hash_password, verify_password
     digest = hash_password("correct horse battery staple")
     assert digest.startswith("$argon2")
@@ -76,14 +83,14 @@ def test_passwords_are_stored_as_argon2_hashes_not_plaintext():
     assert not verify_password("wrong", digest)
 
 
-def test_the_login_endpoint_is_rate_limited():
+def test_the_login_endpoint_is_rate_limited() -> None:
     codes = [client.post("/api/auth/login",
                          json={"email": "a@example.test", "password": "no"}).status_code
              for _ in range(25)]
     assert 429 in codes
 
 
-def test_the_session_cookie_is_httponly_samesite_strict_and_secure():
+def test_the_session_cookie_is_httponly_samesite_strict_and_secure() -> None:
     resp = client.post("/api/auth/login", json={"email": "a@example.test",
                                                 "password": "changeme-in-test"})
     header = resp.headers["set-cookie"].lower()
@@ -91,5 +98,5 @@ def test_the_session_cookie_is_httponly_samesite_strict_and_secure():
         assert flag in header, flag
 
 
-def test_health_is_the_only_unauthenticated_non_auth_route():
+def test_health_is_the_only_unauthenticated_non_auth_route() -> None:
     assert client.get("/api/health").status_code == 200
