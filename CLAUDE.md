@@ -1,7 +1,7 @@
 # Ledger Sense
 
 Vertical document intelligence with confidence routing, for construction progress billing.
-Weeks 5–12 · Accent: ledger green `oklch(0.58 0.11 158)` · Licence: Apache-2.0 (pending `00` §12 Q6)
+Weeks 5–12 · Accent: ledger green `oklch(0.58 0.11 158)` · Licence: Apache-2.0
 
 **Pitch:** *"I will measure what your current process actually costs you in week one, then automate the part that is safe to automate and show you the exceptions I caught that a human would have missed."*
 
