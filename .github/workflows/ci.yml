@@ -53,6 +53,15 @@ jobs:
       - run: uv run mypy --strict .
       - run: uv run pytest
 
+  no-float:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - run: uv run python -m scripts.check_no_float
+      - run: uv run mypy --strict ledger_sense
+
   secrets:
     runs-on: ubuntu-latest
     steps:

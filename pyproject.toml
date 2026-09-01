@@ -43,6 +43,12 @@ pythonpath = ["."]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint.per-file-ignores]
+# tests/test_no_floats.py Layer 3/4 bodies are copied verbatim from the plan
+# (Task 3): the import-alias, nested-if and broad-except style there is the
+# brief's exact test text, not this repo's normal style.
+"tests/test_no_floats.py" = ["PLR0402", "SIM102", "S110", "BLE001", "I001"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
@@ -56,3 +62,18 @@ mypy_path = "."
 # pypdfium2 ships no py.typed marker / stubs.
 module = "pypdfium2.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Task 4 creates ledger_sense/domain/models.py. Until then, Task 3's
+# whole-tree no-float tests import it deliberately (TDD red, by design —
+# see tests/test_no_floats.py) and must not break `mypy --strict .` before
+# Task 4 lands. Safe to drop once models.py exists.
+module = "ledger_sense.domain.models"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The no-float test bodies are copied verbatim from the plan (Task 3): they
+# lean on pytest's untyped tmp_path convention and are exercised, not typed,
+# by design. Everything else in the repo stays under strict def checking.
+module = "tests.test_no_floats"
+disallow_untyped_defs = false
