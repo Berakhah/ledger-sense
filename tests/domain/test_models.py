@@ -1,0 +1,59 @@
+from datetime import date
+from decimal import Decimal
+
+from ledger_sense.domain.models import (
+    ContinuationLine,
+    Contract,
+    PayApplication,
+    RetainageStep,
+)
+from ledger_sense.domain.money import RoundingPolicy, money
+
+
+def _contract() -> Contract:
+    return Contract(
+        id="C-1",
+        original_sum=money("100000.00"),
+        rounding=RoundingPolicy(money_places=2, percent_places=4),
+        retainage_rate=Decimal("0.10"),
+        retainage_steps=[RetainageStep(at_percent_complete=Decimal("0.50"),
+                                       new_rate=Decimal("0.05"))],
+        jurisdiction=None,
+    )
+
+
+def _empty_app(co: str = "0.00") -> PayApplication:
+    return PayApplication(
+        contract_id="C-1", application_no=1, period_to=date(2026, 8, 31),
+        lines=[], change_orders_net=money(co),
+        retainage_total=money("0.00"), previous_payments=money("0.00"),
+        total_completed_and_stored=money("0.00"),
+    )
+
+
+def test_contract_carries_its_own_rounding_and_retainage_terms() -> None:
+    c = _contract()
+    assert c.rounding.money_places == 2
+    assert c.retainage_rate == Decimal("0.10")
+    assert c.retainage_steps[0].new_rate == Decimal("0.05")
+
+
+def test_adjusted_contract_sum_is_original_plus_net_change_orders() -> None:
+    assert _empty_app(co="5000.00").adjusted_contract_sum(_contract()) == money("105000.00")
+
+
+def test_provenance_sidecar_defaults_empty_and_is_per_instance() -> None:
+    a = _empty_app()
+    b = _empty_app()
+    a.provenance["contract_sum"] = "claim-1"
+    assert b.provenance == {}
+
+
+def test_money_fields_serialise_as_strings_never_floats() -> None:
+    line = ContinuationLine(
+        item_no="1", description="Sitework", scheduled_value=money("1000.00"),
+        previous=money("0.00"), this_period=money("500.00"), stored=money("0.00"),
+        total_completed_and_stored=money("500.00"), retainage=money("50.00"),
+    )
+    dumped = line.model_dump_json().replace(" ", "")
+    assert '"scheduled_value":"1000.00"' in dumped
