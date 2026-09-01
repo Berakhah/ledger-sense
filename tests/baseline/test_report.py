@@ -1,3 +1,4 @@
+import html
 from datetime import date
 from decimal import Decimal
 
@@ -23,8 +24,15 @@ def test_report_never_shows_a_point_estimate_without_its_interval():
 
 
 def test_report_embeds_the_method_statement_verbatim():
+    """Code review (Task 13b fix round): method_statement() carries
+    sampling_frame — free text from an API caller — into this report, so
+    render_report() HTML-escapes it before embedding (an unescaped
+    "</pre><script>" in that field would otherwise execute). What lands in
+    the report is the escaped form, not the literal method_statement()
+    return value; "Student's" alone (the interval-method line's apostrophe)
+    is enough to make the two differ even for an injection-free study."""
     study = _study()
-    assert study.method_statement() in render_report(study)
+    assert html.escape(study.method_statement()) in render_report(study)
 
 
 def test_report_carries_a_print_stylesheet():
