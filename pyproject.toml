@@ -16,6 +16,7 @@ dependencies = [
     "psycopg[binary]>=3.3.4",
     "pypdfium2>=5.13.0",
     "sqlalchemy>=2.0.52",
+    "uvicorn>=0.52.4",
 ]
 
 # No [project.scripts]: no CLI. Dev entrypoint is `uv run python -m ledger_sense`.
