@@ -5,6 +5,7 @@ node_modules/
 .DS_Store
 # hypothesis example database (tests/property/, Task 9)
 .hypothesis/
+.coverage
 
 # Next.js build output.
 .next/
