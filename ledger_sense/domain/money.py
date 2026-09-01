@@ -41,5 +41,5 @@ def money(value: str | int | Decimal) -> Money:
 
 
 def quantize(value: Money, places: int) -> Money:
-    exponent = Decimal(1).scaleb(-places)
+    exponent = Decimal(10) ** -places
     return MONEY_CONTEXT.quantize(value, exponent)
