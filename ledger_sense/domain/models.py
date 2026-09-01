@@ -13,6 +13,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from ledger_sense.domain.money import Money, RoundingPolicy, money
 
 
+def _decimal_to_str(value: Decimal | None) -> str | None:
+    """Decimal must never round-trip through float. Serialise as a string.
+
+    Single shared implementation for every Money field serializer below: a
+    Money field is sometimes Optional (ContinuationLine.balance_to_finish),
+    and a serializer without the None guard turns a missing value into the
+    JSON string "None" instead of null. One function means that guard can't
+    silently be missing from one caller and present in another.
+    """
+    return str(value) if value is not None else None
+
+
 class _Base(BaseModel):
     # strict=True is LAYER 4 of the no-float rule (F-01). Without it Pydantic
     # accepts a JSON float into a Decimal field and coerces it, and every other
@@ -53,8 +65,7 @@ class ContinuationLine(_Base):
     @field_serializer("scheduled_value", "previous", "this_period", "stored",
                       "total_completed_and_stored", "retainage", "balance_to_finish")
     def _as_string(self, value: Decimal | None) -> str | None:
-        """Decimal must never round-trip through float. Serialise as a string."""
-        return str(value) if value is not None else None
+        return _decimal_to_str(value)
 
 
 class PayApplication(_Base):
@@ -73,8 +84,8 @@ class PayApplication(_Base):
 
     @field_serializer("change_orders_net", "retainage_total", "previous_payments",
                       "total_completed_and_stored")
-    def _as_string(self, value: Decimal) -> str:
-        return str(value)
+    def _as_string(self, value: Decimal | None) -> str | None:
+        return _decimal_to_str(value)
 
     def adjusted_contract_sum(self, contract: Contract) -> Money:
         return money(contract.original_sum + self.change_orders_net)

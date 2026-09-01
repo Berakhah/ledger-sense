@@ -57,3 +57,16 @@ def test_money_fields_serialise_as_strings_never_floats() -> None:
     )
     dumped = line.model_dump_json().replace(" ", "")
     assert '"scheduled_value":"1000.00"' in dumped
+
+
+def test_unset_optional_money_field_serialises_to_json_null_not_the_string_none() -> None:
+    """balance_to_finish is Money | None. A naive `str(value)` serializer turns
+    a missing value into the string "None" instead of JSON null (F-03 fix)."""
+    line = ContinuationLine(
+        item_no="1", description="Sitework", scheduled_value=money("1000.00"),
+        previous=money("0.00"), this_period=money("500.00"), stored=money("0.00"),
+        total_completed_and_stored=money("500.00"), retainage=money("50.00"),
+        balance_to_finish=None,
+    )
+    dumped = line.model_dump_json().replace(" ", "")
+    assert '"balance_to_finish":null' in dumped
