@@ -3,6 +3,8 @@ __pycache__/
 node_modules/
 .env
 .DS_Store
+# hypothesis example database (tests/property/, Task 9)
+.hypothesis/
 
 # Next.js build output.
 .next/
