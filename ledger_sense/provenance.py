@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -34,25 +35,43 @@ class HumanSource:
     reviewed_at: datetime
 
 
-T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
 
 
 @runtime_checkable
-class ClaimProtocol(Protocol[T]):
+class ClaimProtocol(Protocol[T_co]):
     """Structural protocol for a claim about a value.
 
     Allows bok_core's eventual concrete implementation to satisfy this
     structurally without inheritance.
     """
 
-    value: T
-    source: FileSource | HumanSource
-    method: Method
-    confidence: float | None
-    match_quality: float | None
-    observed_at: datetime
-    parents: list["ClaimProtocol[object]"]
-    caveat: str | None
+    @property
+    def value(self) -> T_co: ...
+
+    @property
+    def source(self) -> FileSource | HumanSource: ...
+
+    @property
+    def method(self) -> Method: ...
+
+    @property
+    def confidence(self) -> float | None: ...
+
+    @property
+    def match_quality(self) -> float | None: ...
+
+    @property
+    def observed_at(self) -> datetime: ...
+
+    @property
+    def parents(self) -> Sequence["ClaimProtocol[object]"]: ...
+
+    @property
+    def caveat(self) -> str | None: ...
+
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
