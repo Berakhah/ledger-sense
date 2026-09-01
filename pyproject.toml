@@ -49,6 +49,10 @@ target-version = "py312"
 # (Task 3): the import-alias, nested-if and broad-except style there is the
 # brief's exact test text, not this repo's normal style.
 "tests/test_no_floats.py" = ["PLR0402", "SIM102", "S110", "BLE001", "I001"]
+# tests/baseline/test_study.py is copied verbatim from the plan (Task 10):
+# its import block is the brief's exact test text, not this repo's normal
+# import-sort order.
+"tests/baseline/test_study.py" = ["I001"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -70,3 +74,11 @@ ignore_missing_imports = true
 # by design. Everything else in the repo stays under strict def checking.
 module = "tests.test_no_floats"
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# tests/baseline/test_study.py (Task 10) is copied verbatim from the plan:
+# its test functions and the _study() helper are untyped by design there too,
+# and the test functions call that untyped helper, so both checks relax.
+module = "tests.baseline.test_study"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
