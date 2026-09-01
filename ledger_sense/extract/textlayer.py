@@ -29,6 +29,7 @@ def extract_words(pdf: bytes) -> list[Word]:
     words: list[Word] = []
     with pdfplumber.open(io.BytesIO(pdf)) as doc:
         for page_no, page in enumerate(doc.pages):
+            # use_text_flow=True: False merges adjacent header words (e.g., "Stored"+"Retainage" → "StoredRetainage"), breaking per-header positioning
             for raw in page.extract_words(use_text_flow=True, keep_blank_chars=False):
                 words.append(Word(
                     text=raw["text"],

@@ -48,6 +48,7 @@ def test_has_text_layer_is_false_for_an_image_only_pdf():
     import io
     blank = pdfium.PdfDocument.new()
     blank.new_page(612, 792)
+    # pypdfium2.PdfDocument.save_to_bytes() does not exist; use save(buffer) + buffer.getvalue() instead
     buffer = io.BytesIO()
     blank.save(buffer)
     assert has_text_layer(buffer.getvalue()) is False
