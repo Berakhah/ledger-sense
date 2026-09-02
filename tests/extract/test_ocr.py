@@ -46,14 +46,14 @@ def _with_blank_page_inserted(pdf: bytes, at: int) -> bytes:
     return buf.getvalue()
 
 
-def test_ocr_returns_words_for_a_rasterised_document():
+def test_ocr_returns_words_for_a_rasterised_document() -> None:
     _c, _a, pdf = generate(seed=1, error="clean")
     result = ocr_words(_rasterise(pdf))
     assert not isinstance(result, CannotExtract)
     assert any("Schedul" in w.text for w in result.words)
 
 
-def test_ocr_refuses_a_wholly_blank_document_rather_than_returning_noise():
+def test_ocr_refuses_a_wholly_blank_document_rather_than_returning_noise() -> None:
     """B11: route to review with an honest 'cannot extract' rather than guess."""
     blank = pdfium.PdfDocument.new()
     blank.new_page(612, 792)
@@ -62,7 +62,7 @@ def test_ocr_refuses_a_wholly_blank_document_rather_than_returning_noise():
     assert isinstance(ocr_words(buf.getvalue()), CannotExtract)
 
 
-def test_a_blank_page_does_not_discard_the_pages_that_worked():
+def test_a_blank_page_does_not_discard_the_pages_that_worked() -> None:
     """F-23. `return CannotExtract(...)` inside the page loop threw away every
     word already recovered — a three-page document with a blank page 2 yielded
     nothing at all."""
@@ -74,7 +74,7 @@ def test_a_blank_page_does_not_discard_the_pages_that_worked():
     assert [f.page for f in result.failures] == [1]
 
 
-def test_every_token_is_returned_with_its_confidence_and_none_are_dropped():
+def test_every_token_is_returned_with_its_confidence_and_none_are_dropped() -> None:
     """F-24. MIN_CONFIDENCE = 0.5 was an uncalibrated threshold written by feel,
     on the noisiest path in the product — exactly what Phase 6 forbids in the
     router and enforces with an AST test.
@@ -86,12 +86,17 @@ def test_every_token_is_returned_with_its_confidence_and_none_are_dropped():
     renderer of resolution."""
     _c, _a, pdf = generate(seed=1, error="clean")
     result = ocr_words(_rasterise(pdf, degrade=True))
+    # Fix-wave finding 2: `ocr_words` returns `OcrResult | CannotExtract`, and
+    # `.words`/`.confidence` only exist on `OcrResult` -- narrow before use,
+    # same pattern already used above in
+    # `test_a_blank_page_does_not_discard_the_pages_that_worked`.
+    assert not isinstance(result, CannotExtract)
     assert all(w.confidence is not None for w in result.words)
-    assert any(w.confidence < 0.9 for w in result.words), \
+    assert any(w.confidence is not None and w.confidence < 0.9 for w in result.words), \
         "a low-confidence token was silently dropped instead of routed to review"
 
 
-def test_no_confidence_threshold_is_hard_coded_in_extract():
+def test_no_confidence_threshold_is_hard_coded_in_extract() -> None:
     """The AST guard from Phase 6 Task 41, scoped to `extract/ocr.py` — the one
     file in `extract/` that plausibly reintroduces a confidence cutoff. The
     rest of `extract/` (anchors.py, tables.py) carries legitimate geometry
@@ -108,7 +113,7 @@ def test_no_confidence_threshold_is_hard_coded_in_extract():
     assert offenders == [], f"literal thresholds in extract/ocr.py: {offenders}"
 
 
-def test_importing_the_ocr_module_does_not_load_the_models():
+def test_importing_the_ocr_module_does_not_load_the_models() -> None:
     """F-22. `_ENGINE = RapidOCR()` at module scope cost hundreds of megabytes
     and seconds of latency on every import, including bare test collection."""
     import importlib

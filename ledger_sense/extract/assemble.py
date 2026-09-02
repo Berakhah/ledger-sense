@@ -10,6 +10,7 @@ This is the ONE module allowed to construct `PayApplication` / `ContinuationLine
 `tests/extract/test_assemble.py::test_no_module_outside_assemble_constructs_a_domain_model`).
 """
 
+import decimal
 import hashlib
 import re
 from collections.abc import Callable
@@ -19,12 +20,11 @@ from typing import NamedTuple
 from ledger_sense.domain.models import ContinuationLine, PayApplication
 from ledger_sense.domain.money import Money, money
 from ledger_sense.extract.anchors import (
-    BELOW_BAND_PT,
-    BELOW_X_SLACK_PT,
-    SAME_BAND_PT,
+    MONEY_TOKEN,
     Anchored,
     extract_summary,
     find_labels,
+    value_after_label,
 )
 from ledger_sense.extract.profiles import ProfileCache
 from ledger_sense.extract.tables import (
@@ -101,35 +101,6 @@ def match_quality(*, label_exact: bool, value_unique: bool,
     return sum((label_exact, value_unique, column_unambiguous, profile_hit)) / 4
 
 
-def _value_after_label(words: list[Word], label_words: list[Word],
-                        predicate: Callable[[Word], bool]) -> Word | None:
-    """Same anchor+geometry style as `anchors._value_near` — nearest value-
-    shaped token to the label's right on the same band, else directly below —
-    generalised over a value-shape PREDICATE instead of a fixed money regex
-    (Ruling 5: `application_no` is an integer, `period_to` a date, `contract_id`
-    a bare id string; none of those match `anchors.MONEY_TOKEN`)."""
-    label_left = min(w.bbox.x0 for w in label_words)
-    label_right = max(w.bbox.x1 for w in label_words)
-    label_top = min(w.bbox.top for w in label_words)
-    page = label_words[0].page
-
-    same_band = [w for w in words
-                 if w.page == page and w.bbox.x0 >= label_right
-                 and abs(w.bbox.top - label_top) <= SAME_BAND_PT
-                 and predicate(w)]
-    if same_band:
-        return min(same_band, key=lambda w: w.bbox.x0)
-
-    below = [w for w in words
-             if w.page == page and 0 < w.bbox.top - label_top <= BELOW_BAND_PT
-             and label_left - BELOW_X_SLACK_PT <= (w.bbox.x0 + w.bbox.x1) / 2
-             <= label_right + BELOW_X_SLACK_PT
-             and predicate(w)]
-    if below:
-        return min(below, key=lambda w: (w.bbox.top, w.bbox.x0))
-    return None
-
-
 def extract_document_header(words: list[Word]) -> dict[str, HeaderHit]:
     """Contract id / application number / period-ending, by label anchor plus
     geometry — same principle as `anchors.extract_summary`, written from
@@ -157,7 +128,7 @@ def extract_document_header(words: list[Word]) -> dict[str, HeaderHit]:
         matches = find_labels(words, label)
         if len(matches) != 1:
             continue  # absent, or ambiguous — refuse rather than guess which one
-        value_word = _value_after_label(words, matches[0], predicates[field])
+        value_word = value_after_label(words, matches[0], predicates[field])
         if value_word is None:
             continue
         try:
@@ -217,15 +188,41 @@ def assemble_pay_application(
         unextractable.append(UnextractableField(
             "lines", f"continuation grid could not be reconstructed: {exc}"))
         rows = []
+    else:
+        # Fix-wave finding 3, VERIFIED live: headers resolved and reconstruction
+        # raised nothing, but every band still failed the REQUIRED_FIELDS
+        # completeness check (e.g. the trailing-column fragility Task 16 logged
+        # as a deferred minor) -- `rows == []` sailed through as an ordinary,
+        # complete result with no "lines" entry in `_unextractable` at all.
+        if not rows:
+            unextractable.append(UnextractableField(
+                "lines", "continuation grid produced no data rows"))
 
     grid_bottom = max((c.bbox.bottom for row in rows for c in row.values()),
                       default=None)
     for row in rows:
         item_no = row["item_no"].text
         values: dict[str, Money] = {}
+        row_failed = False
         for field in _LINE_FIELDS:
             cell = row[field]
-            values[field] = money(_clean(cell.text))
+            try:
+                values[field] = money(_clean(cell.text))
+            except decimal.InvalidOperation:
+                # Fix-wave finding 4, VERIFIED live: a wrapped-description word
+                # spilling into a money column's span (or any other cell whose
+                # text isn't money-shaped) used to crash `money()` uncaught.
+                # B11 says record, never guess -- an uncaught exception is
+                # neither. A row missing one Money field can't become a valid
+                # ContinuationLine anyway (every field above is required), so
+                # the whole row is unextractable, not just the one cell.
+                unextractable.append(UnextractableField(
+                    f"line[{item_no}].{field}", "value did not parse as money"))
+                row_failed = True
+        if row_failed:
+            continue
+        for field in _LINE_FIELDS:
+            cell = row[field]
             provenance[f"line[{item_no}].{field}"] = _claim(
                 source_path, cell.page, cell.bbox, values[field],
                 match_quality=match_quality(label_exact=True, value_unique=True,
@@ -252,7 +249,15 @@ def assemble_pay_application(
             cached_box = cache.lookup(key, field)
             if cached_box is not None:
                 hit = _value_in_box(words, cached_box)
-                if hit is not None:
+                # Fix-wave finding 4, VERIFIED live: unlike the normal
+                # anchor-based lookup above (`anchors._value_near`, which
+                # only ever returns a `MONEY_TOKEN` match), `_value_in_box`
+                # does no shape filtering of its own -- geometry drift
+                # between documents can land the remembered box on label
+                # text or a merged multi-word span. Treat a non-money hit
+                # exactly like a cache miss rather than an unvalidated
+                # pass-through.
+                if hit is not None and MONEY_TOKEN.fullmatch(hit.text):
                     anchored = Anchored(field=field, text=hit.text,
                                         bbox=hit.bbox, page=hit.page)
                     profile_hit = True
@@ -261,10 +266,22 @@ def assemble_pay_application(
             unextractable.append(UnextractableField(field, "label not found on page"))
             totals[field] = money("0.00")
             continue
-        totals[field] = money(_clean(anchored.text))
+        try:
+            totals[field] = money(_clean(anchored.text))
+        except decimal.InvalidOperation:
+            unextractable.append(UnextractableField(field, "value did not parse as money"))
+            totals[field] = money("0.00")
+            continue
         provenance[field] = _claim(
             source_path, anchored.page, anchored.bbox, totals[field],
-            match_quality=match_quality(label_exact=True, value_unique=True,
+            # Fix-wave finding 5, VERIFIED live: `label_exact` was hardcoded
+            # True even on the profile-hit branch, which is reached ONLY
+            # when the label-anchored lookup just above did NOT find the
+            # label -- the least-verified path (geometry memory, no label
+            # confirmation) was scoring HIGHEST. `value_unique` stays a
+            # documented constant here -- not yet cheaply computable from
+            # candidate-merge count, rather than a second silently-wrong bit.
+            match_quality=match_quality(label_exact=not profile_hit, value_unique=True,
                                         column_unambiguous=field not in ambiguous,
                                         profile_hit=profile_hit))
 
@@ -305,7 +322,15 @@ def assemble_pay_application(
 
 def line_hash(lines: list[ContinuationLine]) -> str:
     """The line-item fingerprint I1 compares on (F-37). Order-independent, so a
-    resubmission with the rows shuffled still matches."""
+    resubmission with the rows shuffled still matches.
+
+    Fix-wave finding 3, VERIFIED live: `sha256(b"")` for an empty `lines` list
+    is the SAME hash for every such document -- every zero-row extraction
+    (grid loss, `_drop_labels` breaking a required column, ...) collided in
+    I1's duplicate rule. No lines means nothing to fingerprint; the empty
+    string is not a value I1 should ever match on."""
+    if not lines:
+        return ""
     payload = "|".join(sorted(
         f"{ln.item_no}\x1f{ln.description}\x1f{ln.total_completed_and_stored}"
         for ln in lines))

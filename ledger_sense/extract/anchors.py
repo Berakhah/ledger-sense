@@ -8,6 +8,7 @@ hope — a guessed contract sum is a wrong bill with a confident number on it.
 """
 
 import re
+from collections.abc import Callable
 from typing import NamedTuple
 
 from ledger_sense.extract.schema import SUMMARY_LABELS
@@ -73,7 +74,20 @@ def _find_labels(words: list[Word], label: str) -> list[list[Word]]:
 find_labels = _find_labels
 
 
-def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
+def _value_after_label(words: list[Word], label_words: list[Word],
+                        predicate: Callable[[Word], bool]) -> Word | None:
+    """Nearest value-shaped token to the label's right on the same band, else
+    directly below — generalised over a value-shape PREDICATE instead of a
+    fixed money regex, so `assemble.py`'s document-header extraction
+    (`application_no` an integer, `period_to` a date, `contract_id` a bare id
+    string — none of those match `MONEY_TOKEN`) can share this geometry
+    instead of hand-copying it. See `_value_near` immediately below for the
+    money-specific caller.
+
+    Was two near-identical copies (Task 18's deliberate-at-the-time scope
+    decision) until the "should fix" upgrade in the Phase-2 final review:
+    Task 17's horizontal-proximity fix below already had to be hand-copied
+    into both once — proven drift risk, not hypothetical."""
     label_left = min(w.bbox.x0 for w in label_words)
     label_right = max(w.bbox.x1 for w in label_words)
     label_top = min(w.bbox.top for w in label_words)
@@ -82,13 +96,13 @@ def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
     same_band = [w for w in words
                  if w.page == page and w.bbox.x0 >= label_right
                  and abs(w.bbox.top - label_top) <= SAME_BAND_PT
-                 and MONEY_TOKEN.fullmatch(w.text)]
+                 and predicate(w)]
     if same_band:
         return min(same_band, key=lambda w: w.bbox.x0)
 
     # F-XX (Important-1, Task 17 review), VERIFIED with a live repro: this
     # search originally had NO horizontal constraint, so it would grab any
-    # money-shaped token within BELOW_BAND_PT of the label ANYWHERE on the
+    # value-shaped token within BELOW_BAND_PT of the label ANYWHERE on the
     # page. Every summary row shares one value column, so whenever a label's
     # own same-band value was missing, this silently returned the NEXT row's
     # value instead -- a wrong bill with a confident bounding box, the exact
@@ -99,10 +113,21 @@ def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
              if w.page == page and 0 < w.bbox.top - label_top <= BELOW_BAND_PT
              and label_left - BELOW_X_SLACK_PT <= (w.bbox.x0 + w.bbox.x1) / 2
              <= label_right + BELOW_X_SLACK_PT
-             and MONEY_TOKEN.fullmatch(w.text)]
+             and predicate(w)]
     if below:
         return min(below, key=lambda w: (w.bbox.top, w.bbox.x0))
     return None
+
+
+# Public alias, same convention as `find_labels` above: `assemble.py` needs
+# this exact geometry for non-money value shapes and re-exports it under a
+# public name rather than keeping a second, drifting copy.
+value_after_label = _value_after_label
+
+
+def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
+    return _value_after_label(
+        words, label_words, lambda w: bool(MONEY_TOKEN.fullmatch(w.text)))
 
 
 def extract_summary(

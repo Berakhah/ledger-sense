@@ -38,6 +38,11 @@ export default function BaselinePage() {
 
   const [studyId, setStudyId] = useState<string | null>(null)
   const [sampleCount, setSampleCount] = useState(0)
+  // Fix-wave finding 8: this is the billable week-one timing instrument --
+  // an operator seeing an inflated, silently-wrong count with no indication
+  // anything failed is exactly the defensibility problem CLAUDE.md's
+  // methodology section exists to rule out.
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const [running, setRunning] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(0)
@@ -89,6 +94,15 @@ export default function BaselinePage() {
         collection_period: [today, today],
       }),
     })
+    // Fix-wave finding 8, VERIFIED live before the fix: an expired session or
+    // validation error still landed here and was cast straight to
+    // `{ study_id: string }` with no check, so `study_id` came back
+    // `undefined` and every later sample POST 404'd against
+    // `/studies/undefined/samples` -- silently, with the visible count still
+    // climbing. Fail loudly instead so the caller can roll back.
+    if (!resp.ok) {
+      throw new Error(`could not start the study (server said ${resp.status})`)
+    }
     const body = (await resp.json()) as { study_id: string }
     setStudyId(body.study_id)
     studyIdRef.current = body.study_id
@@ -120,28 +134,55 @@ export default function BaselinePage() {
     startedAtRef.current = null
     setElapsedMs(0)
     setSampleCount((count) => count + 1)
-    const id = await ensureStudy()
-    await fetch(`${API_URL}/api/baseline/studies/${id}/samples`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        document_id: documentId,
-        doc_type: DOC_TYPE,
-        touch_seconds: touchSeconds,
-        exceptions: exceptionsForThisSample,
-      }),
-    })
+    setActionError(null)
+    try {
+      const id = await ensureStudy()
+      const resp = await fetch(`${API_URL}/api/baseline/studies/${id}/samples`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          document_id: documentId,
+          doc_type: DOC_TYPE,
+          touch_seconds: touchSeconds,
+          exceptions: exceptionsForThisSample,
+        }),
+      })
+      if (!resp.ok) {
+        throw new Error(`sample was not recorded (server said ${resp.status})`)
+      }
+    } catch (err) {
+      // Fix-wave finding 8, VERIFIED live before the fix: the count above was
+      // incremented before the round trip and never rolled back, so a failed
+      // POST (expired session, validation error, `ensureStudy` itself
+      // failing) still left a higher, WRONG visible count with no
+      // indication anything failed. Roll it back and say so -- the count
+      // must never overstate what the server actually recorded.
+      setSampleCount((count) => count - 1)
+      setActionError(err instanceof Error ? err.message : 'sample was not recorded')
+    }
   }
 
   useEffect(() => {
     // Space/Enter are page-level shortcuts for the timer, not scoped to
     // whichever field last had focus (a click into "Sampling frame" leaves
-    // focus there, and Space still has to start the clock) — the one
-    // exception is the exception-note field itself, which needs literal
-    // spaces for its free-text note.
+    // focus there, and Space still has to start the clock — proven live by
+    // the first e2e test in test_baseline_screen.spec.ts, which fills
+    // "Sampling frame" last and then drives the whole timing loop by
+    // keyboard with focus still sitting there) — the ONE deliberate
+    // exception is the exception-note field, which needs a literal space
+    // character. WCAG 2.2 §2.1.1 adds a second, narrower exception: Space
+    // and Enter are ALSO the native activation keys for a focused <button>,
+    // and "Log exception"/"Produce report" have no other keyboard route —
+    // so the shortcuts defer to a focused *button* too, but not to inputs
+    // in general (an earlier version of this guard deferred to every
+    // HTMLInputElement, which silently broke the "Sampling frame" case
+    // above: Space stopped starting the clock whenever that field still had
+    // focus, exactly the regression the original comment was warning
+    // against).
     function onKeyDown(event: KeyboardEvent): void {
-      if (document.activeElement === noteInputRef.current) return
+      const active = document.activeElement
+      if (active instanceof HTMLButtonElement || active === noteInputRef.current) return
       if (event.code === 'Space') {
         event.preventDefault()
         toggleTimer()
@@ -165,17 +206,25 @@ export default function BaselinePage() {
   async function produceReport(): Promise<void> {
     const id = studyIdRef.current
     if (!id) return
+    setActionError(null)
     // Opened synchronously, in the same tick as the click, so the browser
     // treats it as a direct response to user activation rather than an
     // unsolicited popup; its destination is filled in once the rate PUT
     // (below) has landed.
     const popup = window.open('about:blank', '_blank')
-    await fetch(`${API_URL}/api/baseline/studies/${id}/rate`, {
+    const resp = await fetch(`${API_URL}/api/baseline/studies/${id}/rate`, {
       method: 'PUT',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hourly, overhead_multiplier: overheadMultiplier }),
     })
+    if (!resp.ok) {
+      // Fix-wave finding 8: don't send the popup to a report built on a rate
+      // that was never actually set -- close it and say so instead.
+      if (popup) popup.close()
+      setActionError(`could not set the loaded rate (server said ${resp.status})`)
+      return
+    }
     if (popup) popup.location.href = `${API_URL}/api/baseline/studies/${id}/report`
   }
 
@@ -187,6 +236,12 @@ export default function BaselinePage() {
       <p style={{ color: 'var(--color-ink-muted)' }}>
         The billable first week. Time real documents, then produce the print-ready report.
       </p>
+
+      {actionError && (
+        <p role="alert" data-testid="action-error" style={{ color: 'var(--color-flag)' }}>
+          {actionError}
+        </p>
+      )}
 
       <section style={{ marginTop: '1.5rem' }}>
         <div>

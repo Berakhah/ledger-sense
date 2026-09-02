@@ -1,45 +1,52 @@
 from ledger_sense.corpus.generate import generate
-from ledger_sense.extract.anchors import MONEY_TOKEN, _find_labels, _value_near, extract_summary
+from ledger_sense.domain.models import PayApplication
+from ledger_sense.extract.anchors import (
+    MONEY_TOKEN,
+    Anchored,
+    _find_labels,
+    _value_near,
+    extract_summary,
+)
 from ledger_sense.extract.tables import find_headers, reconstruct_rows
 from ledger_sense.extract.textlayer import BBox, Word, extract_words
 
 
-def _grid_bottom(words):
+def _grid_bottom(words: list[Word]) -> float:
     headers = find_headers(words)
     return max(c.bbox.bottom for row in reconstruct_rows(words, headers)
                for c in row.values())
 
 
-def _summary(seed=1):
+def _summary(seed: int = 1) -> tuple[PayApplication, dict[str, Anchored]]:
     _contract, app, pdf = generate(seed=seed, error="clean")
     found, _ambiguous = extract_summary(extract_words(pdf))
     return app, found
 
 
-def test_money_token_accepts_plain_and_formatted_amounts():
+def test_money_token_accepts_plain_and_formatted_amounts() -> None:
     for good in ["1234.56", "1,234.56", "$1,234.56", "0.00", "(1,234.56)"]:
         assert MONEY_TOKEN.fullmatch(good), good
 
 
-def test_money_token_rejects_prose_and_bare_integers():
+def test_money_token_rejects_prose_and_bare_integers() -> None:
     for bad in ["Sitework", "Item", "003", "N/A"]:
         assert not MONEY_TOKEN.fullmatch(bad), bad
 
 
-def test_summary_total_matches_the_generated_application():
+def test_summary_total_matches_the_generated_application() -> None:
     app, summary = _summary()
     cleaned = summary["total_completed_and_stored"].text.replace(",", "").lstrip("$")
     assert cleaned == str(app.total_completed_and_stored)
 
 
-def test_each_anchored_value_carries_a_non_degenerate_bbox():
+def test_each_anchored_value_carries_a_non_degenerate_bbox() -> None:
     _app, summary = _summary()
     for anchored in summary.values():
         assert anchored.bbox.x1 > anchored.bbox.x0
         assert anchored.bbox.bottom > anchored.bbox.top
 
 
-def test_an_absent_label_is_omitted_rather_than_guessed():
+def test_an_absent_label_is_omitted_rather_than_guessed() -> None:
     """No label, no value. Never take the nearest number and hope."""
     _c, _a, pdf = generate(seed=1, error="clean")
     words = [w for w in extract_words(pdf) if w.text != "Retainage"]
@@ -47,7 +54,7 @@ def test_an_absent_label_is_omitted_rather_than_guessed():
     assert "retainage_total" not in found
 
 
-def test_a_label_appearing_twice_is_refused_rather_than_resolved():
+def test_a_label_appearing_twice_is_refused_rather_than_resolved() -> None:
     """Targets `total_completed_and_stored`'s bare entry, not `retainage_total`'s
     (contra the brief's own version of this test) — VERIFIED (task-17-report.md).
     A bare 'Retainage' search is unconditionally ambiguous against the summary
@@ -72,7 +79,7 @@ def test_a_label_appearing_twice_is_refused_rather_than_resolved():
     assert "total_completed_and_stored" in ambiguous
 
 
-def test_the_summary_is_searched_below_the_grid_when_the_extent_is_known():
+def test_the_summary_is_searched_below_the_grid_when_the_extent_is_known() -> None:
     _c, app, pdf = generate(seed=1, error="clean")
     words = extract_words(pdf)
     found, ambiguous = extract_summary(words, grid_bottom=_grid_bottom(words))
@@ -81,7 +88,7 @@ def test_the_summary_is_searched_below_the_grid_when_the_extent_is_known():
     assert cleaned == str(app.total_completed_and_stored)
 
 
-def test_a_field_can_be_found_and_flagged_ambiguous_at_once():
+def test_a_field_can_be_found_and_flagged_ambiguous_at_once() -> None:
     """Deliberate, documented on `extract_summary` (Important-2, Task 17 review).
     Without `grid_bottom`, the bare 'Total Completed and Stored' entry collides
     with the grid header (the original F-09 collision) and is flagged
@@ -95,7 +102,7 @@ def test_a_field_can_be_found_and_flagged_ambiguous_at_once():
     assert cleaned == str(app.total_completed_and_stored)
 
 
-def test_value_near_finds_a_directly_below_value_when_none_is_beside_it():
+def test_value_near_finds_a_directly_below_value_when_none_is_beside_it() -> None:
     """Important-1, Task 17 review. A hand-built row, no corpus needed (same
     style as `tables.py`'s hand-built `HeaderMap` tests): the value sits one
     line below the label, roughly under its own text — the below-band path's
@@ -105,7 +112,7 @@ def test_value_near_finds_a_directly_below_value_when_none_is_beside_it():
     assert _value_near([*label, value], label) == value
 
 
-def test_value_near_rejects_a_below_value_in_the_wrong_column():
+def test_value_near_rejects_a_below_value_in_the_wrong_column() -> None:
     """Important-1, Task 17 review, VERIFIED with a live repro: the original
     below-band search had no horizontal constraint, so a money-shaped token
     below the label but in a completely different column (e.g. the NEXT row's

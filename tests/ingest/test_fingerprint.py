@@ -8,13 +8,13 @@ def _pdf(seed: int) -> bytes:
     return pdf
 
 
-def test_same_layout_different_data_yields_the_same_key():
+def test_same_layout_different_data_yields_the_same_key() -> None:
     """The fingerprint keys on GEOMETRY, not content. Two documents from the
     same producing software must share a profile."""
     assert fingerprint(_pdf(1)) == fingerprint(_pdf(2))
 
 
-def test_a_shifted_column_layout_yields_a_different_key():
+def test_a_shifted_column_layout_yields_a_different_key() -> None:
     """The corpus's five adversarial layouts (Task 16) vary header wording,
     value alignment and pagination, but none of them shift a column's x0 —
     real geometry variation across producing software, which is what the
@@ -33,7 +33,7 @@ def test_a_shifted_column_layout_yields_a_different_key():
     assert baseline != shifted
 
 
-def test_document_hash_is_stable_and_content_addressed():
+def test_document_hash_is_stable_and_content_addressed() -> None:
     """F-16. `build_idempotency_key(document_hash, ...)` in Phase 5 had NO
     producer anywhere in the six plan documents."""
     pdf = _pdf(1)
@@ -42,9 +42,9 @@ def test_document_hash_is_stable_and_content_addressed():
     assert len(document_hash(pdf)) == 32
 
 
-def test_key_is_stable_across_calls():
+def test_key_is_stable_across_calls() -> None:
     assert fingerprint(_pdf(3)).as_str() == fingerprint(_pdf(3)).as_str()
 
 
-def test_key_string_is_filesystem_and_sql_safe():
+def test_key_string_is_filesystem_and_sql_safe() -> None:
     assert all(ch.isalnum() or ch in ":-_." for ch in fingerprint(_pdf(1)).as_str())
