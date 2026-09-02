@@ -24,3 +24,45 @@ COLUMN_SYNONYMS: dict[str, list[str]] = {
 }
 
 REQUIRED_FIELDS: frozenset[str] = frozenset(COLUMN_SYNONYMS)
+
+# SUMMARY_LABELS — the summary certificate's own vocabulary (Phase 2 Task 17,
+# F-14 applied a second time). `extract/anchors.py` searches for these labels
+# by literal text; the corpus prefixes every summary label with "Summary —"
+# (`ledger_sense.corpus.layouts.SUMMARY_LABEL_PREFIX`) purely so its own two
+# colliding strings ("Retainage", "Total Completed and Stored" — also grid
+# column headers) don't mask a real bug. A real, unprefixed G702-style
+# document has the identical collision, so the bare form (what a real document
+# renders) is listed alongside the prefixed form (what our corpus renders) —
+# `extract_summary`'s `grid_bottom` argument and its refuse-rather-than-resolve
+# handling of an ambiguous match are what actually make the bare form safe to
+# use, not the vocabulary.
+#
+# `retainage_total` is the ONE field that does NOT get this bare entry — VERIFIED
+# empirically (task-17-report.md carries the full trace). The summary block's
+# OWN "Total Earned Less Retainage" row also ends in the bare word "Retainage",
+# so a plain one-word "Retainage" search is ambiguous (2 matches: its own row
+# AND that row) on every clean document, even below the grid, with zero
+# duplication involved — a permanent false positive, not a guard against a
+# real collision. Only the prefixed form is listed for `retainage_total`.
+#
+# Two real-document synonyms from the brief: "Less Previous Certificates for
+# Payment" maps cleanly to `previous_payments` (the AIA G702 line for
+# cumulative prior payments is exactly that field). "Balance to Finish
+# Including Retainage" is SKIPPED — a real G702's line 9 equals
+# `adjusted_contract_sum - total_completed_and_stored`, a value none of our 8
+# fields holds; mapping it to the nearest-sounding field anyway would guess a
+# number under a confident label, which is what this whole module exists to
+# refuse (see `extract_summary`'s own docstring, "never take the nearest
+# number and hope").
+SUMMARY_LABELS: tuple[tuple[str, str], ...] = (
+    ("Summary — Original Contract Sum", "original_sum"),
+    ("Summary — Net Change by Change Orders", "change_orders_net"),
+    ("Summary — Contract Sum to Date", "adjusted_contract_sum"),
+    ("Summary — Total Completed and Stored", "total_completed_and_stored"),
+    ("Total Completed and Stored", "total_completed_and_stored"),
+    ("Summary — Retainage", "retainage_total"),
+    ("Summary — Total Earned Less Retainage", "total_earned_less_retainage"),
+    ("Summary — Less Previous Payments", "previous_payments"),
+    ("Less Previous Certificates for Payment", "previous_payments"),
+    ("Summary — Current Payment Due", "current_payment_due"),
+)
