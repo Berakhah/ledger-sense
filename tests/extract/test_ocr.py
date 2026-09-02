@@ -1,15 +1,28 @@
 import io
 
 import pypdfium2 as pdfium
+from PIL import Image, ImageFilter
 
 from ledger_sense.corpus.generate import generate
 from ledger_sense.extract.ocr import CannotExtract, ocr_words
 
 
-def _rasterise(pdf: bytes) -> bytes:
-    """Render to an image and back — destroys the text layer, like a scan."""
+def _rasterise(pdf: bytes, degrade: bool = False) -> bytes:
+    """Render to an image and back — destroys the text layer, like a scan.
+
+    `degrade=True` blurs and JPEG-recompresses the page image first, standing
+    in for a genuinely poor-quality scan/photo — the same kind of quality loss
+    that gives OCR confidence its real spread, as opposed to just starving the
+    renderer of resolution (which corrupts reads outright rather than merely
+    lowering confidence on them — see `RENDER_SCALE` in `ocr.py`)."""
     doc = pdfium.PdfDocument(pdf)
     image = doc[0].render(scale=2).to_pil()
+    if degrade:
+        image = image.filter(ImageFilter.GaussianBlur(radius=1.5))
+        jpeg = io.BytesIO()
+        image.convert("RGB").save(jpeg, format="JPEG", quality=30)
+        jpeg.seek(0)
+        image = Image.open(jpeg)
     out = pdfium.PdfDocument.new()
     page = out.new_page(image.width / 2, image.height / 2)
     pdf_image = pdfium.PdfImage.new(out)
@@ -64,9 +77,15 @@ def test_a_blank_page_does_not_discard_the_pages_that_worked():
 def test_every_token_is_returned_with_its_confidence_and_none_are_dropped():
     """F-24. MIN_CONFIDENCE = 0.5 was an uncalibrated threshold written by feel,
     on the noisiest path in the product — exactly what Phase 6 forbids in the
-    router and enforces with an AST test."""
+    router and enforces with an AST test.
+
+    Uses `_rasterise(pdf, degrade=True)` — a genuinely blurred, heavily
+    JPEG-compressed page image — rather than turning down `RENDER_SCALE` in
+    production code, so the confidence spread here comes from real document
+    quality loss, the kind an actual bad scan/photo has, not from starving the
+    renderer of resolution."""
     _c, _a, pdf = generate(seed=1, error="clean")
-    result = ocr_words(_rasterise(pdf))
+    result = ocr_words(_rasterise(pdf, degrade=True))
     assert all(w.confidence is not None for w in result.words)
     assert any(w.confidence < 0.9 for w in result.words), \
         "a low-confidence token was silently dropped instead of routed to review"

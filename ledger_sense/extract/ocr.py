@@ -17,12 +17,11 @@ if TYPE_CHECKING:
     # this module never loads the ONNX models (F-22).
     from rapidocr_onnxruntime import RapidOCR
 
-RENDER_SCALE = 1
-"""Rendered at native (72 DPI) resolution rather than upscaled: at scale 2 the
-recogniser sees glyphs crisp enough that every token comes back >0.95
-confidence even on a rasterised page, masking the very uncertainty this path
-exists to surface. Same word count at scale 1 in measurement, honest spread of
-confidence."""
+RENDER_SCALE = 2
+"""144 DPI. Lower (e.g. native 72 DPI at scale 1) measurably corrupts reads on
+real documents — not just lower confidence scores, actual character-level
+misreads ("050" -> "0S0") — so this stays a production-quality render
+regardless of what any one test's confidence spread wants."""
 
 
 @functools.lru_cache(maxsize=1)
