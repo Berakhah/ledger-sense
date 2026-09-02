@@ -1,7 +1,13 @@
 from ledger_sense.corpus.generate import generate
-from ledger_sense.extract.anchors import MONEY_TOKEN, extract_summary
+from ledger_sense.extract.anchors import MONEY_TOKEN, _find_labels, extract_summary
 from ledger_sense.extract.tables import find_headers, reconstruct_rows
 from ledger_sense.extract.textlayer import extract_words
+
+
+def _grid_bottom(words):
+    headers = find_headers(words)
+    return max(c.bbox.bottom for row in reconstruct_rows(words, headers)
+               for c in row.values())
 
 
 def _summary(seed=1):
@@ -42,25 +48,34 @@ def test_an_absent_label_is_omitted_rather_than_guessed():
 
 
 def test_a_label_appearing_twice_is_refused_rather_than_resolved():
-    """F-09, VERIFIED. 'Retainage' and 'Total Completed and Stored' appear as BOTH
-    a grid header and a summary label. Taking the first match returned line item
-    010's cell as the summary figure, with a bbox pointing at the wrong cell —
-    and A1 then passes on a document that does not foot."""
+    """Targets `total_completed_and_stored`'s bare entry, not `retainage_total`'s
+    (contra the brief's own version of this test) — VERIFIED (task-17-report.md).
+    A bare 'Retainage' search is unconditionally ambiguous against the summary
+    block's OWN 'Total Earned Less Retainage' row, with or without a second
+    label anywhere, so it can never carry this test's intent (a label refused
+    ONLY because it genuinely appears twice). 'Total Completed and Stored' has
+    no such cross-field collision, so it is the field that actually isolates
+    the guarantee this test exists to prove: an identical label appearing
+    twice is refused, not silently resolved onto whichever copy comes first.
+    """
     _c, _a, pdf = generate(seed=1, error="clean")
     words = extract_words(pdf)
-    duplicated = words + [w._replace(bbox=w.bbox._replace(top=w.bbox.top + 400))
-                          for w in words if w.text == "Retainage"]
-    _found, ambiguous = extract_summary(duplicated)
-    assert "retainage_total" in ambiguous
+    grid_bottom = _grid_bottom(words)
+    candidates = [w for w in words if w.bbox.top > grid_bottom]
+    [genuine_match] = _find_labels(candidates, "Total Completed and Stored")
+    # Duplicate the matched label's own words AS A UNIT, still mutually
+    # adjacent, so the duplicate is a second COMPLETE match — not an isolated
+    # fragment `_find_labels` could never complete on its own.
+    duplicate = [w._replace(bbox=w.bbox._replace(top=w.bbox.top + 400))
+                for w in genuine_match]
+    _found, ambiguous = extract_summary(words + duplicate, grid_bottom=grid_bottom)
+    assert "total_completed_and_stored" in ambiguous
 
 
 def test_the_summary_is_searched_below_the_grid_when_the_extent_is_known():
     _c, app, pdf = generate(seed=1, error="clean")
     words = extract_words(pdf)
-    headers = find_headers(words)
-    grid_bottom = max(c.bbox.bottom for row in reconstruct_rows(words, headers)
-                      for c in row.values())
-    found, ambiguous = extract_summary(words, grid_bottom=grid_bottom)
+    found, ambiguous = extract_summary(words, grid_bottom=_grid_bottom(words))
     assert ambiguous == []
     cleaned = found["total_completed_and_stored"].text.replace(",", "").lstrip("$")
     assert cleaned == str(app.total_completed_and_stored)
