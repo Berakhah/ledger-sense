@@ -32,6 +32,8 @@ class Word(NamedTuple):
     text: str
     bbox: BBox
     page: int
+    confidence: float | None = None
+    """`None` for the text layer; a score in [0, 1] for OCR (`extract/ocr.py`)."""
 
 
 @dataclass(frozen=True)
