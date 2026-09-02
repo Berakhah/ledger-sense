@@ -1,7 +1,7 @@
 from ledger_sense.corpus.generate import generate
-from ledger_sense.extract.anchors import MONEY_TOKEN, _find_labels, extract_summary
+from ledger_sense.extract.anchors import MONEY_TOKEN, _find_labels, _value_near, extract_summary
 from ledger_sense.extract.tables import find_headers, reconstruct_rows
-from ledger_sense.extract.textlayer import extract_words
+from ledger_sense.extract.textlayer import BBox, Word, extract_words
 
 
 def _grid_bottom(words):
@@ -79,3 +79,39 @@ def test_the_summary_is_searched_below_the_grid_when_the_extent_is_known():
     assert ambiguous == []
     cleaned = found["total_completed_and_stored"].text.replace(",", "").lstrip("$")
     assert cleaned == str(app.total_completed_and_stored)
+
+
+def test_a_field_can_be_found_and_flagged_ambiguous_at_once():
+    """Deliberate, documented on `extract_summary` (Important-2, Task 17 review).
+    Without `grid_bottom`, the bare 'Total Completed and Stored' entry collides
+    with the grid header (the original F-09 collision) and is flagged
+    ambiguous, while the prefixed entry still resolves the field cleanly — so
+    the field lands in BOTH `found` and `ambiguous`. A caller must check
+    `ambiguous` even for a field already present in `found`."""
+    _c, app, pdf = generate(seed=1, error="clean")
+    found, ambiguous = extract_summary(extract_words(pdf))
+    assert "total_completed_and_stored" in ambiguous
+    cleaned = found["total_completed_and_stored"].text.replace(",", "").lstrip("$")
+    assert cleaned == str(app.total_completed_and_stored)
+
+
+def test_value_near_finds_a_directly_below_value_when_none_is_beside_it():
+    """Important-1, Task 17 review. A hand-built row, no corpus needed (same
+    style as `tables.py`'s hand-built `HeaderMap` tests): the value sits one
+    line below the label, roughly under its own text — the below-band path's
+    intended, genuine case."""
+    label = [Word("Label", BBox(100.0, 100.0, 140.0, 110.0), 0)]
+    value = Word("500.00", BBox(105.0, 108.0, 140.0, 118.0), 0)
+    assert _value_near([*label, value], label) == value
+
+
+def test_value_near_rejects_a_below_value_in_the_wrong_column():
+    """Important-1, Task 17 review, VERIFIED with a live repro: the original
+    below-band search had no horizontal constraint, so a money-shaped token
+    below the label but in a completely different column (e.g. the NEXT row's
+    own value, sharing a value column with this one) was picked anyway — a
+    wrong bill with a confident bounding box. Vertically in range, horizontally
+    nowhere near the label, must not be picked."""
+    label = [Word("Label", BBox(100.0, 100.0, 140.0, 110.0), 0)]
+    wrong_column = Word("999.00", BBox(400.0, 108.0, 440.0, 118.0), 0)
+    assert _value_near([*label, wrong_column], label) is None

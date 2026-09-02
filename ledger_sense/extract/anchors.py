@@ -15,7 +15,15 @@ from ledger_sense.extract.textlayer import BBox, Word
 
 MONEY_TOKEN = re.compile(r"\(?\$?-?\d{1,3}(,\d{3})*\.\d{2}\)?|\(?\$?-?\d+\.\d{2}\)?")
 SAME_BAND_PT = 6.0
-BELOW_BAND_PT = 20.0
+# Tightened (Important-1, Task 17 review): 20.0 was wider than the corpus's own
+# summary row spacing (16.0pt), so the below-band search could always reach the
+# NEXT summary row. 12.0 comfortably covers a genuine below-label value (one
+# body-font line height below the label, ~9-10pt) while never reaching a row
+# one full spacing below.
+BELOW_BAND_PT = 12.0
+# The below-band value must sit roughly under the LABEL'S OWN text, not
+# anywhere else on the page -- see the Important-1 fix in `_value_near`.
+BELOW_X_SLACK_PT = 20.0
 
 
 class Anchored(NamedTuple):
@@ -57,6 +65,7 @@ def _find_labels(words: list[Word], label: str) -> list[list[Word]]:
 
 
 def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
+    label_left = min(w.bbox.x0 for w in label_words)
     label_right = max(w.bbox.x1 for w in label_words)
     label_top = min(w.bbox.top for w in label_words)
     page = label_words[0].page
@@ -68,8 +77,19 @@ def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
     if same_band:
         return min(same_band, key=lambda w: w.bbox.x0)
 
+    # F-XX (Important-1, Task 17 review), VERIFIED with a live repro: this
+    # search originally had NO horizontal constraint, so it would grab any
+    # money-shaped token within BELOW_BAND_PT of the label ANYWHERE on the
+    # page. Every summary row shares one value column, so whenever a label's
+    # own same-band value was missing, this silently returned the NEXT row's
+    # value instead -- a wrong bill with a confident bounding box, the exact
+    # failure this module's docstring exists to prevent. A genuine
+    # directly-below value sits roughly under the label's OWN text, not at
+    # some other row's value column, so require horizontal proximity too.
     below = [w for w in words
              if w.page == page and 0 < w.bbox.top - label_top <= BELOW_BAND_PT
+             and label_left - BELOW_X_SLACK_PT <= (w.bbox.x0 + w.bbox.x1) / 2
+             <= label_right + BELOW_X_SLACK_PT
              and MONEY_TOKEN.fullmatch(w.text)]
     if below:
         return min(below, key=lambda w: (w.bbox.top, w.bbox.x0))
@@ -88,6 +108,17 @@ def extract_summary(
     2. An ambiguous label is REFUSED, not resolved. It is recorded and routed to
        review. Picking one of two identical labels is guessing with a confident
        bounding box, which is the failure mode this whole product exists to fix.
+
+    `found` and `ambiguous` are NOT mutually exclusive per field (Important-2,
+    Task 17 review) — deliberately. `SUMMARY_LABELS` can carry more than one
+    entry for the same field (a prefixed one and a bare, real-document one);
+    one entry can resolve cleanly while a DIFFERENT entry for that same field
+    finds a second occurrence elsewhere on the page and calls it ambiguous.
+    When that happens the field lands in both. `found[field]` is still the
+    value the CLEAN entry resolved (never a guess), but a caller must check
+    `ambiguous` regardless of whether the field is already in `found` — its
+    presence in `found` is not, on its own, proof that nothing else on the
+    page could have meant something different.
     """
     candidates = ([w for w in words if grid_bottom is None or w.bbox.top > grid_bottom]
                   or words)
