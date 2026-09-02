@@ -51,6 +51,27 @@ def test_every_claim_points_at_a_page_and_a_box():
         assert x1 > x0 and bottom > top, f"{field}: degenerate bbox"
 
 
+def test_a_found_header_field_carries_a_claim_too():
+    """Important, reviewer-confirmed: contract_id/application_no/period_to
+    populated the domain model when found but carried no Claim at all —
+    asymmetric with every grid cell and summary total, which both get one,
+    and exactly the field family Ruling 4/F-15 exist to keep honest (a
+    wrongly-parsed-but-still-ISO-shaped period_to would sail through with no
+    bbox for a reviewer to check and no match_quality for Phase 6 to route
+    on)."""
+    _c, _a, pdf = generate(seed=1, error="clean")
+    built = assemble_pay_application(pdf, "corpus://seed-1")
+    for field in ("contract_id", "application_no", "period_to"):
+        assert field in built.provenance, field
+        claim = built.provenance[field]
+        assert claim.method is Method.DETERMINISTIC, field
+        assert claim.confidence is None, field
+        assert claim.source.page >= 0, field
+        x0, top, x1, bottom = claim.source.bbox
+        assert x1 > x0 and bottom > top, f"{field}: degenerate bbox"
+        assert claim.match_quality is not None, field
+
+
 def test_a_missing_field_is_recorded_not_guessed():
     _c, _a, pdf = generate(seed=1, error="clean")
     built = assemble_pay_application(pdf, "corpus://seed-1",

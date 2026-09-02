@@ -60,6 +60,20 @@ class UnextractableField(NamedTuple):
     reason: str
 
 
+class HeaderHit(NamedTuple):
+    """A document-header field's PARSED value plus where it came from.
+
+    `extract_document_header` originally returned bare `dict[str, object]`
+    values (Ruling 5's literal contract) and `assemble_pay_application`
+    discarded the `Word` it was found on — so a found header field populated
+    the domain model with no `Claim`, no bbox, no `match_quality`, unlike
+    every other field this module resolves. Carrying `bbox`/`page` alongside
+    `value` is what makes `_claim()` callable for these fields too."""
+    value: object
+    bbox: BBox
+    page: int
+
+
 def _clean(text: str) -> str:
     text = text.strip().replace(",", "").lstrip("$")
     if text.startswith("(") and text.endswith(")"):
@@ -116,14 +130,16 @@ def _value_after_label(words: list[Word], label_words: list[Word],
     return None
 
 
-def extract_document_header(words: list[Word]) -> dict[str, object]:
+def extract_document_header(words: list[Word]) -> dict[str, HeaderHit]:
     """Contract id / application number / period-ending, by label anchor plus
     geometry — same principle as `anchors.extract_summary`, written from
     scratch (Ruling 5) because the VALUE shapes here are not money.
 
     A label that is absent, or appears more than once, or whose nearest value
     does not parse into the expected type, means the field is OMITTED — never
-    guessed (B11), same discipline as `extract_summary`.
+    guessed (B11), same discipline as `extract_summary`. A field that IS found
+    carries its bbox/page too (`HeaderHit`), so the caller can raise a proper
+    `Claim` for it exactly like every other field this module resolves.
     """
     predicates: dict[str, Callable[[Word], bool]] = {
         "contract_id": lambda w: bool(w.text.strip()),
@@ -136,7 +152,7 @@ def extract_document_header(words: list[Word]) -> dict[str, object]:
         "period_to": lambda text: date.fromisoformat(text),
     }
 
-    header: dict[str, object] = {}
+    header: dict[str, HeaderHit] = {}
     for label, field in _DOCUMENT_HEADER_LABELS.items():
         matches = find_labels(words, label)
         if len(matches) != 1:
@@ -145,9 +161,11 @@ def extract_document_header(words: list[Word]) -> dict[str, object]:
         if value_word is None:
             continue
         try:
-            header[field] = parsers[field](value_word.text)
+            parsed = parsers[field](value_word.text)
         except ValueError:
             continue
+        header[field] = HeaderHit(value=parsed, bbox=value_word.bbox,
+                                  page=value_word.page)
     return header
 
 
@@ -256,14 +274,21 @@ def assemble_pay_application(
     # a guessed period_to is worse, because C12 compares every waiver's
     # through-date against it, so a document processed a month late flags them all.
     header = extract_document_header(words)
-    contract_id = header.get("contract_id")
-    application_no = header.get("application_no")
-    period_to = header.get("period_to")
-    for field_name, field_value in (("contract_id", contract_id),
-                                    ("application_no", application_no),
-                                    ("period_to", period_to)):
-        if field_value is None:
+    contract_id = header["contract_id"].value if "contract_id" in header else None
+    application_no = header["application_no"].value if "application_no" in header else None
+    period_to = header["period_to"].value if "period_to" in header else None
+    for field_name in ("contract_id", "application_no", "period_to"):
+        header_hit = header.get(field_name)
+        if header_hit is None:
             unextractable.append(UnextractableField(field_name, "not found on page"))
+        else:
+            # Important, reviewer-confirmed: a found header field previously
+            # populated the domain model with no Claim at all — asymmetric
+            # with every grid cell and summary total, which both get one.
+            provenance[field_name] = _claim(
+                source_path, header_hit.page, header_hit.bbox, header_hit.value,
+                match_quality=match_quality(label_exact=True, value_unique=True,
+                                            column_unambiguous=True, profile_hit=False))
     assert contract_id is None or isinstance(contract_id, str)
     assert application_no is None or isinstance(application_no, int)
     assert period_to is None or isinstance(period_to, date)
