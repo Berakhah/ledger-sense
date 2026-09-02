@@ -57,6 +57,19 @@ jobs:
           uv run pytest tests/domain tests/rules/arithmetic tests/rules/test_engine.py tests/baseline \
             --cov=ledger_sense.domain --cov=ledger_sense.rules.arithmetic --cov=ledger_sense.rules.engine \
             --cov=ledger_sense.baseline --cov-report=term-missing --cov-fail-under=75
+      - name: Coverage floor (extract, ingest)
+        run: |
+          uv run pytest tests/extract tests/ingest \
+            --cov=ledger_sense.extract --cov=ledger_sense.ingest \
+            --cov-report=term-missing --cov-fail-under=75
+
+  degraded-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - run: uv run pytest tests/test_degraded_mode.py -v
 
   no-float:
     runs-on: ubuntu-latest
