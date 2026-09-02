@@ -35,14 +35,19 @@ class Word(NamedTuple):
 
 
 @dataclass(frozen=True)
-class ParsedDocument:
+class ParsedPDF:
+    """Named ParsedPDF, not ParsedDocument, to stay distinct from
+    `ledger_sense.ingest.limits.ParsedDocument` (a different, earlier shape:
+    page_count + concatenated text) — the two subsystems meet at the intake
+    boundary and an accidental same-name import there would be easy to miss."""
+
     words: tuple[Word, ...]
     metadata: dict[str, str]
     page_count: int
     has_text_layer: bool
 
 
-def parse(pdf: bytes) -> ParsedDocument:
+def parse(pdf: bytes) -> ParsedPDF:
     words: list[Word] = []
     text_found = False
     with pdfplumber.open(io.BytesIO(pdf)) as doc:
@@ -59,5 +64,5 @@ def parse(pdf: bytes) -> ParsedDocument:
             if not text_found:
                 text_found = bool((page.extract_text() or "").strip())
     words.sort(key=lambda w: (w.page, round(w.bbox.top, 1), w.bbox.x0))
-    return ParsedDocument(words=tuple(words), metadata=metadata,
-                           page_count=page_count, has_text_layer=text_found)
+    return ParsedPDF(words=tuple(words), metadata=metadata,
+                      page_count=page_count, has_text_layer=text_found)

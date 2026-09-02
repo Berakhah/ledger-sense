@@ -1,7 +1,7 @@
 import pdfplumber
 
 from ledger_sense.corpus.generate import generate
-from ledger_sense.extract.document import ParsedDocument, parse
+from ledger_sense.extract.document import ParsedPDF, parse
 from ledger_sense.ingest.fingerprint import fingerprint
 
 
@@ -12,7 +12,7 @@ def _pdf(seed=1):
 
 def test_parse_returns_words_metadata_page_count_and_text_layer_flag():
     doc = parse(_pdf())
-    assert isinstance(doc, ParsedDocument)
+    assert isinstance(doc, ParsedPDF)
     assert doc.words
     assert all(w.text for w in doc.words)
     assert doc.page_count == 1
@@ -31,6 +31,20 @@ def test_parse_metadata_reflects_pdfplumber_doc_metadata():
 def test_parse_words_are_the_same_as_the_old_extract_words_would_return():
     from ledger_sense.extract.textlayer import extract_words
     assert list(parse(_pdf()).words) == extract_words(_pdf())
+
+
+def test_parse_numbers_pages_and_sorts_words_within_each_page():
+    """Multi-page coverage for the page_no/sort-key logic this refactor
+    centralized (`two_page` splits the continuation rows across two pages,
+    header repeated on each)."""
+    _contract, _app, pdf = generate(seed=1, error="clean", layout="two_page")
+    doc = parse(pdf)
+    assert doc.page_count == 2
+    pages_seen = {w.page for w in doc.words}
+    assert pages_seen == {0, 1}
+    for page_no in pages_seen:
+        tops = [round(w.bbox.top, 1) for w in doc.words if w.page == page_no]
+        assert tops == sorted(tops)
 
 
 def test_fingerprint_opens_the_pdf_exactly_once(monkeypatch):

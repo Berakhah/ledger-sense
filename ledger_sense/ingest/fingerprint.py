@@ -8,7 +8,7 @@ import hashlib
 import re
 from typing import NamedTuple
 
-from ledger_sense.extract.document import ParsedDocument, parse
+from ledger_sense.extract.document import ParsedPDF, parse
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -27,12 +27,12 @@ def document_hash(pdf: bytes) -> str:
     return hashlib.sha256(pdf).hexdigest()[:32]
 
 
-def _producer(doc: ParsedDocument) -> str:
+def _producer(doc: ParsedPDF) -> str:
     raw = doc.metadata.get("Producer") or "unknown"
     return _UNSAFE.sub("-", raw)[:64]
 
 
-def _column_hash(doc: ParsedDocument) -> str:
+def _column_hash(doc: ParsedPDF) -> str:
     """Hash the distinct x-offsets on the busiest row band. Rounded to 2pt so
     sub-point rendering jitter does not fork the profile."""
     bands: dict[float, list[float]] = {}

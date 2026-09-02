@@ -1,5 +1,5 @@
 from ledger_sense.corpus.generate import generate
-from ledger_sense.extract.document import BBox, ParsedDocument, Word
+from ledger_sense.extract.document import BBox, ParsedPDF, Word
 from ledger_sense.ingest.fingerprint import document_hash, fingerprint
 
 
@@ -22,11 +22,11 @@ def test_a_shifted_column_layout_yields_a_different_key():
     against two hand-built word sets that differ only in x0."""
     from ledger_sense.ingest.fingerprint import _column_hash
 
-    def _doc(x0s: list[float]) -> ParsedDocument:
+    def _doc(x0s: list[float]) -> ParsedPDF:
         words = tuple(
             Word(text=str(i), bbox=BBox(x0, 100.0, x0 + 20.0, 110.0), page=0)
             for i, x0 in enumerate(x0s))
-        return ParsedDocument(words=words, metadata={}, page_count=1, has_text_layer=True)
+        return ParsedPDF(words=words, metadata={}, page_count=1, has_text_layer=True)
 
     baseline = _column_hash(_doc([36.0, 80.0, 288.0, 372.0]))
     shifted = _column_hash(_doc([61.0, 105.0, 313.0, 397.0]))
