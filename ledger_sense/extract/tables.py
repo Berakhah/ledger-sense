@@ -144,6 +144,19 @@ def find_headers(words: list[Word]) -> HeaderMap:
     return headers
 
 
+def _candidates(word: Word, headers: HeaderMap) -> list[str]:
+    """Every field whose span the word's CENTRE falls inside, without raising.
+
+    `_column_for` wraps this to enforce "ambiguous is an error"; `reconstruct_rows`
+    calls this directly because it needs to know WHICH fields were candidates
+    before deciding whether an ambiguity is fatal (F-17) -- a plain bool or a
+    raised exception would already have thrown away the information it needs.
+    """
+    centre = (word.bbox.x0 + word.bbox.x1) / 2
+    return [field for field, span in headers.items()
+            if span.x_left - COLUMN_SLACK_PT <= centre <= span.x_right + COLUMN_SLACK_PT]
+
+
 def _column_for(word: Word, headers: HeaderMap) -> str | None:
     """Assign by the word's CENTRE against the column's SPAN, not by its left
     edge against the header's left edge (F-12).
@@ -151,10 +164,9 @@ def _column_for(word: Word, headers: HeaderMap) -> str | None:
     Two columns matching is an error, not a coin flip: a misassigned money value
     is a bill that still foots and is wrong.
     """
-    centre = (word.bbox.x0 + word.bbox.x1) / 2
-    hits = [field for field, span in headers.items()
-            if span.x_left - COLUMN_SLACK_PT <= centre <= span.x_right + COLUMN_SLACK_PT]
+    hits = _candidates(word, headers)
     if len(hits) > 1:
+        centre = (word.bbox.x0 + word.bbox.x1) / 2
         raise AmbiguousColumnError(
             f"{word.text!r} at x={centre:.1f} falls inside columns {sorted(hits)}; "
             f"the column spans overlap and a guess here is a wrong bill")
@@ -177,27 +189,40 @@ def reconstruct_rows(words: list[Word], headers: HeaderMap) -> list[dict[str, Ce
     rows: list[dict[str, Cell]] = []
     for band_top in sorted(bands):
         grouped: dict[str, list[Word]] = {}
-        # A band below the grid (summary block, footer) can hold a stray word
-        # that shares an x-position with a column boundary -- e.g. a font
-        # falling back to a replacement glyph for a character the base-14 font
-        # cannot render -- without that band being a data row at all. Whether
-        # the ambiguity matters depends on whether this band turns out to be a
-        # genuine row (checked below via REQUIRED_FIELDS); collect it first
-        # rather than letting an off-grid word abort a document that has no
-        # real ambiguity in its line items.
-        ambiguous: AmbiguousColumnError | None = None
+        # F-17 (revising the earlier, unsound version of this same guard). Two
+        # ordinary column spans can overlap by COLUMN_SLACK_PT at their shared
+        # boundary -- e.g. `previous` ends and `this_period` begins at the
+        # same x -- and an everyday summary-label word ("Total", "Current",
+        # "Original"...) lands there on every clean document, every layout,
+        # at the six summary rows. That's not evidence the band is a real
+        # data row.
+        #
+        # An earlier version excluded an ambiguous word from `grouped` and
+        # only raised if `REQUIRED_FIELDS <= set(grouped)` was ALREADY true --
+        # but an ambiguous word is BY DEFINITION never in `grouped`, so a
+        # genuine row missing exactly one field to the ambiguity could never
+        # satisfy that check, and the row vanished silently via `continue`
+        # below before the raise was ever reached. Exactly the "coin flip"
+        # class of bug this module exists to refuse.
+        #
+        # So: track which field(s) each ambiguous word COULD belong to, and
+        # count those toward completeness OPTIMISTICALLY before deciding.
+        # Best-case-still-incomplete means real noise -- skip silently, same
+        # as any other non-data band. Best-case-complete means a genuine row
+        # was corrupted by an unresolvable boundary call -- raise.
+        ambiguous_words: list[Word] = []
+        possible_fields: set[str] = set()
         for word in bands[band_top]:
-            try:
-                field = _column_for(word, headers)
-            except AmbiguousColumnError as exc:
-                ambiguous = ambiguous or exc
-                continue
-            if field is not None:
-                grouped.setdefault(field, []).append(word)
-        if not REQUIRED_FIELDS <= set(grouped):
-            continue  # not a data row: footer, page number, continuation note
-        if ambiguous is not None:
-            raise ambiguous
+            hits = _candidates(word, headers)
+            if len(hits) > 1:
+                ambiguous_words.append(word)
+                possible_fields.update(hits)
+            elif hits:
+                grouped.setdefault(hits[0], []).append(word)
+        if not REQUIRED_FIELDS <= (set(grouped) | possible_fields):
+            continue  # not a data row even best-case: footer, page number, continuation note
+        if ambiguous_words:
+            _column_for(ambiguous_words[0], headers)  # re-raises with the formatted message
         row: dict[str, Cell] = {}
         for field, group in grouped.items():
             text, bbox = _merge(group)

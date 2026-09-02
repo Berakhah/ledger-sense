@@ -77,6 +77,60 @@ def test_overlapping_columns_raise_rather_than_guess():
         _column_for(Word("1.00", BBox(70, 20, 90, 30), 0), headers)
 
 
+def _hand_built_headers():
+    """Eight non-overlapping-except-at-shared-boundaries columns, ten points
+    wide each, header bboxes irrelevant to the checks below (bottom=10 so any
+    word with top>10 counts as body). Every REQUIRED_FIELDS name is covered.
+    """
+    from ledger_sense.extract.tables import HeaderSpan
+    from ledger_sense.extract.textlayer import BBox
+    fields = ["item_no", "description", "scheduled_value", "previous", "this_period",
+              "stored", "total_completed_and_stored", "retainage"]
+    return {field: HeaderSpan(BBox(i * 10, 0, i * 10 + 5, 10), float(i * 10), float(i * 10 + 10))
+            for i, field in enumerate(fields)}
+
+
+def test_ambiguous_word_in_an_otherwise_complete_row_raises():
+    """F-17. A word landing in the COLUMN_SLACK_PT overlap at a shared column
+    boundary (here: previous/this_period, at x=40) must not let the row it
+    belongs to vanish silently just because the ambiguous word itself can't
+    be filed anywhere. Demonstrated with a hand-built HeaderMap so it does
+    not depend on any particular PDF rendering producing the ambiguity --
+    reconstruct_rows's OWN collect-and-decide logic is what's under test,
+    not _column_for in isolation (that's the test above)."""
+    from ledger_sense.extract.tables import AmbiguousColumnError, reconstruct_rows
+    from ledger_sense.extract.textlayer import BBox, Word
+    headers = _hand_built_headers()
+    words = [
+        Word("010", BBox(1, 100, 3, 110), 0),        # item_no, unambiguous
+        Word("Desc", BBox(14, 100, 16, 110), 0),      # description, unambiguous
+        Word("100.00", BBox(24, 100, 26, 110), 0),    # scheduled_value, unambiguous
+        Word("20.00", BBox(34, 100, 36, 110), 0),     # previous, unambiguous
+        Word("5.00", BBox(39, 100, 41, 110), 0),      # centre=40: previous OR this_period
+        Word("0.00", BBox(54, 100, 56, 110), 0),      # stored, unambiguous
+        Word("120.00", BBox(64, 100, 66, 110), 0),    # total_completed_and_stored, unambiguous
+        Word("0.00", BBox(76, 100, 78, 110), 0),      # retainage, unambiguous
+    ]
+    with pytest.raises(AmbiguousColumnError):
+        reconstruct_rows(words, headers)
+
+
+def test_ambiguous_word_in_a_genuinely_incomplete_band_is_silently_skipped():
+    """The flip side of F-17: an ambiguous word does not, by itself, turn a
+    genuinely incomplete band (footer, page number, summary block) into a
+    raise. Same overlap as above, but nothing else in the band -- even
+    crediting the ambiguous word to BOTH candidate fields still leaves six
+    required fields missing, so this is noise, not a corrupted row."""
+    from ledger_sense.extract.tables import reconstruct_rows
+    from ledger_sense.extract.textlayer import BBox, Word
+    headers = _hand_built_headers()
+    words = [
+        Word("20.00", BBox(34, 100, 36, 110), 0),  # previous, unambiguous
+        Word("5.00", BBox(39, 100, 41, 110), 0),   # centre=40: previous OR this_period
+    ]
+    assert reconstruct_rows(words, headers) == []
+
+
 def test_every_cell_carries_a_bbox_inside_its_column():
     _c, _a, pdf = generate(seed=1, error="clean")
     words = extract_words(pdf)
