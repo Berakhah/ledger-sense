@@ -64,6 +64,15 @@ def _find_labels(words: list[Word], label: str) -> list[list[Word]]:
     return matches
 
 
+# Public alias (Ruling 5, Task 18): `assemble.extract_document_header` needs
+# the same label-anchor phrase matching for the document header block, but the
+# VALUE shapes there (an integer, a date, a bare id string) aren't
+# money-shaped, so it brings its own value matcher rather than reusing
+# `_value_near`. Re-exporting `_find_labels` under a public name avoids a
+# second, drifting copy of this matching logic.
+find_labels = _find_labels
+
+
 def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
     label_left = min(w.bbox.x0 for w in label_words)
     label_right = max(w.bbox.x1 for w in label_words)
