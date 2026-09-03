@@ -1,0 +1,7 @@
+# Verified false positives only — a fingerprint here must be reviewed and
+# justified in the commit that adds it, never added to silence a real leak.
+
+# Synthetic example fixture value inside a planning doc's illustrative test
+# snippet (`KEY = "LS0123456789abcdef012"`, Phase 5 writeback plan), not a
+# real credential. Flagged by gitleaks' entropy-based generic-api-key rule.
+ac10d51b2fa22c80cc892da2ca40ccb95d9ef505:docs/superpowers/plans/2025-03-11-ledger-sense-phase-5-writeback.md:generic-api-key:266
