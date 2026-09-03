@@ -17,9 +17,12 @@
   },
   "dependencies": {
     "next": "^15.5.4",
-    "pdfjs-dist": "^5.4.149",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
+  },
+  "overrides": {
+    "postcss": "8.5.26"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
