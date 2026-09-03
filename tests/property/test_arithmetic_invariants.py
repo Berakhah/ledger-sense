@@ -2,30 +2,21 @@ from hypothesis import given, settings
 
 from ledger_sense.domain.models import Contract, PayApplication
 from ledger_sense.domain.money import money
-from ledger_sense.rules.arithmetic.foot import rule_a1
-from ledger_sense.rules.arithmetic.lines import rule_a2, rule_a3, rule_a3b, rule_a4, rule_a4b
-from ledger_sense.rules.arithmetic.payment import (
-    current_payment_due,
-    rule_a5,
-    rule_a6,
-    rule_a7,
-    rule_a8,
-    total_earned_less_retainage,
-)
+from ledger_sense.rules.arithmetic import foot, lines  # noqa: F401  (registration side effect)
+from ledger_sense.rules.arithmetic.payment import current_payment_due, total_earned_less_retainage
+from ledger_sense.rules.engine import run_rules
 from tests.property.strategies import consistent_pay_applications
-
-# A9 is absent: it is a convention rule and ships in Phase 3 Task 24, which adds it
-# to this list (F-04). A property suite that imports it here would not import at all.
-ALL_RULES = [rule_a1, rule_a2, rule_a3, rule_a3b, rule_a4, rule_a4b, rule_a5, rule_a6,
-            rule_a7, rule_a8]
 
 
 @given(consistent_pay_applications())
 @settings(max_examples=300)
 def test_no_rule_fires_on_a_consistent_application(pair: tuple[Contract, PayApplication]) -> None:
+    """A9 is absent from the registry: it is a convention rule and ships in Phase 3
+    Task 24 (F-04). `run_rules(rule_classes={"arithmetic"})` only ever sees what's
+    registered, so this test does not need to know that list by name."""
     contract, app = pair
-    for rule in ALL_RULES:
-        assert rule(app, contract) == [], f"{rule.__name__} false-positived"
+    findings = run_rules(app, contract, rule_classes={"arithmetic"})
+    assert findings == [], f"{[f.rule_id for f in findings]} false-positived"
 
 
 @given(consistent_pay_applications())
