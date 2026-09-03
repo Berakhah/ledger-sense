@@ -34,3 +34,35 @@ def run_rules(
             continue
         findings.extend(rule.fn(app, contract))
     return findings
+
+
+_SUMMARY_MONEY_FIELDS = frozenset({
+    "total_completed_and_stored", "retainage_total",
+    "previous_payments", "change_orders_net",
+})
+
+
+def unverifiable_money_fields(app: PayApplication) -> tuple[str, ...]:
+    """Which Money-relevant fields could not really be extracted.
+
+    Reads `app.provenance["_unextractable"]` (a list of objects carrying a
+    `.field: str`, populated by the extraction pipeline) and returns the
+    subset that feeds arithmetic rules: the continuation-sheet grid, any
+    per-line cell, or one of the four summary Money totals. Header scalars
+    (contract_id, application_no, period_to) are excluded — no arithmetic
+    rule reads them, so their loss shouldn't taint a footing check.
+
+    `run_rules()` answers "did the rules agree". This answers "was the data
+    real". Trust the former only where this returns an empty tuple.
+    """
+    entries = app.provenance.get("_unextractable", [])
+    if not isinstance(entries, list):
+        return ()
+    fields: list[str] = []
+    for entry in entries:
+        field = getattr(entry, "field", None)
+        if not isinstance(field, str):
+            continue
+        if field == "lines" or field.startswith("line[") or field in _SUMMARY_MONEY_FIELDS:
+            fields.append(field)
+    return tuple(dict.fromkeys(fields))
