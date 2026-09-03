@@ -41,6 +41,11 @@ _SUMMARY_MONEY_FIELDS = frozenset({
     "previous_payments", "change_orders_net",
 })
 
+_ALL_MONEY_FIELDS: tuple[str, ...] = (
+    "lines", "total_completed_and_stored", "retainage_total",
+    "previous_payments", "change_orders_net",
+)
+
 
 def unverifiable_money_fields(app: PayApplication) -> tuple[str, ...]:
     """Which Money-relevant fields could not really be extracted.
@@ -54,13 +59,21 @@ def unverifiable_money_fields(app: PayApplication) -> tuple[str, ...]:
 
     `run_rules()` answers "did the rules agree". This answers "was the data
     real". Trust the former only where this returns an empty tuple.
+
+    A malformed `_unextractable` value (present but not a list) fails
+    CLOSED: every Money-relevant field is reported unverifiable, rather
+    than silently trusting data whose shape this function doesn't
+    recognise — the same "until calibrated, everything routes to review"
+    posture the confidence-routing design uses elsewhere.
     """
-    entries = app.provenance.get("_unextractable", [])
-    if not isinstance(entries, list):
+    if "_unextractable" not in app.provenance:
         return ()
+    entries = app.provenance["_unextractable"]
+    if not isinstance(entries, list):
+        return _ALL_MONEY_FIELDS
     fields: list[str] = []
     for entry in entries:
-        field = getattr(entry, "field", None)
+        field = entry.get("field") if isinstance(entry, dict) else getattr(entry, "field", None)
         if not isinstance(field, str):
             continue
         if field == "lines" or field.startswith("line[") or field in _SUMMARY_MONEY_FIELDS:

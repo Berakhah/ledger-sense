@@ -131,6 +131,26 @@ def test_unverifiable_money_fields_includes_the_four_summary_totals() -> None:
     )
 
 
+def test_unverifiable_money_fields_accepts_dict_shaped_entries() -> None:
+    """A serialization round-trip (e.g. JSON) can turn UnextractableField
+    into a plain dict; the checkpoint must still recognise it."""
+    app = _app().model_copy(update={"provenance": {"_unextractable": [
+        {"field": "lines", "reason": "continuation grid could not be reconstructed"},
+    ]}})
+    assert unverifiable_money_fields(app) == ("lines",)
+
+
+def test_unverifiable_money_fields_fails_closed_on_a_malformed_container() -> None:
+    """If `_unextractable` is present but not a list, the shape is not what
+    this function understands. Fail closed: report every Money-relevant
+    field as unverifiable, not none."""
+    app = _app().model_copy(update={"provenance": {"_unextractable": "not-a-list"}})
+    assert unverifiable_money_fields(app) == (
+        "lines", "total_completed_and_stored", "retainage_total",
+        "previous_payments", "change_orders_net",
+    )
+
+
 def test_unverifiable_money_fields_deduplicates_preserving_order() -> None:
     app = _app().model_copy(update={"provenance": {"_unextractable": [
         _Unextractable("lines"),
