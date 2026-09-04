@@ -15,6 +15,14 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# `uv run` (the CMD below) writes to its own cache dir on every invocation,
+# separate from UV_PROJECT_ENVIRONMENT above — default is $HOME/.cache/uv,
+# which does not exist under this image's read_only: true + tmpfs-only /tmp
+# and /app/scratch (docker-compose.yml). /tmp is the tmpfs one of those two
+# still free for this: /app/scratch is reserved for the documents this
+# service actually parses.
+ENV UV_CACHE_DIR=/tmp/uv-cache
+
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
@@ -24,4 +32,9 @@ RUN uv sync --frozen --no-dev
 RUN chown -R ledger:ledger /app
 USER ledger
 
-CMD ["uv", "run", "python", "-m", "ledger_sense"]
+# --frozen --no-dev: the exact flags the two `uv sync` layers above already
+# built the venv with. Without them, `uv run` re-syncs on every start against
+# the *full* dependency set (dev group included — mypy, ruff, hypothesis...),
+# which is both wrong for a runtime image and, under read_only: true, a crash:
+# it cannot write the packages it decides to add to /app/.venv.
+CMD ["uv", "run", "--frozen", "--no-dev", "python", "-m", "ledger_sense"]

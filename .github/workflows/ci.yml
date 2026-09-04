@@ -18,7 +18,7 @@ jobs:
           # docs/methodology.md for what this does and does not cover.
           find .venv -name '*.so' -exec ldd {} + \
             | awk '/=>/ {print $3}' | sort -u \
-            | grep -v -e '^\.venv' -e '^/lib' -e '^/usr/lib' -e 'linux-vdso' \
+            | grep -v -e '^\.venv' -e '/\.venv/' -e '^/lib' -e '^/usr/lib' -e 'linux-vdso' \
             | tee /dev/stderr | wc -l | grep -qx 0
       - run: uv run python -m scripts.licence_audit --check-lockfile uv.lock
       - run: uv run pytest tests/test_licence_audit.py -v
@@ -57,6 +57,19 @@ jobs:
           uv run pytest tests/domain tests/rules/arithmetic tests/rules/test_engine.py tests/baseline \
             --cov=ledger_sense.domain --cov=ledger_sense.rules.arithmetic --cov=ledger_sense.rules.engine \
             --cov=ledger_sense.baseline --cov-report=term-missing --cov-fail-under=75
+      - name: Coverage floor (extract, ingest)
+        run: |
+          uv run pytest tests/extract tests/ingest \
+            --cov=ledger_sense.extract --cov=ledger_sense.ingest \
+            --cov-report=term-missing --cov-fail-under=75
+
+  degraded-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - run: uv run pytest tests/test_degraded_mode.py -v
 
   no-float:
     runs-on: ubuntu-latest
@@ -80,9 +93,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
-      # F-28: VCR scrubs request headers and bodies, never responses.
-      - run: gitleaks detect --no-git --source tests/writeback/cassettes --redact
+      # CLI, not gitleaks/gitleaks-action@v2: the action's check-run summary
+      # needs `checks: write`, which this repo's default GITHUB_TOKEN
+      # permissions (read-only, org-level) won't grant. Same gitleaks
+      # version pinned in .pre-commit-config.yaml.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+      - run: gitleaks detect --redact
+      # F-28: VCR scrubs request headers and bodies, never responses. Ships
+      # with writeback (a later phase); no-op until tests/writeback/cassettes
+      # exists rather than hard-failing every branch that predates it.
+      - run: |
+          if [ -d tests/writeback/cassettes ]; then
+            gitleaks detect --no-git --source tests/writeback/cassettes --redact
+          else
+            echo "tests/writeback/cassettes not present yet — skipping."
+          fi
 
   frontend:
     runs-on: ubuntu-latest

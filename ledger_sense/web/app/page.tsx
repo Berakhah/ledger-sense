@@ -4,6 +4,7 @@ import Link from 'next/link'
 // reconciliation, vendor ledger, metrics — are Phase 4's, and each replaces
 // its entry here rather than being added alongside.
 const SCREENS = [
+  { href: '/baseline', label: 'Baseline study' },
   { href: '/review/doc-50', label: 'Review queue' },
 ] as const
 

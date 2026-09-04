@@ -29,9 +29,15 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
   webServer: {
-    // --wait blocks until every service reports started, so the url poll below
-    // is a readiness check rather than the only thing holding the suite back.
-    command: 'docker compose --profile demo up --build --wait',
+    // No --wait: it puts compose into detached mode and, once every service
+    // reports healthy, the compose CLI process itself exits(0) — which
+    // Playwright's webServer treats as "the server process died" regardless
+    // of exit code, failing the run with "exited early" seconds after every
+    // container actually came up fine. Foreground `up` blocks and keeps
+    // streaming logs for the run's whole lifetime instead, so the url poll
+    // below is the one and only readiness gate — Playwright stops this
+    // process (SIGTERM), which stops the containers, once tests finish.
+    command: 'docker compose --profile demo up --build',
     url: `${WEB_URL}/`,
     // Locally, reuse a stack the developer already has up; in CI always build
     // a fresh one, because "it passed against whatever was running" is not a
