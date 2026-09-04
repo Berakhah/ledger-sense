@@ -10,5 +10,7 @@ ac10d51b2fa22c80cc892da2ca40ccb95d9ef505:docs/superpowers/plans/2025-03-11-ledge
 # The comment above quoted that literal value and tripped the same rule
 # against this file itself, in the commit that first added it. Fixed
 # going forward (comment no longer reproduces the value); this fingerprint
-# covers the one historical commit where it still does.
-7507d0197de7ed1257aec21c0fbd3679782889b2:.gitleaksignore:generic-api-key:5
+# covers the one historical commit where it still does. Pinned to a commit
+# SHA, so a rebase of this branch changes the hash and this line must be
+# updated to match (`git log --oneline -- .gitleaksignore`), not deleted.
+7d4b9bffe4113792645ef1add7df554d1ea7c92d:.gitleaksignore:generic-api-key:5
