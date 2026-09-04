@@ -52,10 +52,10 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy --strict .
       - run: uv run pytest
-      - name: Coverage floor (domain, rules/arithmetic, baseline)
+      - name: Coverage floor (domain, rules/arithmetic, rules/engine, baseline)
         run: |
-          uv run pytest tests/domain tests/rules/arithmetic tests/baseline \
-            --cov=ledger_sense.domain --cov=ledger_sense.rules.arithmetic \
+          uv run pytest tests/domain tests/rules/arithmetic tests/rules/test_engine.py tests/baseline \
+            --cov=ledger_sense.domain --cov=ledger_sense.rules.arithmetic --cov=ledger_sense.rules.engine \
             --cov=ledger_sense.baseline --cov-report=term-missing --cov-fail-under=75
 
   no-float:
