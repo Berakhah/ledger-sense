@@ -8,15 +8,12 @@ from ledger_sense.corpus.errors import ErrorClass
 from ledger_sense.corpus.generate import generate
 from ledger_sense.extract.assemble import assemble_pay_application
 
-# Imported for their registration side effect only (F-67). The list below used to
-# be written out by hand in three separate files; reclassifying ONE rule (A9, from
-# `arithmetic` to `convention`) broke all three at once, and two of them silently.
-# Ask the registry instead.
+# Imported for their registration side effect only (F-67). A hand-written
+# ALL_RULES list used to be duplicated across three files; reclassifying ONE
+# rule (A9, from `arithmetic` to `convention`) broke all three at once, and
+# two of them silently. run_rules(rule_classes=...) asks the registry instead.
 from ledger_sense.rules.arithmetic import foot, lines, payment  # noqa: F401
-from ledger_sense.rules.registry import registered_rules
-
-ALL_RULES = [r.fn for r in registered_rules().values()
-             if r.rule_class == "arithmetic"]
+from ledger_sense.rules.engine import run_rules
 
 
 @pytest.fixture(autouse=True)
@@ -56,8 +53,8 @@ def test_clean_documents_extract_and_validate_with_no_model(seed: int) -> None:
     contract, _app, pdf = generate(seed=seed, error="clean")
     built = assemble_pay_application(pdf, f"corpus://seed-{seed}")
     assert built.provenance["_unextractable"] == []
-    for rule in ALL_RULES:
-        assert rule(built, contract) == [], f"{rule.__name__} fired on a clean document"
+    findings = run_rules(built, contract, rule_classes={"arithmetic"})
+    assert findings == [], f"rules fired on a clean document: {findings}"
 
 
 @pytest.mark.parametrize("error,expected_rule", [
@@ -65,5 +62,5 @@ def test_clean_documents_extract_and_validate_with_no_model(seed: int) -> None:
 def test_injected_errors_are_caught_with_no_model(error: ErrorClass, expected_rule: str) -> None:
     contract, _app, pdf = generate(seed=1, error=error)
     built = assemble_pay_application(pdf, "corpus://seed-1")
-    fired = {f.rule_id for rule in ALL_RULES for f in rule(built, contract)}
+    fired = {f.rule_id for f in run_rules(built, contract, rule_classes={"arithmetic"})}
     assert expected_rule in fired
