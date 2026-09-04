@@ -23,6 +23,11 @@ import pypdfium2.raw as pdfium_c
 from ledger_sense.corpus.errors import ErrorClass, inject
 from ledger_sense.corpus.layouts import (
     BODY_FONT_PT,
+    DOC_HEADER_FIELDS,
+    DOC_HEADER_LABEL_X_PT,
+    DOC_HEADER_ROW_HEIGHT_PT,
+    DOC_HEADER_TOP_PT,
+    DOC_HEADER_VALUE_X_PT,
     HEADER_FONT_PT,
     HEADER_Y_PT,
     PAGE_HEIGHT_PT,
@@ -172,6 +177,20 @@ def _render(app: PayApplication, contract: Contract, layout: str) -> bytes:
                 else:
                     _insert_text(page, pdf, value, column.x_pt, y, BODY_FONT_PT)
             y -= ROW_HEIGHT_PT
+
+    # THE DOCUMENT HEADER BLOCK (Task 18). Contract/application/period
+    # identifiers, drawn above the grid's own header row, page one only —
+    # mirrors the SUMMARY_FIELDS pattern below.
+    header_values: dict[str, str] = {
+        "contract_id": contract.id,
+        "application_no": str(app.application_no),
+        "period_to": str(app.period_to),
+    }
+    y = DOC_HEADER_TOP_PT
+    for label, field in DOC_HEADER_FIELDS:
+        _insert_text(pages[0], pdf, label, DOC_HEADER_LABEL_X_PT, y, BODY_FONT_PT)
+        _insert_text(pages[0], pdf, header_values[field], DOC_HEADER_VALUE_X_PT, y, BODY_FONT_PT)
+        y -= DOC_HEADER_ROW_HEIGHT_PT
 
     # THE SUMMARY BLOCK (F-10). Defined in layouts.py, drawn here, on page one
     # only — the block belongs to the document, not to a particular grid page.

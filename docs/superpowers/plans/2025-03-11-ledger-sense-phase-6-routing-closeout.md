@@ -97,6 +97,22 @@ threshold is withdrawn automatically** and the field type returns to `review`. T
 `2026-08-29-REVISIONS.md` §11 **Q4** — 5% proposed — and it goes in `docs/methodology.md`, because it is a real
 trade between straight-through rate and drift detection.
 
+### `_unextractable` fields have no path into `Router.decide()` — noted at PR #1 close-out (2026-09-03)
+
+`extract/assemble.py` records a wholly-unreconstructable continuation grid (`MissingColumnError`/
+`AmbiguousColumnError`, or headers resolved with zero rows) as `UnextractableField("lines", ...)` in
+`provenance["_unextractable"]` — never as a `Claim`, so it carries no `match_quality` a router could see.
+Rule A1 (`rules/arithmetic/foot.py`) sums `app.lines` against the summary total with no awareness of
+`_unextractable` either; if the summary total also reads zero, A1 raises nothing. As things stand, a
+document whose grid failed entirely can reach `Router.decide()` with no `rule_failures` entry forcing
+review.
+
+`Router.decide()` (Task 41) already accepts `rule_failures: tuple[str, ...]` specifically to force review
+past a high confidence score (`test_a_failed_rule_forces_review_even_at_a_perfect_confidence`). Before
+Task 40/41 close out, whatever assembles that tuple for a given `PayApplication` needs to also fold in
+`provenance["_unextractable"]` — a document with unextractable lines should never reach the router with an
+empty `rule_failures`. Needs its own test alongside the existing router suite.
+
 ### The three states, and what each is worth
 
 | State | How it arises | `threshold_for()` | What may be said to a buyer |

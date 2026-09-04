@@ -1,0 +1,16 @@
+# Verified false positives only — a fingerprint here must be reviewed and
+# justified in the commit that adds it, never added to silence a real leak.
+
+# A made-up idempotency-key literal inside a planning doc's illustrative
+# test snippet (Phase 5 writeback plan), not a real credential. Flagged by
+# gitleaks' entropy-based generic-api-key rule. See that line in the doc
+# for the exact value — not reproduced here, or this file trips the rule too.
+ac10d51b2fa22c80cc892da2ca40ccb95d9ef505:docs/superpowers/plans/2025-03-11-ledger-sense-phase-5-writeback.md:generic-api-key:266
+
+# The comment above quoted that literal value and tripped the same rule
+# against this file itself, in the commit that first added it. Fixed
+# going forward (comment no longer reproduces the value); this fingerprint
+# covers the one historical commit where it still does. Pinned to a commit
+# SHA, so a rebase of this branch changes the hash and this line must be
+# updated to match (`git log --oneline -- .gitleaksignore`), not deleted.
+7d4b9bffe4113792645ef1add7df554d1ea7c92d:.gitleaksignore:generic-api-key:5

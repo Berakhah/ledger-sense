@@ -12,19 +12,24 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "cryptography>=50.0.1",
     "fastapi>=0.141.1",
+    "pdfplumber>=0.11.3",
     "pydantic>=2.4.0",
     "psycopg[binary]>=3.3.4",
     "pypdfium2>=5.13.0",
     "sqlalchemy>=2.0.52",
+    "uvicorn>=0.52.4",
+    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 # No [project.scripts]: no CLI. Dev entrypoint is `uv run python -m ledger_sense`.
 
 [dependency-groups]
 dev = [
+    "cyclonedx-bom>=7.1.1",
     "httpx>=0.28.1",
     "hypothesis>=6.167.1",
     "mypy>=2.3.1",
+    "pip-audit>=2.9.0",
     "pytest>=8.0",
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
@@ -67,6 +72,11 @@ mypy_path = "."
 [[tool.mypy.overrides]]
 # pypdfium2 ships no py.typed marker / stubs.
 module = "pypdfium2.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# rapidocr_onnxruntime ships no py.typed marker / stubs either.
+module = "rapidocr_onnxruntime.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
