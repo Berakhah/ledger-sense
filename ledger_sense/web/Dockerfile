@@ -5,6 +5,14 @@
 
 FROM node:22-alpine AS build
 WORKDIR /app
+# Baked into the client bundle at build time, not read at container start —
+# Next.js inlines NEXT_PUBLIC_* references during `next build`, so this has
+# to be an ARG here rather than only a runtime `environment:` entry in
+# docker-compose.yml. The baseline screen is the first page that calls the
+# API directly from the browser (see app/baseline/page.tsx); the default
+# matches the port compose maps in every profile.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 # Lockfile first, so a source-only change does not re-resolve the tree.
 COPY package.json package-lock.json ./
 RUN npm ci

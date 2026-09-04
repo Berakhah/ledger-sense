@@ -33,11 +33,22 @@ x-app: &app
   # erroring on the other, out-of-profile service name.
   depends_on:
     postgres:
-      condition: service_started
+      condition: service_healthy
       required: false
     postgres-demo:
-      condition: service_started
+      condition: service_healthy
       required: false
+  # /api/health only starts answering once __main__.py's migration step has
+  # already succeeded and uvicorn is serving — so "healthy" here means "ready
+  # for a real request", which `web`'s own depends_on (below) leans on. No
+  # curl in python:3.12-slim; urllib is always there.
+  healthcheck:
+    test: ["CMD", "python", "-c",
+           "import urllib.request as u; u.urlopen('http://localhost:8000/api/health', timeout=2)"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+    start_period: 5s
 
 x-postgres-env: &postgres-env
   POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
@@ -59,6 +70,11 @@ services:
     environment:
       <<: *postgres-env
       LEDGER_SENSE_PROFILE: client
+      # Substituted here, not left to env_file's plain pass-through of .env:
+      # an unset *or empty* .env value must still resolve to the default —
+      # env_file alone would hand the container a literal empty string,
+      # which is a real (if useless) CORS allow-list entry, not "unset".
+      LEDGER_SENSE_WEB_ORIGIN: ${LEDGER_SENSE_WEB_ORIGIN:-http://localhost:3000}
 
   app-demo:
     <<: *app
@@ -69,6 +85,7 @@ services:
     environment:
       <<: *postgres-env
       LEDGER_SENSE_PROFILE: demo
+      LEDGER_SENSE_WEB_ORIGIN: ${LEDGER_SENSE_WEB_ORIGIN:-http://localhost:3000}
 
   # The Next.js app. Root build context on purpose: one package.json and one
   # lockfile serve the whole node side, and the app directory is passed to
@@ -77,15 +94,21 @@ services:
     build:
       context: .
       dockerfile: ledger_sense/web/Dockerfile
+      args:
+        # Passed through to the Dockerfile's ARG of the same name, which the
+        # `environment:` entry below cannot reach: Next.js inlines
+        # NEXT_PUBLIC_* into the client bundle at `next build` time, before
+        # the container this `environment:` block configures ever starts.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     profiles: ["client", "demo"]
     # Same `required: false` pattern as app's own depends_on: only one of the
     # two API services exists per profile.
     depends_on:
       app:
-        condition: service_started
+        condition: service_healthy
         required: false
       app-demo:
-        condition: service_started
+        condition: service_healthy
         required: false
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
@@ -102,6 +125,15 @@ services:
     volumes:
       - client_pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+    # app's depends_on above waits on this: pg_isready ships in the image
+    # already, so this is the one Postgres accepts connections check, not
+    # merely "the container process started" (which "created subdirectories"
+    # can be true for well before Postgres is actually ready for a client).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ledger_sense}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   postgres-demo:
     image: postgres:16-alpine
@@ -117,6 +149,11 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ledger_sense}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
 volumes:
   client_pgdata:

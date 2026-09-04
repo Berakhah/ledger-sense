@@ -1,0 +1,25 @@
+# Neither Dockerfile (root, ledger_sense/web/Dockerfile) reads any of this
+# from the host — `uv sync` and `npm ci` install fresh inside the image.
+# Without this file, every `docker compose build` sends the whole repo
+# (.venv + node_modules + .next alone: ~1GB) to the daemon as build context,
+# on every single build regardless of layer cache — observed adding 3+
+# minutes to `docker compose --profile demo up --build` and blowing past
+# playwright.config.ts's 300s webServer timeout. Mirrors .gitignore, plus
+# Docker-specific entries .gitignore has no reason to carry (.git itself,
+# caches, IDE/OS files).
+.venv/
+node_modules/
+.next/
+__pycache__/
+.git/
+.hypothesis/
+.coverage
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+test-results/
+playwright-report/
+next-env.d.ts
+ledger_sense/web/public/pdf.worker.min.mjs
+.env
+.DS_Store

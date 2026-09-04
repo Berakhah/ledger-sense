@@ -59,6 +59,31 @@ To be completed in a later phase.
 
 To be completed in a later phase.
 
+### `match_quality` (extraction, Phase 2)
+
+Every field `assemble_pay_application` extracts carries a `match_quality`
+score in `[0.0, 1.0]`, computed by `ledger_sense.extract.assemble.match_quality`
+as the unweighted average of four booleans:
+
+- `label_exact` — the field's label was found by literal anchor match, not
+  inferred from remembered geometry.
+- `value_unique` — the value did not require merging or choosing among
+  several candidate words. Not yet computed everywhere it's passed; several
+  call sites currently pass a documented constant `True` pending that work.
+- `column_unambiguous` — the field's label did not also collide with a
+  second occurrence elsewhere on the page (see `extract_summary`'s
+  `ambiguous` list).
+- `profile_hit` — the value came from a box remembered from a past
+  reviewer correction (`ProfileCache`) rather than a fresh label anchor.
+
+This is **explicitly not a probability.** It is four bits of evidence, one
+data point per field per document, with no reliability curve fitted to it
+yet. Phase 6 either calibrates it against reviewer-corrected ground truth
+(isotonic or Platt, per field type — see "How we measure it" above for the
+same discipline applied to the baseline number) or refuses to route on it —
+`ConfidenceMeter` renders **uncalibrated** until that curve exists. Until
+then, every field routes to review regardless of this score.
+
 ## What these numbers do not mean
 
 - The figure describes the sampled documents over the stated period. It is

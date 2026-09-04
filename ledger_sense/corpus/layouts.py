@@ -66,6 +66,25 @@ SUMMARY_LABEL_X_PT = 380.0
 SUMMARY_VALUE_X_PT = 620.0
 SUMMARY_ROW_HEIGHT_PT = 16.0
 
+# DOCUMENT HEADER BLOCK (Task 18) — contract/application/period identifiers,
+# drawn ABOVE the continuation grid's own header row (HEADER_Y_PT = 540.0) on
+# page one only, same label/value pattern as SUMMARY_FIELDS above.
+#
+# None of these three phrases share a word sequence with a CONTINUATION_COLUMNS
+# header or a SUMMARY_LABELS entry (F-09's lesson: a shared label string is a
+# wrong-cell bug waiting to happen) — verified empirically, see task-18-report.md.
+# "Period Ending" deliberately contains the bare word "Period" so a test that
+# drops that exact token can simulate a missing label.
+DOC_HEADER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("Contract Number",     "contract_id"),
+    ("Application Number",  "application_no"),
+    ("Period Ending",       "period_to"),
+)
+DOC_HEADER_TOP_PT = 576.0
+DOC_HEADER_LABEL_X_PT = 36.0
+DOC_HEADER_VALUE_X_PT = 160.0
+DOC_HEADER_ROW_HEIGHT_PT = 12.0
+
 # ADVERSARIAL LAYOUT VARIANTS — REVISED (F-14).
 #
 # `extract/tables.py` originally imported CONTINUATION_COLUMNS from this module,

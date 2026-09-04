@@ -18,18 +18,28 @@ three above are mounted with add_api_route rather than include_router so they
 stay visible to that walk instead of hiding from the audit that exempts them.
 """
 
+import os
 import threading
 import time
 from collections import defaultdict, deque
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ledger_sense.api._stub_routes import stub_routers
+from ledger_sense.api.baseline import router as baseline_router
 from ledger_sense.api.deps import register
 from ledger_sense.api.fixtures import SEED_PATH, demo_profile_enabled, seed
 from ledger_sense.auth.models import authenticate
 from ledger_sense.auth.session import SESSION_TTL, issue_session
+
+# next.config.ts: "the browser talks to it directly at NEXT_PUBLIC_API_URL;
+# nothing is proxied through Next" — the web app is a separate origin (see
+# docker-compose.yml) that calls this API with fetch() from the baseline
+# screen onward, so the browser enforces CORS on every one of those calls.
+# Credentials (the session cookie) are required, so this cannot be "*".
+WEB_ORIGIN = os.environ.get("LEDGER_SENSE_WEB_ORIGIN", "http://localhost:3000")
 
 LOGIN_LIMIT = 10
 LOGIN_WINDOW_SECONDS = 60.0
@@ -72,6 +82,14 @@ def _rate_limited(client: str) -> bool:
 def build_app() -> FastAPI:
     app = FastAPI(title="Ledger Sense")
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[WEB_ORIGIN],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT"],
+        allow_headers=["Content-Type"],
+    )
+
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -108,6 +126,12 @@ def build_app() -> FastAPI:
     if demo_profile_enabled():
         app.add_api_route(SEED_PATH, seed, methods=["POST"], status_code=201,
                           tags=["fixtures"])
+
+    # /api/baseline is not one of the three UNGUARDED_PREFIXES exceptions above
+    # (unlike /api/fixtures/seed) and follows the same profile discipline as
+    # /api/inbox or any other normal route: register() applies require_session,
+    # and it is available whichever profile this process runs under.
+    register(app, baseline_router)
 
     for router in stub_routers():
         register(app, router)
