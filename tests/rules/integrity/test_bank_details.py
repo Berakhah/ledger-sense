@@ -103,9 +103,13 @@ def test_no_code_path_mutates_payment_history_outside_the_ledger():
 
 def test_no_full_account_number_is_ever_stored():
     """Last four plus an HMAC. A full account number in our store is a breach
-    waiting; four digits alone is a 1-in-10,000 miss on a fraud control (F-35)."""
+    waiting; four digits alone is a 1-in-10,000 miss on a fraud control (F-35).
+
+    `id` was added by the code-review fix below (merge/unmerge must track
+    migrated entries by identity, not by `observed_at` value) — it is a
+    record identifier, not account data, so it belongs in this allow-list."""
     assert set(PaymentDetail.model_fields) == {
-        "account_last4", "routing_last4", "account_hmac", "observed_at",
+        "id", "account_last4", "routing_last4", "account_hmac", "observed_at",
         "source_document", "confirmed_by", "confirmed_at"}
     for field in ("account_number", "routing_number", "iban", "account"):
         assert field not in PaymentDetail.model_fields
