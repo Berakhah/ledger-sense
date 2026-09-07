@@ -74,7 +74,7 @@ def test_the_duplicate_injector_produces_a_second_document() -> None:
 
 def test_the_retainage_injector_disagrees_with_the_contract_term() -> None:
     contract, app, _pdf = generate(seed=1, error="C1_retainage_rate")
-    expected = contract.retainage_rate * app.total_completed_and_stored
+    expected = contract.retainage.base_rate * app.total_completed_and_stored
     assert app.retainage_total != expected
 
 
