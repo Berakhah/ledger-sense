@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 from typing import NamedTuple
 
-from ledger_sense.domain.models import Contract, PayApplication
+from ledger_sense.domain.models import Contract, PayApplication, RetainageTerms
 from ledger_sense.domain.money import RoundingPolicy, money
 from ledger_sense.rules.engine import Finding, run_rules, unverifiable_money_fields
 from ledger_sense.rules.registry import register
@@ -10,8 +10,8 @@ from ledger_sense.rules.registry import register
 
 def _contract() -> Contract:
     return Contract(id="C-1", original_sum=money("1000.00"),
-                    rounding=RoundingPolicy(2, 4), retainage_rate=Decimal("0.10"),
-                    retainage_steps=[], jurisdiction=None)
+                    rounding=RoundingPolicy(2, 4),
+                    retainage=RetainageTerms(base_rate=Decimal("0.10")))
 
 
 def _app() -> PayApplication:

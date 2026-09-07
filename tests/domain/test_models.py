@@ -6,6 +6,7 @@ from ledger_sense.domain.models import (
     Contract,
     PayApplication,
     RetainageStep,
+    RetainageTerms,
 )
 from ledger_sense.domain.money import RoundingPolicy, money
 
@@ -15,10 +16,11 @@ def _contract() -> Contract:
         id="C-1",
         original_sum=money("100000.00"),
         rounding=RoundingPolicy(money_places=2, percent_places=4),
-        retainage_rate=Decimal("0.10"),
-        retainage_steps=[RetainageStep(at_percent_complete=Decimal("0.50"),
-                                       new_rate=Decimal("0.05"))],
-        jurisdiction=None,
+        retainage=RetainageTerms(
+            base_rate=Decimal("0.10"),
+            steps=[RetainageStep(at_percent_complete=Decimal("0.50"),
+                                 new_rate=Decimal("0.05"))],
+        ),
     )
 
 
@@ -34,8 +36,8 @@ def _empty_app(co: str = "0.00") -> PayApplication:
 def test_contract_carries_its_own_rounding_and_retainage_terms() -> None:
     c = _contract()
     assert c.rounding.money_places == 2
-    assert c.retainage_rate == Decimal("0.10")
-    assert c.retainage_steps[0].new_rate == Decimal("0.05")
+    assert c.retainage.base_rate == Decimal("0.10")
+    assert c.retainage.steps[0].new_rate == Decimal("0.05")
 
 
 def test_adjusted_contract_sum_is_original_plus_net_change_orders() -> None:

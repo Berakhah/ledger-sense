@@ -317,7 +317,11 @@ def assemble_pay_application(
         contract_id=contract_id,
         application_no=application_no,
         period_to=period_to,
-        lines=lines, provenance=provenance, **totals)
+        lines=lines, provenance=provenance,
+        change_orders_net=totals["change_orders_net"],
+        retainage_total=totals["retainage_total"],
+        previous_payments=totals["previous_payments"],
+        total_completed_and_stored=totals["total_completed_and_stored"])
 
 
 def line_hash(lines: list[ContinuationLine]) -> str:
