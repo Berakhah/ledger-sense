@@ -1765,8 +1765,15 @@ from ledger_sense.domain.money import money
 from ledger_sense.rules.integrity.duplicates import DocumentFingerprint, find_duplicates
 
 
-def _fp(vendor="Acme Steel", amount="1000.00", days=0, invoice="INV-1", line_hash="h1"):
-    return DocumentFingerprint(vendor=vendor, amount=money(amount),
+# REVISED (pre-flight scan, 2026-09-07): `vendor_id=` (matching key), not
+# `vendor=` — matches the DocumentFingerprint.vendor_id fix below (F-37:
+# matching must be scoped to the RESOLVED vendor id, not a raw name two
+# different vendors could share). `vendor` stays as an optional DISPLAY-ONLY
+# passthrough, since two tests below construct fingerprints by raw vendor
+# name without caring about resolution.
+def _fp(vendor_id="Acme Steel", vendor=None, amount="1000.00", days=0,
+        invoice="INV-1", line_hash="h1"):
+    return DocumentFingerprint(vendor_id=vendor_id, vendor=vendor, amount=money(amount),
                                doc_date=date(2026, 8, 1) + timedelta(days=days),
                                invoice_number=invoice, line_hash=line_hash)
 
@@ -1919,16 +1926,36 @@ def test_merge_refuses_without_a_named_confirmer(ledger):
 
 ```python
 # tests/rules/integrity/test_bank_details.py
+# REVISED (pre-flight scan, 2026-09-07): three defects, all in this fixture
+# block. (1) `account_hmac` is a REQUIRED field on `PaymentDetail` (no
+# default — deliberately: a blank default would make two blank hmacs
+# spuriously "match", defeating the whole control) but neither `ledger` nor
+# `_incoming()` supplied one — every test using either would fail with a
+# Pydantic ValidationError before any comparison logic ran at all. (2)
+# `payment_hmac` is called later in this file but was never imported. (3)
+# `payment_hmac` reads `os.environ["LEDGER_SENSE_PAYMENT_HMAC_KEY"]` with no
+# default (by design — see the docstring below) so it raises KeyError
+# without it; `tests/store/conftest.py` already establishes this repo's
+# pattern of scoping a required env var to the fixture that needs it via
+# `monkeypatch`, followed here. The hmac inputs below use the last4 strings
+# directly rather than a fabricated "full" account number — this module
+# tests COMPARISON behaviour, not hmac computation, so what matters is only
+# that identical inputs hmac identically and different ones don't.
 import ast
 import pathlib
 from datetime import datetime, timezone
 
 import pytest
 
-from ledger_sense.domain.vendor import PaymentDetail, VendorLedger
+from ledger_sense.domain.vendor import PaymentDetail, VendorLedger, payment_hmac
 from ledger_sense.rules.integrity.bank_details import (
     BankDetailChangeError, check_payment_detail,
 )
+
+
+@pytest.fixture(autouse=True)
+def _hmac_key(monkeypatch):
+    monkeypatch.setenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", "test-key-not-a-secret")
 
 
 @pytest.fixture()
@@ -1937,6 +1964,7 @@ def ledger():
     vendor_id = led.create("Acme Steel Company")
     led.record_payment_detail(vendor_id, PaymentDetail(
         account_last4="4321", routing_last4="8765",
+        account_hmac=payment_hmac("4321", "8765"),
         observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         source_document="doc://original"), confirmed_by="A. Bookkeeper")
     return led, vendor_id
@@ -1944,6 +1972,7 @@ def ledger():
 
 def _incoming(account="4321", routing="8765"):
     return PaymentDetail(account_last4=account, routing_last4=routing,
+                         account_hmac=payment_hmac(account, routing),
                          observed_at=datetime.now(timezone.utc),
                          source_document="doc://current")
 
@@ -2112,10 +2141,18 @@ def payment_hmac(account: str, routing: str) -> str:
 
 
 class VendorAlias(BaseModel):
+    # REVISED (pre-flight scan, 2026-09-07). `id` and `merged_from` were read
+    # by `merge`/`unmerge` below (`alias.id`, `merged_from=snapshot.id`,
+    # `a.id != token.alias_id`) but never declared as fields — the same class
+    # of gap F-67 found elsewhere in this plan: the fix described in prose,
+    # never applied to the code. `unmerge` needs `id` to remove the merge
+    # alias BY IDENTITY, which is the whole point of the F-36 fix.
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     first_seen: datetime
     source_document: str
     confirmed_by: str
+    merged_from: str | None = None
 
 
 class CanonicalVendor(BaseModel):
@@ -2132,9 +2169,14 @@ class Match(BaseModel):
 
 
 class MergeToken(BaseModel):
+    # REVISED (pre-flight scan, 2026-09-07). `alias_id` and `migrated_details`
+    # are set by `merge` and read by `unmerge` below, but were missing here —
+    # `merge()`'s own MergeToken(...) call already passes them.
     keeper: str
     absorbed_snapshot: CanonicalVendor
     confirmed_by: str
+    alias_id: str
+    migrated_details: list[datetime]
 
 
 class BankDetailChangeError(Exception):
@@ -2263,7 +2305,14 @@ DATE_WINDOW = timedelta(days=30)
 
 
 class DocumentFingerprint(BaseModel):
-    vendor: str
+    # REVISED (pre-flight scan, 2026-09-07): `vendor_id`, not `vendor` — see
+    # the note below this code block and the F-37 fix it describes. The
+    # field must hold the RESOLVED canonical vendor id from I2, not the raw
+    # extracted name; `find_duplicates` below already compares
+    # `candidate.vendor_id == prior.vendor_id`, and the tests added under
+    # "Add to the test module" already construct `_fp(vendor_id=...)`.
+    vendor_id: str
+    vendor: str | None = None    # display only; matching uses vendor_id
     amount: Money
     doc_date: date
     invoice_number: str | None
@@ -2358,12 +2407,18 @@ __all__ = ["BankDetailChangeError", "check_payment_detail"]
 
 def check_payment_detail(ledger: VendorLedger, vendor_id: str,
                          incoming: PaymentDetail) -> list[Finding]:
+    # REVISED (pre-flight scan, 2026-09-07): compares `account_hmac`, not
+    # last4. F-35's whole point is that four digits alone give a 1-in-10,000
+    # miss rate on this control; `record_payment_detail` below already
+    # compares on the hmac (`current.account_hmac != detail.account_hmac`) —
+    # this function, the one that actually raises the I3 finding, was left
+    # on the old comparison, silently keeping the exact miss rate F-35 set
+    # out to close.
     vendor = ledger.get(vendor_id)
     if vendor is None or not vendor.payment_history:
         return []
     current = vendor.payment_history[-1]
-    if (current.account_last4 == incoming.account_last4
-            and current.routing_last4 == incoming.routing_last4):
+    if current.account_hmac == incoming.account_hmac:
         return []
     return [Finding(
         "I3", "vendor.payment_detail",
