@@ -27,12 +27,12 @@ from ledger_sense.rules.integrity.bank_details import (
 
 
 @pytest.fixture(autouse=True)
-def _hmac_key(monkeypatch):
+def _hmac_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", "test-key-not-a-secret")
 
 
 @pytest.fixture()
-def ledger():
+def ledger() -> tuple[VendorLedger, str]:
     led = VendorLedger()
     vendor_id = led.create("Acme Steel Company")
     led.record_payment_detail(vendor_id, PaymentDetail(
@@ -43,50 +43,57 @@ def ledger():
     return led, vendor_id
 
 
-def _incoming(account="4321", routing="8765"):
+def _incoming(account: str = "4321", routing: str = "8765") -> PaymentDetail:
     return PaymentDetail(account_last4=account, routing_last4=routing,
                          account_hmac=payment_hmac(account, routing),
                          observed_at=datetime.now(UTC),
                          source_document="doc://current")
 
 
-def test_matching_payment_details_produce_no_finding(ledger):
+def test_matching_payment_details_produce_no_finding(
+        ledger: tuple[VendorLedger, str]) -> None:
     led, vendor_id = ledger
     assert check_payment_detail(led, vendor_id, _incoming()) == []
 
 
-def test_a_changed_account_number_is_a_hard_stop(ledger):
+def test_a_changed_account_number_is_a_hard_stop(
+        ledger: tuple[VendorLedger, str]) -> None:
     led, vendor_id = ledger
     findings = check_payment_detail(led, vendor_id, _incoming(account="9999"))
     assert [f.rule_id for f in findings] == ["I3"]
     assert "hard stop" in findings[0].message.lower()
 
 
-def test_a_changed_routing_number_is_also_a_hard_stop(ledger):
+def test_a_changed_routing_number_is_also_a_hard_stop(
+        ledger: tuple[VendorLedger, str]) -> None:
     led, vendor_id = ledger
     assert [f.rule_id for f in
             check_payment_detail(led, vendor_id, _incoming(routing="0000"))] == ["I3"]
 
 
-def test_recording_a_changed_detail_without_confirmation_raises(ledger):
+def test_recording_a_changed_detail_without_confirmation_raises(
+        ledger: tuple[VendorLedger, str]) -> None:
     """Never auto-approve and never auto-update. B5."""
     led, vendor_id = ledger
     with pytest.raises(BankDetailChangeError, match="human confirmation"):
         led.record_payment_detail(vendor_id, _incoming(account="9999"), confirmed_by="")
 
 
-def test_history_is_append_only_so_the_diff_survives(ledger):
+def test_history_is_append_only_so_the_diff_survives(
+        ledger: tuple[VendorLedger, str]) -> None:
     led, vendor_id = ledger
     led.record_payment_detail(vendor_id, _incoming(account="9999"),
                               confirmed_by="A. Bookkeeper")
-    history = led.get(vendor_id).payment_history
+    canonical = led.get(vendor_id)
+    assert canonical is not None
+    history = canonical.payment_history
     assert len(history) == 2
     assert history[0].account_last4 == "4321"
 
 
-def test_no_code_path_mutates_payment_history_outside_the_ledger():
+def test_no_code_path_mutates_payment_history_outside_the_ledger() -> None:
     """record_payment_detail is the only writer, and it takes confirmed_by."""
-    offenders = []
+    offenders: list[str] = []
     for path in pathlib.Path("ledger_sense").rglob("*.py"):
         if path.name == "vendor.py":
             continue
@@ -101,7 +108,7 @@ def test_no_code_path_mutates_payment_history_outside_the_ledger():
     assert offenders == [], f"payment_history mutated outside vendor.py: {offenders}"
 
 
-def test_no_full_account_number_is_ever_stored():
+def test_no_full_account_number_is_ever_stored() -> None:
     """Last four plus an HMAC. A full account number in our store is a breach
     waiting; four digits alone is a 1-in-10,000 miss on a fraud control (F-35).
 
@@ -115,7 +122,8 @@ def test_no_full_account_number_is_ever_stored():
         assert field not in PaymentDetail.model_fields
 
 
-def test_the_hmac_distinguishes_accounts_that_share_their_last_four(ledger):
+def test_the_hmac_distinguishes_accounts_that_share_their_last_four(
+        ledger: tuple[VendorLedger, str]) -> None:
     """F-35. Comparing four digits misses one redirection in ten thousand — on
     the rule the brief calls the single most expensive failure mode in AP."""
     led, vendor_id = ledger
@@ -127,19 +135,23 @@ def test_the_hmac_distinguishes_accounts_that_share_their_last_four(ledger):
     assert [f.rule_id for f in findings] == ["I3"]
 
 
-def test_the_confirmation_is_stored_on_the_record(ledger):
+def test_the_confirmation_is_stored_on_the_record(
+        ledger: tuple[VendorLedger, str]) -> None:
     """F-35. record_payment_detail took confirmed_by and DISCARDED it, while
     spec §8 item 5 renders the change with its date and B5 requires the human
     confirmation to be on the record."""
     led, vendor_id = ledger
     led.record_payment_detail(vendor_id, _incoming(account="9999"),
                               confirmed_by="A. Bookkeeper")
-    latest = led.get(vendor_id).payment_history[-1]
+    canonical = led.get(vendor_id)
+    assert canonical is not None
+    latest = canonical.payment_history[-1]
     assert latest.confirmed_by == "A. Bookkeeper"
     assert latest.confirmed_at is not None
 
 
-def test_a_change_back_to_a_previously_seen_account_is_still_surfaced(ledger):
+def test_a_change_back_to_a_previously_seen_account_is_still_surfaced(
+        ledger: tuple[VendorLedger, str]) -> None:
     """F-35. Comparing only against payment_history[-1] cannot see
     change-then-change-back, which is a documented redirection pattern."""
     led, vendor_id = ledger
