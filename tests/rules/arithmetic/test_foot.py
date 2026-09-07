@@ -1,15 +1,20 @@
 from datetime import date
 from decimal import Decimal
 
-from ledger_sense.domain.models import ContinuationLine, Contract, PayApplication
+from ledger_sense.domain.models import (
+    ContinuationLine,
+    Contract,
+    PayApplication,
+    RetainageTerms,
+)
 from ledger_sense.domain.money import RoundingPolicy, money
 from ledger_sense.rules.arithmetic.foot import rule_a1
 
 
 def _contract(original: str = "1000.00") -> Contract:
     return Contract(id="C-1", original_sum=money(original),
-                    rounding=RoundingPolicy(2, 4), retainage_rate=Decimal("0.10"),
-                    retainage_steps=[], jurisdiction=None)
+                    rounding=RoundingPolicy(2, 4),
+                    retainage=RetainageTerms(base_rate=Decimal("0.10")))
 
 
 def _line(sv: str, total: str) -> ContinuationLine:

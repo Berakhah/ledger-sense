@@ -7,6 +7,7 @@ Rules compute on the values; findings cite provenance[field].
 
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
@@ -38,13 +39,77 @@ class RetainageStep(_Base):
     new_rate: Decimal
 
 
+WaiverType = Literal["conditional_progress", "unconditional_progress",
+                     "conditional_final", "unconditional_final"]
+
+
+class RetainageTerms(_Base):
+    """Retainage is a NEGOTIATED TERM, never a constant.
+
+    Flat 5%, flat 10%, 10% stepping at 50%, 0% on stored materials, release at
+    substantial completion — all common. Several states cap it statutorily,
+    differently for public and private work. Read the rate from here; never
+    hardcode one.
+    """
+
+    base_rate: Decimal
+    steps: list[RetainageStep] = Field(default_factory=list)
+    stored_materials_rate: Decimal | None = None
+    released_at_substantial_completion: bool = False
+
+    def rate_at(self, percent_complete: Decimal) -> Decimal:
+        applicable = [s for s in self.steps if percent_complete >= s.at_percent_complete]
+        if not applicable:
+            return self.base_rate
+        return max(applicable, key=lambda s: s.at_percent_complete).new_rate
+
+
+class ChangeOrder(_Base):
+    number: str
+    amount: Money
+    approved: bool
+    approved_on: date | None = None
+    affects_item_no: str | None = None
+
+    @field_serializer("amount")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class StoredMaterialsBacking(_Base):
+    item_no: str
+    supplier_invoice: bool = False
+    insurance: bool = False
+    bonded_storage: bool = False
+
+    def missing(self) -> list[str]:
+        return [name for name in ("supplier_invoice", "insurance", "bonded_storage")
+                if not getattr(self, name)]
+
+    def is_complete(self) -> bool:
+        return not self.missing()
+
+
+class LienWaiver(_Base):
+    waiver_type: WaiverType
+    through_date: date
+    amount: Money
+    funds_cleared: bool
+    statutory_text_matches: bool | None = None
+
+    @field_serializer("amount")
+    def _as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
 class Contract(_Base):
     id: str
     original_sum: Money
     rounding: RoundingPolicy
-    retainage_rate: Decimal
-    retainage_steps: list[RetainageStep] = Field(default_factory=list)
-    jurisdiction: str | None = None
+    retainage: RetainageTerms
+    change_orders: list[ChangeOrder] = Field(default_factory=list)
+    tax_jurisdiction: str | None = None
+    tax_exempt: bool = False
 
 
 class ContinuationLine(_Base):
@@ -81,6 +146,9 @@ class PayApplication(_Base):
     previous_payments: Money
     total_completed_and_stored: Money
     provenance: dict[str, object] = Field(default_factory=dict)
+    prior: "PayApplication | None" = None
+    stored_backing: list[StoredMaterialsBacking] = Field(default_factory=list)
+    waivers: list[LienWaiver] = Field(default_factory=list)
 
     @field_serializer("change_orders_net", "retainage_total", "previous_payments",
                       "total_completed_and_stored")
@@ -89,3 +157,6 @@ class PayApplication(_Base):
 
     def adjusted_contract_sum(self, contract: Contract) -> Money:
         return money(contract.original_sum + self.change_orders_net)
+
+
+PayApplication.model_rebuild()

@@ -4,10 +4,10 @@ Each mutation must trip exactly one rule and leave the others clean, so a
 fixture proves the rule rather than proving the pipeline is noisy.
 
 `inject` takes and returns `(Contract, PayApplication)` uniformly. C1 needs a
-contract term (`contract.retainage_rate`, a flat Decimal field per Task 4's
-real model — there is no nested `.retainage.base_rate`) to disagree with, so
-every branch carries the contract through rather than adding a second
-injection mechanism just for that one case.
+contract term (`contract.retainage.base_rate`, on the `RetainageTerms` value
+object per Task 21b) to disagree with, so every branch carries the contract
+through rather than adding a second injection mechanism just for that one
+case.
 """
 
 from typing import Literal
@@ -49,7 +49,7 @@ def inject(contract: Contract, app: PayApplication,
         # contract actually calls for, applied to the full completed-and-stored
         # total, then billed at half of that (an arbitrary but deterministic
         # miscalculation — any value that disagrees with `held` proves the rule).
-        held = money(contract.retainage_rate * app.total_completed_and_stored)
+        held = money(contract.retainage.base_rate * app.total_completed_and_stored)
         return contract, app.model_copy(update={
             "retainage_total": money(held / 2)})
     if error == "I1_duplicate":

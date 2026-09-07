@@ -40,7 +40,12 @@ from ledger_sense.corpus.layouts import (
     SUMMARY_VALUE_X_PT,
     columns_for,
 )
-from ledger_sense.domain.models import ContinuationLine, Contract, PayApplication
+from ledger_sense.domain.models import (
+    ContinuationLine,
+    Contract,
+    PayApplication,
+    RetainageTerms,
+)
 from ledger_sense.domain.money import Money, RoundingPolicy, money
 
 # "Structural Steel" first and deliberately multi-word: item 010 always gets
@@ -119,8 +124,8 @@ def _clean(seed: int) -> tuple[Contract, PayApplication]:
     contract_sum = money(sum((ln.scheduled_value for ln in lines), money("0")))
     grand_total = money(sum((ln.total_completed_and_stored for ln in lines), money("0")))
     contract = Contract(id=f"C-{seed}", original_sum=contract_sum,
-                        rounding=RoundingPolicy(2, 4), retainage_rate=Decimal("0.10"),
-                        retainage_steps=[], jurisdiction=None)
+                        rounding=RoundingPolicy(2, 4),
+                        retainage=RetainageTerms(base_rate=Decimal("0.10")))
     app = PayApplication(
         contract_id=contract.id, application_no=rng.randint(1, 12),
         period_to=date(2026, 8, 31), lines=lines, change_orders_net=money("0.00"),

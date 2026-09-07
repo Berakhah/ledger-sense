@@ -3,7 +3,12 @@ from decimal import Decimal
 
 from hypothesis import strategies as st
 
-from ledger_sense.domain.models import ContinuationLine, Contract, PayApplication
+from ledger_sense.domain.models import (
+    ContinuationLine,
+    Contract,
+    PayApplication,
+    RetainageTerms,
+)
 from ledger_sense.domain.money import RoundingPolicy, money
 
 _amounts = st.decimals(min_value=Decimal(0), max_value=Decimal(1000000),
@@ -27,8 +32,8 @@ def consistent_pay_applications(draw: st.DrawFn) -> tuple[Contract, PayApplicati
             total_completed_and_stored=total, retainage=money("0.00")))
     grand_total = money(sum((ln.total_completed_and_stored for ln in lines), money("0")))
     contract = Contract(id="C", original_sum=grand_total,
-                        rounding=RoundingPolicy(2, 4), retainage_rate=Decimal("0.10"),
-                        retainage_steps=[], jurisdiction=None)
+                        rounding=RoundingPolicy(2, 4),
+                        retainage=RetainageTerms(base_rate=Decimal("0.10")))
     app = PayApplication(contract_id="C", application_no=1, period_to=date(2026, 8, 31),
                          lines=lines, change_orders_net=money("0.00"),
                          retainage_total=money("0.00"),
