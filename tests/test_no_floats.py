@@ -28,32 +28,55 @@ def test_guarded_packages_contain_no_floats():
 
 
 def test_no_domain_model_field_resolves_to_float():
-    """Layer 3: catches the serialisation case the AST scan cannot see."""
-    import ledger_sense.domain.models as models
+    """Layer 3: catches the serialisation case the AST scan cannot see.
+
+    Walks every module in ledger_sense.domain, not just .models — vendor.py
+    is a second domain module and previously sat entirely outside this
+    guard. Match.score is a rapidfuzz fuzzy-match score (0-100), not money,
+    and is the one deliberate, documented exception (see its field comment
+    in ledger_sense/domain/vendor.py)."""
+    import importlib
+    import pkgutil
+
+    import ledger_sense.domain
     from pydantic import BaseModel
 
+    ALLOWED_FLOAT_FIELDS = {"Match.score"}
+
     offenders = []
-    for name in dir(models):
-        obj = getattr(models, name)
-        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
-            for field_name, field in obj.model_fields.items():
-                if field.annotation is float:
-                    offenders.append(f"{obj.__name__}.{field_name}")
+    for info in pkgutil.walk_packages(ledger_sense.domain.__path__, "ledger_sense.domain."):
+        module = importlib.import_module(info.name)
+        for name in dir(module):
+            obj = getattr(module, name)
+            if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+                for field_name, field in obj.model_fields.items():
+                    if field.annotation is float:
+                        label = f"{obj.__name__}.{field_name}"
+                        if label not in ALLOWED_FLOAT_FIELDS:
+                            offenders.append(label)
     assert offenders == [], f"float-annotated fields: {offenders}"
 
 
 def test_every_domain_model_is_strict():
     """Layer 4 (F-01). Without strict mode a JSON float is coerced into Decimal
-    and every other layer stays green while the money is wrong."""
-    import ledger_sense.domain.models as models
+    and every other layer stays green while the money is wrong.
+
+    Walks every module in ledger_sense.domain, not just .models — see the
+    comment on test_no_domain_model_field_resolves_to_float above."""
+    import importlib
+    import pkgutil
+
+    import ledger_sense.domain
     from pydantic import BaseModel
 
     lax = []
-    for name in dir(models):
-        obj = getattr(models, name)
-        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
-            if not obj.model_config.get("strict"):
-                lax.append(obj.__name__)
+    for info in pkgutil.walk_packages(ledger_sense.domain.__path__, "ledger_sense.domain."):
+        module = importlib.import_module(info.name)
+        for name in dir(module):
+            obj = getattr(module, name)
+            if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+                if not obj.model_config.get("strict"):
+                    lax.append(obj.__name__)
     assert lax == [], f"models not in strict mode: {lax}"
 
 

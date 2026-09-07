@@ -14,8 +14,10 @@ is a breach waiting to happen.
 import uuid
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field
-from rapidfuzz import fuzz
+from pydantic import Field
+from rapidfuzz import fuzz, utils
+
+from ledger_sense.domain.models import _Base
 
 # int, not float literals: this module lives under ledger_sense/domain, which
 # scripts/check_no_float.py's AST scan walks for the money path (Never-rule
@@ -37,7 +39,7 @@ EXACT = 100
 CONFIRM_THRESHOLD = 80
 
 
-class PaymentDetail(BaseModel):
+class PaymentDetail(_Base):
     """REVISED (F-35). Two defects in the highest-consequence rule in the product.
 
     DETECTION. Comparing four digits gives a 1-in-10,000 chance that a fraudulent
@@ -79,7 +81,7 @@ def payment_hmac(account: str, routing: str) -> str:
     return hmac.new(key, normalised, "sha256").hexdigest()
 
 
-class VendorAlias(BaseModel):
+class VendorAlias(_Base):
     # REVISED (pre-flight scan, 2026-09-07). `id` and `merged_from` were read
     # by `merge`/`unmerge` below (`alias.id`, `merged_from=snapshot.id`,
     # `a.id != token.alias_id`) but never declared as fields — the same class
@@ -94,20 +96,22 @@ class VendorAlias(BaseModel):
     merged_from: str | None = None
 
 
-class CanonicalVendor(BaseModel):
+class CanonicalVendor(_Base):
     id: str
     name: str
     aliases: list[VendorAlias] = Field(default_factory=list)
     payment_history: list[PaymentDetail] = Field(default_factory=list)
 
 
-class Match(BaseModel):
+class Match(_Base):
     vendor_id: str | None
+    # float, not Decimal: a rapidfuzz match score (0-100), not money. See
+    # tests/test_no_floats.py's explicit allow-list for this field.
     score: float
     needs_confirmation: bool
 
 
-class MergeToken(BaseModel):
+class MergeToken(_Base):
     # REVISED (pre-flight scan, 2026-09-07). `alias_id` and `migrated_details`
     # are set by `merge` and read by `unmerge` below, but were missing here —
     # `merge()`'s own MergeToken(...) call already passes them.
@@ -135,17 +139,32 @@ class VendorLedger:
         return self._vendors.get(vendor_id)
 
     def resolve(self, name: str) -> Match:
-        best_id: str | None = None
+        # CODE REVIEW FIX: `processor=utils.default_process` case- and
+        # whitespace-normalises both sides before scoring. Without it an
+        # ALL-CAPS rendering of a canonical name (the norm in OCR'd document
+        # headers) scores far below its own canonical name and I2 reports a
+        # known vendor as new — a second empty-history canonical record then
+        # gets created and I3's bank-detail hard stop silently never fires
+        # for it, since check_payment_detail short-circuits on an empty
+        # payment_history.
+        best_ids: list[str] = []
         best_score: float = 0
         for vendor in self._vendors.values():
             candidates = [vendor.name] + [a.name for a in vendor.aliases]
-            score = max(fuzz.token_sort_ratio(name, c) for c in candidates)
+            score = max(fuzz.token_sort_ratio(name, c, processor=utils.default_process)
+                        for c in candidates)
             if score > best_score:
-                best_id, best_score = vendor.id, score
-        if best_score >= EXACT:
-            return Match(vendor_id=best_id, score=best_score, needs_confirmation=False)
+                best_ids, best_score = [vendor.id], score
+            elif score == best_score and score > 0:
+                best_ids.append(vendor.id)
         if best_score >= CONFIRM_THRESHOLD:
-            return Match(vendor_id=best_id, score=best_score, needs_confirmation=True)
+            # CODE REVIEW FIX: two canonical records can legitimately tie on
+            # name (that's the state merge() exists to fix) — a tie at the
+            # top score must never silently bind to whichever vendor was
+            # inserted first, even when the tied score is EXACT.
+            ambiguous = len(best_ids) > 1
+            return Match(vendor_id=best_ids[0], score=best_score,
+                        needs_confirmation=ambiguous or best_score < EXACT)
         return Match(vendor_id=None, score=best_score, needs_confirmation=False)
 
     def confirm_alias(self, vendor_id: str, name: str, source_document: str,
@@ -169,6 +188,15 @@ class VendorLedger:
         if not confirmed_by:
             raise ValueError("merge requires confirmed_by — B6, merges without "
                              "provenance are unrecoverable")
+        # CODE REVIEW FIX: both ids must exist, and must be different, BEFORE
+        # anything is popped. The original popped `absorbed` first — a
+        # stale/typo'd `keeper` id then raised KeyError on the next line with
+        # the absorbed vendor (and its payment_history, I3's fraud baseline)
+        # already gone and no MergeToken to undo it.
+        if keeper not in self._vendors or absorbed not in self._vendors:
+            raise KeyError(f"merge needs two existing vendors: {keeper!r}, {absorbed!r}")
+        if keeper == absorbed:
+            raise ValueError("cannot merge a vendor into itself")
         snapshot = self._vendors.pop(absorbed)
         keeper_record = self._vendors[keeper]
 
