@@ -22,8 +22,19 @@ from rapidfuzz import fuzz
 # #2). These thresholds are fuzzy-match scores (0-100), not money, but the
 # scanner is a blunt literal check with no semantic awareness — int compares
 # against rapidfuzz's float scores without needing a float literal here.
+#
+# CODE REVIEW FIX: CONFIRM_THRESHOLD was 85, tuned against fuzz.partial_ratio.
+# partial_ratio scores 100 (the EXACT/no-confirmation band) whenever the
+# SHORTER string is merely CONTAINED in the longer one — "Acme" inside "Acme
+# Steel Company" also hits 100 — so it silently auto-resolved two genuinely
+# different vendors with no human confirmation (Never-rule #6). Reverted to
+# token_sort_ratio, which has no such containment pathology (see
+# test_a_substring_name_does_not_silently_auto_resolve), and lowered the
+# threshold from 85 to 80 so it still catches token_sort_ratio's own score of
+# 81 on "Acme Steel Co." vs "Acme Steel Company" — the abbreviation variant
+# the threshold exists to confirm.
 EXACT = 100
-CONFIRM_THRESHOLD = 85
+CONFIRM_THRESHOLD = 80
 
 
 class PaymentDetail(BaseModel):
@@ -42,6 +53,13 @@ class PaymentDetail(BaseModel):
     red-lined diff with the date and source document", and B5 requires human
     confirmation ON THE RECORD. It was not on the record.
     """
+    # CODE REVIEW FIX: `merge`/`unmerge` tracked migrated entries by
+    # `observed_at` VALUE, not identity — the same bug class F-36 already
+    # fixed for VendorAlias. Two entries can share a timestamp (the keeper's
+    # own pre-existing record and one migrated in from the absorbed vendor),
+    # and `unmerge` then deleted the keeper's legitimate entry alongside the
+    # migrated one. `id` fixes it the same way VendorAlias.id does.
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     account_last4: str
     routing_last4: str
     account_hmac: str            # HMAC of the full details; never the details
@@ -97,7 +115,7 @@ class MergeToken(BaseModel):
     absorbed_snapshot: CanonicalVendor
     confirmed_by: str
     alias_id: str
-    migrated_details: list[datetime]
+    migrated_detail_ids: list[str]
 
 
 class BankDetailChangeError(Exception):
@@ -121,12 +139,7 @@ class VendorLedger:
         best_score: float = 0
         for vendor in self._vendors.values():
             candidates = [vendor.name] + [a.name for a in vendor.aliases]
-            # partial_ratio, not token_sort_ratio: this fuzzy-matches "Co."
-            # against "Company" (a routine AP abbreviation variant) at 96,
-            # inside the confirm band. token_sort_ratio scores that same pair
-            # 81 — below CONFIRM_THRESHOLD — which would silently miss the
-            # exact abbreviation case B6's human-confirmation gate exists for.
-            score = max(fuzz.partial_ratio(name, c) for c in candidates)
+            score = max(fuzz.token_sort_ratio(name, c) for c in candidates)
             if score > best_score:
                 best_id, best_score = vendor.id, score
         if best_score >= EXACT:
@@ -173,7 +186,7 @@ class VendorLedger:
         return MergeToken(keeper=keeper, absorbed_snapshot=snapshot,
                           confirmed_by=confirmed_by,
                           alias_id=alias.id,
-                          migrated_details=[d.observed_at for d in moved])
+                          migrated_detail_ids=[d.id for d in moved])
 
     def unmerge(self, token: MergeToken) -> None:
         """REVISED (F-36). The original removed keeper aliases BY NAME, which
@@ -182,9 +195,9 @@ class VendorLedger:
         self._vendors[token.absorbed_snapshot.id] = token.absorbed_snapshot
         keeper = self._vendors[token.keeper]
         keeper.aliases = [a for a in keeper.aliases if a.id != token.alias_id]
-        migrated = set(token.migrated_details)
+        migrated = set(token.migrated_detail_ids)
         keeper.payment_history = [d for d in keeper.payment_history
-                                  if d.observed_at not in migrated]
+                                  if d.id not in migrated]
 
     def record_payment_detail(self, vendor_id: str, detail: PaymentDetail,
                               confirmed_by: str) -> None:
