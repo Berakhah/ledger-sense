@@ -14,19 +14,23 @@ failures (DB, blob store, KEK) propagate.
 """
 
 import logging
+import uuid
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import NamedTuple
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from ledger_sense.domain.models import Contract, RetainageTerms
+from ledger_sense.domain.models import Contract, PayApplication, RetainageTerms
 from ledger_sense.domain.money import RoundingPolicy, money
 from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.extract.textlayer import has_text_layer
 from ledger_sense.ingest.classify import classify
+from ledger_sense.provenance import Claim, FileSource
 from ledger_sense.store.blobs import BlobStore, blob_store_from_environment
 from ledger_sense.store.documents import load_document
-from ledger_sense.store.retention import documents, findings
+from ledger_sense.store.retention import claims, documents, findings
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +138,76 @@ def _refuse(conn: Connection, row: sa.Row[tuple[object, ...]], note: str,
     return RunOutcome(str(row.id), "cannot_extract", note, 0, 0)
 
 
+def _value_of(value: object) -> tuple[str, str]:
+    """(text, value_type). Money first — a Decimal is never a float on the way out."""
+    if isinstance(value, Decimal):
+        return str(value), "money"
+    if isinstance(value, date):
+        return value.isoformat(), "date"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value), "int"
+    return str(value), "str"
+
+
+def _claim_rows(tenant_id: str, document_id: str, app: PayApplication) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for field, claim in app.provenance.items():
+        if field.startswith("_") or not isinstance(claim, Claim):
+            continue
+        source = claim.source
+        if not isinstance(source, FileSource):
+            continue  # the run only ever produces file-sourced claims
+        text, value_type = _value_of(claim.value)
+        x0, top, x1, bottom = source.bbox
+        rows.append({
+            "id": uuid.uuid4().hex, "tenant_id": tenant_id, "document_id": document_id,
+            "field": field, "value": text, "value_type": value_type,
+            "method": claim.method.value, "confidence": claim.confidence,
+            "match_quality": claim.match_quality, "page": source.page,
+            "x0": x0, "top": top, "x1": x1, "bottom": bottom,
+            "caveat": claim.caveat, "observed_at": claim.observed_at,
+        })
+    return rows
+
+
+def _x0_rows(tenant_id: str, document_id: str, app: PayApplication,
+             now: datetime) -> list[dict[str, object]]:
+    entries = app.provenance.get("_unextractable", [])
+    if not isinstance(entries, list):
+        return []
+    return [{
+        "id": uuid.uuid4().hex, "tenant_id": tenant_id, "document_id": document_id,
+        "rule_id": "X0", "field": entry.field,
+        "message": f"could not extract: {entry.reason}",
+        "expected": None, "actual": None,
+        "page": None, "x0": None, "top": None, "x1": None, "bottom": None,
+        "state": "open", "created_at": now,
+    } for entry in entries]
+
+
+def _write(conn: Connection, row: sa.Row[tuple[object, ...]],
+           claim_rows: list[dict[str, object]],
+           finding_rows: list[dict[str, object]]) -> RunOutcome:
+    document_id = str(row.id)
+    # Replace in place: everything here is `open` (the guard checked), and a
+    # re-run's answer supersedes the previous one entirely.
+    conn.execute(findings.delete().where(findings.c.document_id == document_id))
+    conn.execute(claims.delete().where(claims.c.document_id == document_id))
+    if claim_rows:
+        conn.execute(claims.insert(), claim_rows)
+    if finding_rows:
+        conn.execute(findings.insert(), finding_rows)
+    updated = conn.execute(
+        documents.update()
+        .where(documents.c.id == document_id, documents.c.status.in_(RUNNABLE))
+        .values(status="extracted", run_note=None,
+                rounding_policy_source=ROUNDING_POLICY_SOURCE)
+    ).rowcount
+    if updated == 0:
+        raise RuntimeError(f"document {document_id} changed status during the run")
+    return RunOutcome(document_id, "extracted", None, len(claim_rows), len(finding_rows))
+
+
 def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore) -> RunOutcome:
     document_id, tenant_id = str(row.id), str(row.tenant_id)
     # `load_document` stays outside the try: DocumentNotFound / blob / KEK
@@ -151,10 +225,9 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
         conn.execute(documents.update().where(documents.c.id == document_id)
                      .values(doc_type=doc_type))
         app = assemble_pay_application(pdf, document_id)
-        # Claims, findings and the final status arrive in the next two tasks.
-        del app
-        conn.execute(documents.update().where(documents.c.id == document_id).values(
-            status="cannot_extract", run_note="persistence not yet implemented"))
-        return RunOutcome(document_id, "cannot_extract", "persistence not yet implemented", 0, 0)
+        now = datetime.now(UTC)
+        claim_rows = _claim_rows(tenant_id, document_id, app)
+        finding_rows = _x0_rows(tenant_id, document_id, app, now)
+        return _write(conn, row, claim_rows, finding_rows)
     except Exception as exc:  # every document-level error becomes `failed`
         raise _RunFailure(exc, doc_type) from exc
