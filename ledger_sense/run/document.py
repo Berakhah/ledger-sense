@@ -21,7 +21,11 @@ from sqlalchemy.engine import Connection, Engine
 
 from ledger_sense.domain.models import Contract, RetainageTerms
 from ledger_sense.domain.money import RoundingPolicy, money
+from ledger_sense.extract.assemble import assemble_pay_application
+from ledger_sense.extract.textlayer import has_text_layer
+from ledger_sense.ingest.classify import classify
 from ledger_sense.store.blobs import BlobStore, blob_store_from_environment
+from ledger_sense.store.documents import load_document
 from ledger_sense.store.retention import documents, findings
 
 log = logging.getLogger(__name__)
@@ -29,6 +33,17 @@ log = logging.getLogger(__name__)
 RUNNABLE = frozenset({"received", "failed"})
 HUMAN_DECISIONS_NOTE = "human decisions present; refusing to overwrite"
 ROUNDING_POLICY_SOURCE = "tenant_default"
+NO_TEXT_LAYER_NOTE = "no text layer; scanned documents route to review until OCR routing ships"
+
+
+class _RunFailure(Exception):
+    """Carries what was learned before the failure (the doc_type) out of the
+    transaction that is about to roll back."""
+
+    def __init__(self, cause: Exception, doc_type: str | None) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.doc_type = doc_type
 
 
 class RunOutcome(NamedTuple):
@@ -79,16 +94,63 @@ def run_document(engine: Engine, document_id: str, *,
     """Run one document. Safe to call again: a row that is not `received` or
     `failed`, or that carries a human decision, is left exactly as it was."""
     store = blobs if blobs is not None else blob_store_from_environment()
+    try:
+        with engine.begin() as conn:
+            taken = _take_row(conn, document_id)
+            if isinstance(taken, RunOutcome):
+                return taken
+            return _execute(conn, taken, store)
+    except _RunFailure as failure:
+        return _mark_failed(engine, document_id, failure.cause, failure.doc_type)
+
+
+def _mark_failed(engine: Engine, document_id: str, cause: Exception,
+                 doc_type: str | None) -> RunOutcome:
+    # The transaction above has rolled back: no partial claims survive, and
+    # the attempt increment rolled back with it — re-applied here. The
+    # message may carry page text, so it goes to the log; the row gets the
+    # class only. If the guarded UPDATE matches nothing the row changed
+    # under us, which means the lock did not hold — re-raise.
+    note = f"failed: {type(cause).__name__}"
     with engine.begin() as conn:
-        taken = _take_row(conn, document_id)
-        if isinstance(taken, RunOutcome):
-            return taken
-        return _execute(conn, taken, store)
+        tenant = conn.execute(sa.select(documents.c.tenant_id)
+                              .where(documents.c.id == document_id)).scalar_one_or_none()
+        log.warning("run failed document_id=%s tenant_id=%s: %r", document_id, tenant, cause)
+        updated = conn.execute(
+            documents.update()
+            .where(documents.c.id == document_id, documents.c.status.in_(RUNNABLE))
+            .values(status="failed", run_note=note, doc_type=doc_type,
+                    run_attempts=documents.c.run_attempts + 1)
+        ).rowcount
+    if updated == 0:
+        raise cause
+    return RunOutcome(document_id, "failed", note, 0, 0)
+
+
+def _refuse(conn: Connection, row: sa.Row[tuple[object, ...]], note: str,
+            doc_type: str | None) -> RunOutcome:
+    conn.execute(documents.update().where(documents.c.id == row.id).values(
+        status="cannot_extract", run_note=note, doc_type=doc_type))
+    return RunOutcome(str(row.id), "cannot_extract", note, 0, 0)
 
 
 def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore) -> RunOutcome:
-    # Filled in by the extraction tasks. Until then every runnable document is
-    # honestly "not extracted" rather than silently "extracted".
-    conn.execute(documents.update().where(documents.c.id == row.id).values(
-        status="cannot_extract", run_note="runner not yet implemented"))
-    return RunOutcome(str(row.id), "cannot_extract", "runner not yet implemented", 0, 0)
+    document_id, tenant_id = str(row.id), str(row.tenant_id)
+    pdf = load_document(conn, tenant_id=tenant_id, document_id=document_id, blobs=store).payload
+    if not has_text_layer(pdf):
+        return _refuse(conn, row, NO_TEXT_LAYER_NOTE, None)
+    doc_type = classify(pdf)
+    if doc_type != "pay_application":
+        return _refuse(conn, row, f"doc_type={doc_type}: only pay applications are "
+                                  "extracted in v1", doc_type)
+    conn.execute(documents.update().where(documents.c.id == document_id)
+                 .values(doc_type=doc_type))
+    try:
+        app = assemble_pay_application(pdf, document_id)
+        # Claims, findings and the final status arrive in the next two tasks.
+        del app
+        conn.execute(documents.update().where(documents.c.id == document_id).values(
+            status="cannot_extract", run_note="persistence not yet implemented"))
+        return RunOutcome(document_id, "cannot_extract", "persistence not yet implemented", 0, 0)
+    except Exception as exc:  # every document-level error becomes `failed`
+        raise _RunFailure(exc, doc_type) from exc

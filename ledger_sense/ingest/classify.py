@@ -12,8 +12,14 @@ DocType = Literal["pay_application", "continuation_sheet", "invoice",
                   "lien_waiver", "unknown"]
 
 _MARKERS: tuple[tuple[DocType, tuple[str, ...]], ...] = (
-    ("continuation_sheet", ("scheduled value", "total completed and stored")),
+    # pay_application first: our corpus's full pay application carries its
+    # continuation grid on the same page as the summary certification (the
+    # design spec's "corpus emits both pages in one PDF"), so a document
+    # bearing both marker sets is a complete pay application, not a
+    # standalone continuation sheet — that distinction only matters for a
+    # document submitted without the summary block.
     ("pay_application", ("contract sum to date", "current payment due")),
+    ("continuation_sheet", ("scheduled value", "total completed and stored")),
     ("lien_waiver", ("waiver", "lien")),
     ("invoice", ("invoice", "remit to")),
 )

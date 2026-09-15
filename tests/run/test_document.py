@@ -1,8 +1,10 @@
 """run_document: the guard. Extraction behaviour arrives in later tests."""
 
+import io
 from datetime import UTC, datetime
 
-import pytest  # noqa: F401 -- unused here; Task 6's tests in this module use monkeypatch
+import pypdfium2 as pdfium
+import pytest
 import sqlalchemy as sa
 
 from ledger_sense.corpus.generate import generate
@@ -52,3 +54,81 @@ def test_a_document_with_a_human_decision_is_never_overwritten(db: RunDb) -> Non
     with db.engine.connect() as conn:
         assert conn.execute(sa.select(findings.c.state)
                             .where(findings.c.document_id == document_id)).scalar() == "accepted"
+
+
+def _blank_pdf() -> bytes:
+    doc = pdfium.PdfDocument.new()
+    doc.new_page(612, 792)
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
+def _invoice_pdf() -> bytes:
+    # The corpus generator's private text helpers, used the way generate.py
+    # itself uses them (ledger_sense/corpus/generate.py:63-107). Check the
+    # positional order of _insert_text there before running.
+    from ledger_sense.corpus.generate import _insert_text
+    doc = pdfium.PdfDocument.new()
+    page = doc.new_page(612, 792)
+    _insert_text(page, doc, "INVOICE 1042", 72, 700, 12)
+    _insert_text(page, doc, "Remit to: Acme Concrete", 72, 680, 12)
+    page.gen_content()
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
+def test_a_pdf_with_no_text_layer_is_refused_honestly(db: RunDb) -> None:
+    document_id = db.store_pdf(_blank_pdf())
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "cannot_extract"
+    row = db.document(document_id)
+    assert row.status == "cannot_extract"
+    assert row.doc_type is None
+    assert row.run_note.startswith("no text layer")
+    assert db.claims_for(document_id) == []
+
+
+def test_a_document_that_is_not_a_pay_application_is_refused_with_its_type(db: RunDb) -> None:
+    document_id = db.store_pdf(_invoice_pdf())
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "cannot_extract"
+    row = db.document(document_id)
+    assert row.doc_type == "invoice"
+    assert row.run_note == "doc_type=invoice: only pay applications are extracted in v1"
+    assert db.claims_for(document_id) == []
+
+
+def test_an_exception_inside_extraction_marks_failed_with_the_class_only(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ledger_sense.run.document as run_module
+
+    def _boom(pdf: bytes, source_path: str) -> object:
+        raise ValueError("page text: Retainage 10% of $1,234.56")
+    monkeypatch.setattr(run_module, "assemble_pay_application", _boom)
+    document_id = db.store_pdf(_clean_pdf())
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "failed"
+    row = db.document(document_id)
+    assert row.status == "failed"
+    assert row.run_note == "failed: ValueError"
+    assert "1,234.56" not in row.run_note
+    assert row.doc_type == "pay_application"  # classified before the failure
+    assert db.claims_for(document_id) == []
+    assert row.run_attempts == 1
+
+
+def test_a_failed_document_is_runnable_again(db: RunDb, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ledger_sense.run.document as run_module
+    document_id = db.store_pdf(_clean_pdf())
+
+    def _boom(pdf: bytes, source_path: str) -> object:
+        raise RuntimeError("x")
+    monkeypatch.setattr(run_module, "assemble_pay_application", _boom)
+    assert run_document(db.engine, document_id).status == "failed"
+    monkeypatch.undo()
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status != "failed"
+    assert db.document(document_id).run_attempts == 2
