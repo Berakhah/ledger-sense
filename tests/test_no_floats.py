@@ -1,6 +1,6 @@
-from scripts.check_no_float import scan
+from scripts.check_no_float import MAIN_ROOTS, scan
 
-GUARDED = ["ledger_sense/domain", "ledger_sense/rules", "ledger_sense/writeback"]
+GUARDED = MAIN_ROOTS
 
 
 def test_scan_flags_a_float_literal(tmp_path):
@@ -25,6 +25,14 @@ def test_guarded_packages_contain_no_floats():
     """Layer 2: the real scan over the real tree."""
     hits = scan(GUARDED)
     assert hits == [], "float found in the money path:\n" + "\n".join(hits)
+
+
+def test_the_runner_package_is_among_the_scanned_roots():
+    """The CLI (`scripts/check_no_float.py __main__`) must scan the runner too —
+    it is the first code to touch a CLIENT_CONFIDENTIAL document's decrypted
+    bytes, so a float slipping into its arithmetic is exactly what this guard
+    exists to catch."""
+    assert "ledger_sense/run" in MAIN_ROOTS
 
 
 def test_no_domain_model_field_resolves_to_float():

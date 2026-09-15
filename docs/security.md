@@ -184,6 +184,29 @@ library function today — the schedule that calls it nightly is not yet wired
 into `docker-compose.yml`, so a deployment must invoke it until that lands.
 Nothing in this section is claimed to run automatically that does not.
 
+## The extraction run
+
+`ledger_sense/run/document.py` is the first code to open a stored document after
+the door. It is deterministic only — `tests/boundary/test_structure.py` pins that
+it imports no gateway, OCR escalation or provider client — so a
+`CLIENT_CONFIDENTIAL` document is extracted the same way a `SYNTHETIC` one is:
+locally, in memory, with the decrypted bytes never written to disk.
+
+**`documents.content_sha256`** is the SHA-256 of the *plaintext*. It exists so a
+byte-identical re-submission within a tenant can be flagged without decrypting
+anything; it reveals equality and nothing else, and duplicate matching is
+tenant-scoped in SQL, so one tenant can never learn that another holds the same
+bytes.
+
+**`documents.run_note`** never carries document content. A failed run records the
+exception's class name only; the message (which can quote page text) goes to the
+application log with the document and tenant ids — never the client-chosen
+filename.
+
+**Claims and findings hold extracted values** — including any payment details a
+document carries. They are deleted with the document by the retention purge
+(`PurgeReport.findings_purged` reports it), and every row carries `tenant_id`.
+
 ## Coordinated disclosure
 
 Report a suspected vulnerability by email to the maintainer at
