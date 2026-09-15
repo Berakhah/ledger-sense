@@ -24,14 +24,40 @@ from alembic.config import Config
 
 from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.ingest.classify import classify
+from ledger_sense.store.blobs import blob_store_from_environment
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# The tenant id a startup probe writes and deletes under. Never a real
+# tenant's id (create_tenant() mints a uuid4 hex, which this is not shaped
+# like), and BlobStore's tenant binding means a probe blob written under this
+# id can never be read back as any other tenant's document.
+_STARTUP_PROBE_TENANT_ID = "_startup_probe"
 
 
 def _migrate() -> None:
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     command.upgrade(config, "head")
+
+
+def _probe_blob_store() -> None:
+    """Fail loudly at boot, not on the first client upload (M10).
+
+    `.env.example` ships `LEDGER_SENSE_KEK=changeme`, which is not a valid
+    Fernet key — `blob_store_from_environment()` raises when it constructs
+    the `Fernet` object, but only once something actually calls it. Without
+    this probe, a deployment that never replaced the placeholder KEK, or
+    whose `LEDGER_SENSE_BLOB_ROOT` is unwritable (see C1), serves
+    `/api/health` as healthy and accepts logins right up until the first
+    client document upload fails with PermissionError or InvalidToken deep
+    inside `store_document`. A write-then-delete round trip on a probe
+    tenant id proves both the KEK and the root are usable before this
+    process ever calls itself ready.
+    """
+    store = blob_store_from_environment()
+    blob_id = store.put(_STARTUP_PROBE_TENANT_ID, b"startup probe")
+    store.delete(_STARTUP_PROBE_TENANT_ID, blob_id)
 
 
 def _extract(argv: list[str]) -> int:
@@ -57,6 +83,7 @@ def main() -> None:
     if len(argv) > 1 and argv[1] == "extract":
         raise SystemExit(_extract(argv))
     _migrate()
+    _probe_blob_store()
     # 0.0.0.0: this process IS the container's edge for port 8000
     # (docker-compose.yml maps "8000:8000") — binding to localhost only would
     # make it unreachable from the host or from `web`.
