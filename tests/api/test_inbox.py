@@ -128,12 +128,21 @@ def test_an_oversized_payload_is_413_and_nothing_is_stored(
 def test_a_declared_oversized_upload_is_refused_before_any_read(
     two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The 413 above proves the status code; this proves *how* it is
-    reached — file.size is checked, and the spooled file backing the upload
-    is never read, so the oversized body is never pulled into this process
-    as one buffer. The route reads via the sync `file.file.read` (I2), not
-    `UploadFile.read`, so the counting patch targets the underlying
-    SpooledTemporaryFile Starlette's multipart parser spools uploads into."""
+    """This proves the ROUTE's own `file.size > _LIMITS.max_bytes` guard, not
+    the ASGI body-cap middleware (I3) sitting in front of it — a payload
+    large enough to trip the middleware's own (wider) cap would 413 there
+    first and never reach the route at all, making a patch on the route's
+    read path vacuous. The payload is sized to land strictly between the two
+    thresholds: one byte over DEFAULT_LIMITS.max_bytes, so the route's own
+    check fires, but multipart-framed it stays well under
+    DEFAULT_LIMITS.max_bytes + MULTIPART_OVERHEAD_BYTES (64 KiB of slack for
+    the boundary and headers httpx's multipart encoder adds), so the
+    middleware lets the request through. file.size is checked, and the
+    spooled file backing the upload is never read, so the oversized body is
+    never pulled into this process as one buffer. The route reads via the
+    sync `file.file.read` (I2), not `UploadFile.read`, so the counting patch
+    targets the underlying SpooledTemporaryFile Starlette's multipart parser
+    spools uploads into."""
     a, _ = two_tenants
     read_calls = 0
     original_read = tempfile.SpooledTemporaryFile.read
@@ -144,8 +153,12 @@ def test_a_declared_oversized_upload_is_refused_before_any_read(
         return original_read(self, n)
 
     monkeypatch.setattr(tempfile.SpooledTemporaryFile, "read", _counting_read)
-    response = _upload(a, b"%PDF-1.4" + b"\x00" * 26_000_000)
+    oversized = b"\x00" * (DEFAULT_LIMITS.max_bytes + 1)
+    response = _upload(a, oversized)
     assert response.status_code == 413
+    # "payload size", not "declared request size": proves the ROUTE's
+    # message, not the middleware's, is what answered.
+    assert "payload size" in response.json()["detail"]
     assert read_calls == 0
 
 
@@ -166,6 +179,31 @@ def test_a_declared_content_length_over_the_cap_is_413_before_the_body_is_read(
                  "content-type": "multipart/form-data; boundary=x"},
         cookies={"session": a.token}))
     assert response.status_code == 413
+    assert _count(a.tenant_id) == before
+
+
+def test_the_body_cap_middlewares_413_still_carries_cors_headers(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    """The web app is a separate origin calling this API with
+    fetch()+credentials, so CORSMiddleware must stay outermost — wrapping
+    InboxBodyCapMiddleware's own short-circuited responses too, not just
+    responses that reach the route. Without that ordering, a real cross-
+    origin oversized upload gets no Access-Control-Allow-Origin header and
+    the browser reports an opaque network error instead of surfacing the
+    413. WEB_ORIGIN defaults to http://localhost:3000 (see api/app.py) and
+    nothing in this test suite overrides it."""
+    a, _ = two_tenants
+    before = _count(a.tenant_id)
+    declared = DEFAULT_LIMITS.max_bytes + MULTIPART_OVERHEAD_BYTES + 1
+    response = cast(Response, client.post(
+        "/api/inbox", content=b"tiny",
+        headers={"content-length": str(declared),
+                 "content-type": "multipart/form-data; boundary=x",
+                 "origin": "http://localhost:3000"},
+        cookies={"session": a.token}))
+    assert response.status_code == 413
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
     assert _count(a.tenant_id) == before
 
 
