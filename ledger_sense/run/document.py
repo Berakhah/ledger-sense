@@ -136,16 +136,20 @@ def _refuse(conn: Connection, row: sa.Row[tuple[object, ...]], note: str,
 
 def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore) -> RunOutcome:
     document_id, tenant_id = str(row.id), str(row.tenant_id)
+    # `load_document` stays outside the try: DocumentNotFound / blob / KEK
+    # failures are infrastructure, not a document-level problem, and must
+    # propagate rather than becoming an honest `failed` row.
     pdf = load_document(conn, tenant_id=tenant_id, document_id=document_id, blobs=store).payload
-    if not has_text_layer(pdf):
-        return _refuse(conn, row, NO_TEXT_LAYER_NOTE, None)
-    doc_type = classify(pdf)
-    if doc_type != "pay_application":
-        return _refuse(conn, row, f"doc_type={doc_type}: only pay applications are "
-                                  "extracted in v1", doc_type)
-    conn.execute(documents.update().where(documents.c.id == document_id)
-                 .values(doc_type=doc_type))
+    doc_type: str | None = None
     try:
+        if not has_text_layer(pdf):
+            return _refuse(conn, row, NO_TEXT_LAYER_NOTE, None)
+        doc_type = classify(pdf)
+        if doc_type != "pay_application":
+            return _refuse(conn, row, f"doc_type={doc_type}: only pay applications are "
+                                      "extracted in v1", doc_type)
+        conn.execute(documents.update().where(documents.c.id == document_id)
+                     .values(doc_type=doc_type))
         app = assemble_pay_application(pdf, document_id)
         # Claims, findings and the final status arrive in the next two tasks.
         del app
