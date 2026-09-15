@@ -286,3 +286,11 @@ bbox; the corpus covering only three arithmetic error classes.
 dropped a continuation row for one unparseable cell (`line[<n>].<field>` in `_unextractable`)
 or the grid was empty (`"lines"`); step 5 now drops A1/A8 in either case
 (`_LINE_AGGREGATING_RULES`), proven end to end by a corpus document with one "n/a" cell.
+
+2026-09-16 branch review, fix round 1 (recorded deviation): Task 5 (commit 62503f4) reordered
+`_MARKERS` in `ingest/classify.py` so `pay_application` is checked before
+`continuation_sheet`, and flipped `tests/ingest/test_classify.py` to match. Not in this spec's
+scope, but required by it: the corpus renders the continuation grid and the summary block in
+one PDF, so every corpus document carries both marker sets and — continuation first — every
+one was refused as `doc_type=continuation_sheet`. A document bearing both sets is a complete
+pay application; `continuation_sheet` now only names a grid submitted without its summary.
