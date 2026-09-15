@@ -28,6 +28,17 @@ from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.extract.textlayer import has_text_layer
 from ledger_sense.ingest.classify import classify
 from ledger_sense.provenance import Claim, FileSource
+from ledger_sense.rules.arithmetic import (  # noqa: F401 — @register runs on import
+    foot,
+    lines,
+    payment,
+)
+from ledger_sense.rules.engine import (
+    CONTRACT_DEPENDENT_RULES,
+    Finding,
+    run_rules,
+    unverifiable_money_fields,
+)
 from ledger_sense.store.blobs import BlobStore, blob_store_from_environment
 from ledger_sense.store.documents import load_document
 from ledger_sense.store.retention import claims, documents, findings
@@ -38,6 +49,12 @@ RUNNABLE = frozenset({"received", "failed"})
 HUMAN_DECISIONS_NOTE = "human decisions present; refusing to overwrite"
 ROUNDING_POLICY_SOURCE = "tenant_default"
 NO_TEXT_LAYER_NOTE = "no text layer; scanned documents route to review until OCR routing ships"
+
+# A5/A6 are derived from the summary totals; if any total is unverifiable the
+# derivation is too, and neither has a claim of its own to box.
+_SUMMARY_DERIVED_RULES = frozenset({"A5", "A6"})
+_SUMMARY_FIELDS = frozenset({"total_completed_and_stored", "retainage_total",
+                             "previous_payments", "change_orders_net"})
 
 
 class _RunFailure(Exception):
@@ -185,6 +202,36 @@ def _x0_rows(tenant_id: str, document_id: str, app: PayApplication,
     } for entry in entries]
 
 
+def _keep(finding: Finding, unverifiable: frozenset[str]) -> bool:
+    if finding.field in unverifiable:
+        return False
+    if finding.field.startswith("line[") and "lines" in unverifiable:
+        return False
+    return not (finding.rule_id in _SUMMARY_DERIVED_RULES and unverifiable & _SUMMARY_FIELDS)
+
+
+def _rule_rows(tenant_id: str, document_id: str, app: PayApplication,
+               claim_rows: list[dict[str, object]], now: datetime) -> list[dict[str, object]]:
+    unverifiable = frozenset(unverifiable_money_fields(app))
+    boxes = {str(c["field"]): c for c in claim_rows}
+    rows: list[dict[str, object]] = []
+    for finding in run_rules(app, _tenant_default_contract(),
+                             rule_classes={"arithmetic"}, exclude=CONTRACT_DEPENDENT_RULES):
+        if not _keep(finding, unverifiable):
+            continue
+        box = boxes.get(finding.field)
+        rows.append({
+            "id": uuid.uuid4().hex, "tenant_id": tenant_id, "document_id": document_id,
+            "rule_id": finding.rule_id, "field": finding.field, "message": finding.message,
+            "expected": str(finding.expected), "actual": str(finding.actual),
+            "page": box["page"] if box else None,
+            "x0": box["x0"] if box else None, "top": box["top"] if box else None,
+            "x1": box["x1"] if box else None, "bottom": box["bottom"] if box else None,
+            "state": "open", "created_at": now,
+        })
+    return rows
+
+
 def _write(conn: Connection, row: sa.Row[tuple[object, ...]],
            claim_rows: list[dict[str, object]],
            finding_rows: list[dict[str, object]]) -> RunOutcome:
@@ -228,6 +275,7 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
         now = datetime.now(UTC)
         claim_rows = _claim_rows(tenant_id, document_id, app)
         finding_rows = _x0_rows(tenant_id, document_id, app, now)
+        finding_rows += _rule_rows(tenant_id, document_id, app, claim_rows, now)
     except Exception as exc:  # every document-level error becomes `failed`
         raise _RunFailure(exc, doc_type) from exc
     # Outside the try on purpose (spec §2 step 7's catch-all covers steps 3-5
