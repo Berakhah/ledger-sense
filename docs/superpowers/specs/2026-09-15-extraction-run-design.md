@@ -244,7 +244,7 @@ mid-run the row is still `received` and `--pending` picks it up.
   - a scanned/no-text-layer PDF (`scripts/make_malformed.py` or a rasterised corpus page) →
     `cannot_extract` with the no-text-layer note;
   - concurrency: two runners on one id (threads, SQLite `:memory:` is not shareable so a file
-    DB) → exactly one set of claims, `run_attempts == 2`;
+    DB) → exactly one set of claims, the row never `failed`; the loser either sees `already extracted` or hits SQLite's busy timeout (an infrastructure error, which propagates);
   - non-pay-application bytes → `cannot_extract`, `doc_type` set, note set, zero claims;
   - corrupt bytes → `failed`, note starts with the exception class, zero claims (rollback);
   - second run on `extracted` → no-op, row and counts unchanged;
