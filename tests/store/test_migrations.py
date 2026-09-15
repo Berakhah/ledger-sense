@@ -150,13 +150,13 @@ def test_0003_round_trips_on_a_populated_database(
 
 
 def _raw_insert(conn: sa.Connection, tenant_id: str, *, document_id: str,
-                sensitivity: str, origin: str) -> None:
+                sensitivity: str, origin: str, filename: str | None = "raw.pdf") -> None:
     conn.execute(sa.text(
         "INSERT INTO documents (id, tenant_id, blob_id, received_at, sensitivity, origin, "
-        "provenance) VALUES (:id, :tenant_id, NULL, :received_at, :sensitivity, :origin, "
-        "'tests/store/test_migrations.py')"),
+        "provenance, filename) VALUES (:id, :tenant_id, NULL, :received_at, :sensitivity, "
+        ":origin, 'tests/store/test_migrations.py', :filename)"),
         {"id": document_id, "tenant_id": tenant_id, "received_at": _PRE_0003_ROW["received_at"],
-         "sensitivity": sensitivity, "origin": origin})
+         "sensitivity": sensitivity, "origin": origin, "filename": filename})
 
 
 def test_the_server_defaults_are_gone_after_upgrade(
@@ -183,6 +183,47 @@ def test_the_check_refuses_a_label_outside_the_vocabulary(
     with pytest.raises(sa.exc.IntegrityError), store_session.app_engine().begin() as conn:
         _raw_insert(conn, seeded_documents.tenant_id, document_id="doc-bad-origin",
                     sensitivity="SYNTHETIC", origin="EMAIL")
+
+
+def test_0004_backfills_a_filename_and_then_refuses_to_invent_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-0004 row gets 'unknown:pre-0004' — honest, not blank — and the
+    default is dropped so a raw INSERT without a filename is refused."""
+    database = (tmp_path / "populated.db").as_posix()
+    monkeypatch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{database}")
+    store_session.reset_app_engine()
+    try:
+        config = _alembic_config()
+        command.upgrade(config, "0003_sensitivity")
+        with store_session.app_engine().begin() as conn:
+            # Not _seed_a_pre_0003_document: by 0003_sensitivity its document
+            # insert (which omits sensitivity/origin/provenance) already
+            # violates the NOT NULL those columns carry with no default at
+            # this revision. Only the tenant row is needed here, for the FK.
+            conn.execute(tenants.insert().values(
+                id=_PRE_0003_ROW["tenant_id"], name="pre-0004",
+                created_at=datetime.now(UTC), retention_days=365))
+            conn.execute(sa.text(
+                "INSERT INTO documents (id, tenant_id, blob_id, received_at, sensitivity, "
+                "origin, provenance) VALUES ('doc-pre-0004', :tenant_id, NULL, :received_at, "
+                "'SYNTHETIC', 'CORPUS', 'tests')"),
+                {"tenant_id": _PRE_0003_ROW["tenant_id"],
+                 "received_at": _PRE_0003_ROW["received_at"]})
+        command.upgrade(config, "head")
+        with store_session.app_engine().connect() as conn:
+            filename = conn.execute(sa.text(
+                "SELECT filename FROM documents WHERE id = 'doc-pre-0004'")).scalar()
+        assert filename == "unknown:pre-0004"
+        with pytest.raises(sa.exc.IntegrityError), store_session.app_engine().begin() as conn:
+            _raw_insert(conn, _PRE_0003_ROW["tenant_id"], document_id="doc-no-name",
+                        sensitivity="SYNTHETIC", origin="CORPUS", filename=None)
+        command.downgrade(config, "0003_sensitivity")
+        columns = {c["name"] for c in sa.inspect(store_session.app_engine())
+                   .get_columns("documents")}
+        assert "filename" not in columns
+    finally:
+        store_session.reset_app_engine()
 
 
 @pytest.mark.parametrize("sensitivity", list(Sensitivity))

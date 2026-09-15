@@ -53,6 +53,9 @@ documents = sa.Table(
     sa.Column("sensitivity", sa.Text, nullable=False),
     sa.Column("origin", sa.Text, nullable=False),
     sa.Column("provenance", sa.Text, nullable=False),
+    # 0004: the name the client gave the file. Display only — never a path,
+    # never provenance. NOT NULL, no default, same discipline as the label.
+    sa.Column("filename", sa.Text, nullable=False),
     # Named to match 0003 exactly: SQLite batch recreate keeps named CHECKs.
     sa.CheckConstraint(
         "sensitivity IN (" + ", ".join(f"'{s.value}'" for s in Sensitivity) + ")",
