@@ -220,7 +220,13 @@ def test_the_runner_imports_nothing_that_could_reach_a_provider() -> None:
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
+                # The module-only string (catches `from ledger_sense.extract.ocr
+                # import parse`) plus one full dotted name per imported alias
+                # (catches `from ledger_sense.extract import ocr` and `from
+                # ledger_sense import gateway`, which a module-only check misses
+                # because the forbidden leaf is the imported *name*, not the module).
                 names = [node.module]
+                names += [f"{node.module}.{alias.name}" for alias in node.names]
             for name in names:
                 if any(name == f or name.startswith(f + ".") for f in _RUNNER_FORBIDDEN):
                     offenders.append(f"{path}:{node.lineno} imports {name}")
