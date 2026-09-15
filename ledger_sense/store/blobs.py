@@ -160,3 +160,20 @@ def kek_from_environment() -> bytes:
             "it through the environment (see docs/security.md)."
         )
     return key.encode("utf-8")
+
+
+def blob_store_from_environment() -> BlobStore:
+    """The deployment's blob store: `LEDGER_SENSE_BLOB_ROOT` + the KEK.
+
+    Built where storage is wired (the inbox route, the demo seeder), not as a
+    module singleton, for the reason kek_from_environment gives. Raises if the
+    root is unset: a document written to a guessed directory is a document
+    nobody backs up.
+    """
+    root = os.environ.get("LEDGER_SENSE_BLOB_ROOT")
+    if not root:
+        raise RuntimeError(
+            "LEDGER_SENSE_BLOB_ROOT is unset: refusing to guess where client "
+            "documents live (see docs/security.md)."
+        )
+    return BlobStore(root=root, kek=kek_from_environment())
