@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from typing import cast
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from httpx import Response
 
@@ -46,6 +47,8 @@ def _database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
         # as_posix(): a Windows path's backslashes and drive colon do not
         # survive SQLAlchemy's URL parser.
         patch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{db.as_posix()}")
+        patch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
+        patch.setenv("LEDGER_SENSE_BLOB_ROOT", str(tmp_path_factory.mktemp("blobs")))
         store_session.reset_app_engine()
 
         config = Config(str(ROOT / "alembic.ini"))

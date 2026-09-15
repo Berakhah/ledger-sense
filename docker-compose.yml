@@ -75,6 +75,11 @@ services:
       # env_file alone would hand the container a literal empty string,
       # which is a real (if useless) CORS allow-list entry, not "unset".
       LEDGER_SENSE_WEB_ORIGIN: ${LEDGER_SENSE_WEB_ORIGIN:-http://localhost:3000}
+      LEDGER_SENSE_BLOB_ROOT: /var/lib/ledger-sense/blobs
+    volumes:
+      # The KEK in .env is what makes this volume ciphertext, not the volume
+      # itself — back the two up separately (docs/security.md).
+      - client_blobs:/var/lib/ledger-sense/blobs
 
   app-demo:
     <<: *app
@@ -86,6 +91,9 @@ services:
       <<: *postgres-env
       LEDGER_SENSE_PROFILE: demo
       LEDGER_SENSE_WEB_ORIGIN: ${LEDGER_SENSE_WEB_ORIGIN:-http://localhost:3000}
+      # Already tmpfs via the x-app anchor's /app/scratch mount — SYNTHETIC
+      # data, ephemeral by design, same stance as postgres-demo.
+      LEDGER_SENSE_BLOB_ROOT: /app/scratch/blobs
 
   # The Next.js app. Root build context on purpose: one package.json and one
   # lockfile serve the whole node side, and the app directory is passed to
@@ -157,3 +165,4 @@ services:
 
 volumes:
   client_pgdata:
+  client_blobs:
