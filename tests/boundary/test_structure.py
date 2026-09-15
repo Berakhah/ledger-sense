@@ -2,7 +2,11 @@
 
 Behavioural tests prove admit() refuses; these prove there is no path that
 does not go through it. Static, over the AST, so an `import ... as` or an
-attribute call cannot dodge them (F-32).
+attribute call cannot dodge them (F-32). The guards prove: `Labelled` is
+constructed only at the door and the store; `documents.insert` is called only
+by the store; no provider client (vendor SDK, cloud SDK, or stdlib HTTP) is
+imported outside the gateway; and no module relabels a frozen `Labelled` via
+`dataclasses.replace`, which would dodge the `Labelled(` constructor guard.
 """
 
 import ast
@@ -21,9 +25,14 @@ LABELLED_CONSTRUCTION_SITES = {
 
 # Anything that could carry bytes to a provider. gateway.py is the only module
 # allowed to know these exist — and today it does not import them either.
+# stdlib HTTP (urllib.request, http.client) and the cloud SDKs are included
+# for the same reason as the named vendor clients: a 2am `urllib.request
+# .urlopen(...)` from a script dropped in extract/ is exactly the route this
+# guard exists to close, not just a name from a pip-installed SDK.
 PROVIDER_CLIENTS = (
     "httpx", "requests", "openai", "anthropic", "google.generativeai", "groq",
-    "mistralai", "cohere",
+    "mistralai", "cohere", "urllib.request", "http.client", "aiohttp",
+    "urllib3", "google", "boto3", "vertexai",
 )
 
 
@@ -130,3 +139,66 @@ def test_no_module_outside_the_gateway_imports_a_provider_client() -> None:
                    for name in names for client in PROVIDER_CLIENTS):
                 offenders.append(f"{path}:{node.lineno}")
     assert offenders == [], f"a provider client outside gateway.py: {offenders}"
+
+
+def _dataclass_replace_calls(tree: ast.Module) -> list[int]:
+    """Line numbers of calls to `dataclasses.replace` (or an alias of it).
+
+    Matches `replace(...)` where `replace` was bound by `from dataclasses
+    import replace [as x]`, and `<name>.replace(...)` where `<name>` was bound
+    by `import dataclasses [as d]`. A bare `replace(x)` with no such import,
+    or `s.replace("a", "b")` on some other object, is not flagged — those are
+    `str.replace` or unrelated user code, not a `Labelled` relabel.
+    """
+    name_aliases: set[str] = set()
+    module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "dataclasses":
+            name_aliases |= {alias.asname or alias.name
+                              for alias in node.names if alias.name == "replace"}
+        elif isinstance(node, ast.Import):
+            module_aliases |= {alias.asname or alias.name
+                                for alias in node.names if alias.name == "dataclasses"}
+
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_name_hit = isinstance(func, ast.Name) and func.id in name_aliases
+        is_attr_hit = (isinstance(func, ast.Attribute) and func.attr == "replace"
+                       and isinstance(func.value, ast.Name) and func.value.id in module_aliases)
+        if is_name_hit or is_attr_hit:
+            lines.append(node.lineno)
+    return lines
+
+
+def test_no_module_relabels_a_dataclass_with_replace() -> None:
+    offenders = [f"{path}:{line}" for path, tree in _sources()
+                 for line in _dataclass_replace_calls(tree)]
+    assert offenders == [], f"dataclasses.replace used to relabel a Labelled: {offenders}"
+
+
+def test_dataclass_replace_calls_direct_name() -> None:
+    tree = ast.parse("from dataclasses import replace\nreplace(x, a=1)\n")
+    assert _dataclass_replace_calls(tree) == [2]
+
+
+def test_dataclass_replace_calls_aliased_name() -> None:
+    tree = ast.parse("import dataclasses as d\nd.replace(x, a=1)\n")
+    assert _dataclass_replace_calls(tree) == [2]
+
+
+def test_dataclass_replace_calls_module_attribute() -> None:
+    tree = ast.parse("import dataclasses\ndataclasses.replace(x)\n")
+    assert _dataclass_replace_calls(tree) == [2]
+
+
+def test_dataclass_replace_ignores_str_replace() -> None:
+    tree = ast.parse("s.replace('a', 'b')")
+    assert _dataclass_replace_calls(tree) == []
+
+
+def test_dataclass_replace_ignores_unrelated_bare_call() -> None:
+    tree = ast.parse("replace(x)")
+    assert _dataclass_replace_calls(tree) == []
