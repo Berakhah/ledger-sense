@@ -138,8 +138,12 @@ def _mark_failed(engine: Engine, document_id: str, cause: Exception,
     # The transaction above has rolled back: no partial claims survive, and
     # the attempt increment rolled back with it — re-applied here. The
     # message may carry page text, so it goes to the log; the row gets the
-    # class only. If the guarded UPDATE matches nothing the row changed
-    # under us, which means the lock did not hold — re-raise.
+    # class only. The guarded UPDATE can legitimately match nothing: our
+    # rollback released the row lock, and a runner that was waiting on it
+    # may already have taken the row (and even finished it). That is the
+    # other runner's outcome, reported the way `_take_row` reports an
+    # already-taken row — not an infrastructure failure. Only a row that no
+    # longer exists at all (purged mid-run) re-raises.
     note = f"failed: {type(cause).__name__}"
     with engine.begin() as conn:
         tenant = conn.execute(sa.select(documents.c.tenant_id)
@@ -151,9 +155,16 @@ def _mark_failed(engine: Engine, document_id: str, cause: Exception,
             .values(status="failed", run_note=note, doc_type=doc_type,
                     run_attempts=documents.c.run_attempts + 1)
         ).rowcount
-    if updated == 0:
+        if updated:
+            return RunOutcome(document_id, "failed", note, 0, 0)
+        current = conn.execute(
+            sa.select(documents.c.status)
+            .where(documents.c.id == document_id)).scalar_one_or_none()
+    if current is None:
         raise cause
-    return RunOutcome(document_id, "failed", note, 0, 0)
+    log.warning("run failure superseded document_id=%s tenant_id=%s: another runner "
+                "took the row, now %s", document_id, tenant, current)
+    return RunOutcome(document_id, str(current), f"already {current}", 0, 0)
 
 
 def _refuse(conn: Connection, row: sa.Row[tuple[object, ...]], note: str,
