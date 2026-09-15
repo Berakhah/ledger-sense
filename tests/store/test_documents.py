@@ -1,6 +1,7 @@
 """§4: the label survives a restart. A stored document reaches the gateway as
 the same Labelled it came in as, never re-labelled by hand."""
 
+import hashlib
 import pathlib
 from datetime import UTC, datetime
 from typing import cast
@@ -189,3 +190,28 @@ def test_a_stored_confidential_document_is_still_refused_after_reload(
         admit(Lane.EXTRACT_VISION, loaded,
               policy=ProviderPolicy(enabled=True, redacted_opt_in=True), transport=spy)
     assert spy.sent == []
+
+
+def test_the_row_carries_the_sha256_of_the_plaintext(
+    seeded_documents: SeededDocuments, blobs: BlobStore,
+) -> None:
+    doc = _labelled(Origin.CORPUS)
+    with store_session.app_engine().begin() as conn:
+        document_id = store_document(conn, tenant_id=seeded_documents.tenant_id, doc=doc,
+                                     blobs=blobs, received_at=RECEIVED_AT, filename="a.pdf")
+    row = seeded_documents.documents_for(document_id)[0]
+    assert row.content_sha256 == hashlib.sha256(doc.payload).hexdigest()
+
+
+def test_the_same_bytes_twice_are_two_rows_with_one_hash(
+    seeded_documents: SeededDocuments, blobs: BlobStore,
+) -> None:
+    doc = _labelled(Origin.CORPUS)
+    with store_session.app_engine().begin() as conn:
+        first = store_document(conn, tenant_id=seeded_documents.tenant_id, doc=doc,
+                               blobs=blobs, received_at=RECEIVED_AT, filename="a.pdf")
+        second = store_document(conn, tenant_id=seeded_documents.tenant_id, doc=doc,
+                                blobs=blobs, received_at=RECEIVED_AT, filename="a.pdf")
+    assert first != second
+    rows = seeded_documents.documents_for(first) + seeded_documents.documents_for(second)
+    assert len({r.content_sha256 for r in rows}) == 1
