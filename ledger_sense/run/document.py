@@ -42,6 +42,7 @@ from ledger_sense.rules.engine import (
 from ledger_sense.store.blobs import BlobStore, blob_store_from_environment
 from ledger_sense.store.documents import load_document
 from ledger_sense.store.retention import claims, documents, findings
+from ledger_sense.store.session import app_engine
 
 log = logging.getLogger(__name__)
 
@@ -325,3 +326,29 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
     # RuntimeError must propagate and roll back the transaction rather than
     # become an ordinary `failed` row indistinguishable from a real crash.
     return _write(conn, row, claim_rows, finding_rows)
+
+
+def run_pending(engine: Engine, *, limit: int = 100,
+                blobs: BlobStore | None = None) -> list[RunOutcome]:
+    """Run every `received`/`failed` document, oldest first, each in its own
+    transaction. One failure is one `failed` row, not a stopped batch."""
+    with engine.connect() as conn:
+        ids = [str(i) for i in conn.execute(
+            sa.select(documents.c.id)
+            .where(documents.c.status.in_(RUNNABLE))
+            .order_by(documents.c.received_at, documents.c.id)
+            .limit(limit)
+        ).scalars()]
+    store = blobs if blobs is not None else blob_store_from_environment()
+    return [run_document(engine, document_id, blobs=store) for document_id in ids]
+
+
+def run_in_background(document_id: str, tenant_id: str) -> None:
+    """The BackgroundTasks entry point. A failure here has nowhere to go —
+    the 201 has been sent — so it is logged with the ids (never the
+    client-chosen filename) and swallowed."""
+    try:
+        run_document(app_engine(), document_id)
+    except Exception:  # by design: nothing may escape a background task
+        log.exception("background run crashed document_id=%s tenant_id=%s",
+                      document_id, tenant_id)
