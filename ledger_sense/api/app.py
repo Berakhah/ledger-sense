@@ -26,6 +26,9 @@ from collections import defaultdict, deque
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.datastructures import Headers
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ledger_sense.api._stub_routes import stub_routers
 from ledger_sense.api.baseline import router as baseline_router
@@ -34,6 +37,7 @@ from ledger_sense.api.fixtures import SEED_PATH, demo_profile_enabled, seed
 from ledger_sense.api.inbox import router as inbox_router
 from ledger_sense.auth.models import authenticate
 from ledger_sense.auth.session import SESSION_TTL, issue_session
+from ledger_sense.ingest.limits import DEFAULT_LIMITS
 
 # next.config.ts: "the browser talks to it directly at NEXT_PUBLIC_API_URL;
 # nothing is proxied through Next" — the web app is a separate origin (see
@@ -59,6 +63,70 @@ UNGUARDED_PREFIXES = ("/api/health", "/api/auth", "/api/fixtures")
 # brute-force brake, not an access control — the ownership check is.
 _login_hits: dict[str, deque[float]] = defaultdict(deque)
 _login_lock = threading.Lock()
+
+# I3: Starlette's own `max_part_size` (the multipart parser's own guard)
+# bounds a non-file *field*, not a file part — a file part spools to disk
+# (tmpfs under docker-compose.yml's read_only root, inside the 1 GB
+# mem_limit) with no upstream size limit at all. Without this, a multi-
+# gigabyte POST fills that tmpfs and OOMs the container long before
+# inbox.py's own 413 ever gets a chance to fire on the parsed body. This
+# constant is the multipart-framing slack (boundary lines, headers, the
+# `origin` form field) allowed on top of the raw file cap the route itself
+# enforces — not a second, independent size policy.
+MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_INBOX_UPLOAD_PATH = "/api/inbox"
+_INBOX_UPLOAD_METHOD = "POST"
+
+
+class InboxBodyCapMiddleware:
+    """Refuses an oversized or lengthless POST /api/inbox body before
+    Starlette's multipart parser ever spools a byte of it to disk.
+
+    A plain ASGI callable, not `BaseHTTPMiddleware`: `BaseHTTPMiddleware`
+    buffers the whole request body into memory to hand the inner app a
+    `Request`, which is exactly the unbounded read this middleware exists to
+    prevent. Scoped to the exact path and method a file upload actually
+    reaches — every other route (`/api/health`, `/api/auth/login`, ...)
+    passes straight through untouched.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (scope["type"] != "http" or scope["method"] != _INBOX_UPLOAD_METHOD
+                or scope["path"] != _INBOX_UPLOAD_PATH):
+            await self._app(scope, receive, send)
+            return
+
+        # {"detail": ...} — the same body shape FastAPI's own HTTPException
+        # produces, so a client cannot tell this rejection apart from one
+        # the route itself raised.
+        content_length = Headers(scope=scope).get("content-length")
+        if content_length is None:
+            # No Content-Length means a chunked (or otherwise length-less)
+            # body: this route requires an upfront declared size to refuse
+            # an oversized upload before reading it, so a client that will
+            # not declare one is refused outright rather than trusted.
+            response = JSONResponse(
+                {"detail": "a Content-Length header is required; chunked "
+                           "request bodies are not accepted"},
+                status_code=411)
+            await response(scope, receive, send)
+            return
+
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = None
+        if declared is not None and declared > DEFAULT_LIMITS.max_bytes + MULTIPART_OVERHEAD_BYTES:
+            response = JSONResponse(
+                {"detail": f"rejected: declared request size {declared} exceeds the size cap"},
+                status_code=413)
+            await response(scope, receive, send)
+            return
+
+        await self._app(scope, receive, send)
 
 
 class LoginRequest(BaseModel):
@@ -90,6 +158,7 @@ def build_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type"],
     )
+    app.add_middleware(InboxBodyCapMiddleware)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
