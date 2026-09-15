@@ -40,8 +40,9 @@ def store_document(
     doc: Labelled[bytes],
     blobs: BlobStore,
     received_at: datetime,
+    filename: str,
 ) -> str:
-    """Encrypt the payload, insert the row with its label, return the new id."""
+    """Encrypt the payload, insert the row with its label and filename, return the new id."""
     document_id = uuid.uuid4().hex
     # The blob lands first (blobs.py fsyncs before returning) so the row never
     # points at ciphertext that was not written. If the row then fails, the
@@ -64,6 +65,7 @@ def store_document(
             sensitivity=doc.sensitivity.value,
             origin=doc.origin.value,
             provenance=doc.provenance,
+            filename=filename,
         ))
     except Exception as insert_error:
         try:

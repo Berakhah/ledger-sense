@@ -83,6 +83,7 @@ class SeededDocuments:
                 sensitivity=Sensitivity.SYNTHETIC.value,
                 origin=Origin.CORPUS.value,
                 provenance="tests/store/conftest.py",
+                filename="tests/store/conftest.py",
             ))
         return document_id
 
@@ -119,6 +120,7 @@ def seeded_documents(tmp_path: pathlib.Path) -> Iterator[SeededDocuments]:
                 sensitivity=Sensitivity.SYNTHETIC.value,
                 origin=Origin.CORPUS.value,
                 provenance="tests/store/conftest.py",
+                filename="tests/store/conftest.py",
             ))
             conn.execute(claims.insert().values(
                 id=uuid.uuid4().hex,
