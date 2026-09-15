@@ -246,3 +246,46 @@ def test_the_check_accepts_every_enum_value(
         _raw_insert(conn, seeded_documents.tenant_id,
                     document_id=f"doc-{sensitivity.value}-{origin.value}",
                     sensitivity=sensitivity.value, origin=origin.value)
+
+
+def test_0005_adds_the_run_columns_the_findings_table_and_named_checks(
+    tmp_path: pathlib.Path,
+) -> None:
+    database = (tmp_path / "m.db").as_posix()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{database}")
+        store_session.reset_app_engine()
+        config = _alembic_config()
+        command.upgrade(config, "head")
+        inspector = sa.inspect(store_session.app_engine())
+
+        doc_cols = {c["name"] for c in inspector.get_columns("documents")}
+        assert {"status", "content_sha256", "doc_type", "run_note",
+                "rounding_policy_source", "run_attempts"} <= doc_cols
+        claim_cols = {c["name"] for c in inspector.get_columns("claims")}
+        assert {"field", "value", "value_type", "method", "confidence", "match_quality",
+                "page", "x0", "top", "x1", "bottom", "caveat", "observed_at"} <= claim_cols
+        assert "findings" in inspector.get_table_names()
+
+        doc_checks = {c["name"] for c in inspector.get_check_constraints("documents")}
+        assert {"ck_documents_status", "ck_documents_doc_type"} <= doc_checks
+        finding_checks = {c["name"] for c in inspector.get_check_constraints("findings")}
+        assert "ck_findings_state" in finding_checks
+        claim_checks = {c["name"] for c in inspector.get_check_constraints("claims")}
+        assert "ck_claims_value_type" in claim_checks
+
+        claim_indexes = {i["name"]: i for i in inspector.get_indexes("claims")}
+        # SQLite reflection reports `unique` as an int (0/1), not a bool —
+        # `not ...` rather than `is False` so the assertion holds regardless.
+        assert not claim_indexes["ix_claims_document_field"]["unique"]
+        finding_indexes = {i["name"] for i in inspector.get_indexes("findings")}
+        assert "ix_findings_document_order" in finding_indexes
+
+        # Downgrade one step removes everything 0005 added and nothing else.
+        command.downgrade(config, "0004_filename")
+        inspector = sa.inspect(store_session.app_engine())
+        assert "findings" not in inspector.get_table_names()
+        assert "status" not in {c["name"] for c in inspector.get_columns("documents")}
+        assert "field" not in {c["name"] for c in inspector.get_columns("claims")}
+        assert "filename" in {c["name"] for c in inspector.get_columns("documents")}
+    store_session.reset_app_engine()
