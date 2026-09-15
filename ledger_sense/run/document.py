@@ -56,6 +56,13 @@ NO_TEXT_LAYER_NOTE = "no text layer; scanned documents route to review until OCR
 _SUMMARY_DERIVED_RULES = frozenset({"A5", "A6"})
 _SUMMARY_FIELDS = frozenset({"total_completed_and_stored", "retainage_total",
                              "previous_payments", "change_orders_net"})
+# A1/A8 sum over `app.lines` and report on a summary field. `assemble` drops a
+# whole continuation row when one of its cells is not money-shaped (recorded
+# as `line[<n>].<field>`), and an empty grid is recorded as `"lines"`; either
+# way the sum is incomplete and a footing finding on it would be a confident
+# lie about a missing row. Per-line rules (A2-A4b) only inspect surviving
+# lines and are unaffected.
+_LINE_AGGREGATING_RULES = frozenset({"A1", "A8"})
 
 
 class _RunFailure(Exception):
@@ -207,6 +214,9 @@ def _keep(finding: Finding, unverifiable: frozenset[str]) -> bool:
     if finding.field in unverifiable:
         return False
     if finding.field.startswith("line[") and "lines" in unverifiable:
+        return False
+    if finding.rule_id in _LINE_AGGREGATING_RULES and any(
+            f == "lines" or f.startswith("line[") for f in unverifiable):
         return False
     return not (finding.rule_id in _SUMMARY_DERIVED_RULES and unverifiable & _SUMMARY_FIELDS)
 
