@@ -23,11 +23,28 @@ def test_the_seed_route_does_not_exist_under_the_client_profile(
 
 
 def test_seeded_documents_are_labelled_synthetic(monkeypatch: pytest.MonkeyPatch) -> None:
-    """F-49 depends on this: a synthetic session must never produce field labels."""
+    """F-49 depends on this: a synthetic session must never produce field
+    labels. Read back through the real inbox route, off the real documents
+    table — the seeder stores through the same door as an upload."""
     client = _client(monkeypatch, "demo")
-    doc_id = client.post("/api/fixtures/seed",
-                         json={"doc_id": "doc-3", "exceptions": 3}).json()["doc_id"]
-    assert client.get(f"/api/inbox/{doc_id}").json()["sensitivity"] == "SYNTHETIC"
+    body = client.post("/api/fixtures/seed", json={"doc_id": "doc-3", "exceptions": 3}).json()
+    row = client.get(f"/api/inbox/{body['doc_id']}").json()
+    assert (row["sensitivity"], row["origin"]) == ("SYNTHETIC", "CORPUS")
+    assert row["filename"] == "doc-3.pdf"
+
+
+def test_the_seeded_row_records_who_seeded_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlalchemy as sa
+
+    from ledger_sense.store import session as store_session
+    from ledger_sense.store.retention import documents
+
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={"doc_id": "doc-4", "exceptions": 0}).json()
+    with store_session.app_engine().connect() as conn:
+        provenance = conn.execute(sa.select(documents.c.provenance)
+                                  .where(documents.c.id == body["doc_id"])).scalar_one()
+    assert provenance.startswith(f"corpus://seed/{body['tenant_id']}/")
 
 
 # ---- controls on the demo hatch itself ----

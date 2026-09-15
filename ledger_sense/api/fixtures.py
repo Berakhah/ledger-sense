@@ -7,9 +7,13 @@ only when LEDGER_SENSE_PROFILE == "demo" — an absent route, not a guarded one:
 a 403 tells a prober the demo hatch is compiled in and merely switched off.
 The default (unset, or any other value) is the `client` profile.
 
-Every row it writes is labelled SYNTHETIC. That label is what /api/inbox/{id}
-hands back, so "the demo holds no client data" is a property the API can be
-asked about rather than a claim in a README.
+The document row goes through the same door as an upload — accept_document,
+then store_document — and lands in the real `documents` table. Its label is
+always SYNTHETIC (the only label CORPUS origin can produce), and that label
+is what /api/inbox/{id} hands back, so "the demo holds no client data" is a
+property the API can be asked about rather than a claim in a README. The
+exception rows are unrelated stub rows, kept in `stub_resources` until
+/api/review is real, and are labelled SYNTHETIC too.
 
 ## The Secure-flag relaxation, stated plainly
 
@@ -46,16 +50,20 @@ cookies.
 
 import os
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
-import sqlalchemy as sa
 from fastapi import Response
 from pydantic import BaseModel, Field
 
 from ledger_sense.api._stub_routes import STUB_METADATA, stub_resources
 from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.auth.session import SESSION_TTL, issue_session
-from ledger_sense.boundary import Sensitivity
+from ledger_sense.boundary import Origin, Sensitivity
+from ledger_sense.corpus.generate import generate
+from ledger_sense.ingest.intake import accept_document
+from ledger_sense.store.blobs import blob_store_from_environment
+from ledger_sense.store.documents import store_document
 from ledger_sense.store.session import app_engine
 
 SEED_PATH = "/api/fixtures/seed"
@@ -83,6 +91,10 @@ def demo_profile_enabled() -> bool:
 
 
 class SeedRequest(BaseModel):
+    # No longer a document id: it is the exception-key prefix
+    # (_exception_id below) and the filename stem for the seeded document.
+    # The stored document's own id — what the response's doc_id carries — is
+    # minted by store_document, same as any upload.
     doc_id: DocId
     exceptions: int = Field(default=0, ge=0, le=MAX_EXCEPTIONS)
 
@@ -120,19 +132,26 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     tenant_id = create_tenant(f"demo-{suffix}")
     user_id = create_user(tenant_id, f"demo-{suffix}@example.invalid", uuid.uuid4().hex)
 
-    rows = [{"id": body.doc_id, "tenant_id": tenant_id, "sensitivity": SYNTHETIC}]
-    rows += [{"id": _exception_id(body.doc_id, i), "tenant_id": tenant_id,
-              "sensitivity": SYNTHETIC} for i in range(body.exceptions)]
+    exception_rows = [{"id": _exception_id(body.doc_id, i), "tenant_id": tenant_id,
+                       "sensitivity": SYNTHETIC} for i in range(body.exceptions)]
 
+    # The document goes through the same door as an upload: accept_document
+    # labels it from its origin (CORPUS → SYNTHETIC), store_document writes
+    # the only documents row. No stub row for the document any more — the
+    # demo-profile proof now runs against the real table. The exception rows
+    # stay in stub_resources until /api/review is real.
+    _, _, payload = generate(seed=0, error="clean")
+    doc = accept_document(payload, origin=Origin.CORPUS,
+                          provenance=f"corpus://seed/{tenant_id}/{user_id}")
     with engine.begin() as conn:
-        conn.execute(stub_resources.delete().where(sa.or_(
-            stub_resources.c.id == body.doc_id,
-            # autoescape: "_" is in DocId's alphabet and is also LIKE's
-            # single-character wildcard, so re-seeding "doc_50" would
-            # otherwise delete "docX50"'s exception rows too.
-            stub_resources.c.id.startswith(f"{body.doc_id}:exc:", autoescape=True),
-        )))
-        conn.execute(stub_resources.insert(), rows)
+        document_id = store_document(conn, tenant_id=tenant_id, doc=doc,
+                                     blobs=blob_store_from_environment(),
+                                     received_at=datetime.now(UTC),
+                                     filename=f"{body.doc_id}.pdf")
+        conn.execute(stub_resources.delete().where(
+            stub_resources.c.id.startswith(f"{body.doc_id}:exc:", autoescape=True)))
+        if exception_rows:
+            conn.execute(stub_resources.insert(), exception_rows)
 
     response.set_cookie(
         "session",
@@ -145,5 +164,5 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
         secure=False,
         path="/",
     )
-    return {"doc_id": body.doc_id, "exceptions": body.exceptions,
+    return {"doc_id": document_id, "exceptions": body.exceptions,
             "sensitivity": SYNTHETIC, "tenant_id": tenant_id}
