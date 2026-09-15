@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from ledger_sense.boundary import Labelled, Origin, Sensitivity, SensitivityViolation
-from ledger_sense.ingest.limits import Limits, ParseResult, parse_within_limits
+from ledger_sense.ingest.limits import DEFAULT_LIMITS, Limits, ParseResult, parse_within_limits
 
 __all__ = ["RedactionVerdict", "accept_document", "intake"]
 
@@ -72,4 +72,4 @@ def accept_document(
 
 def intake(payload: bytes, limits: Limits | None = None) -> ParseResult:
     """Parse an uploaded document within resource limits."""
-    return parse_within_limits(payload, limits if limits is not None else Limits())
+    return parse_within_limits(payload, limits if limits is not None else DEFAULT_LIMITS)
