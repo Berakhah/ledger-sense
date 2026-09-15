@@ -41,6 +41,7 @@ import re
 import sys
 import zlib
 from dataclasses import dataclass
+from enum import Enum
 from queue import Empty
 
 import pypdfium2 as pdfium
@@ -58,6 +59,18 @@ class Limits:
     max_memory_mb: int = 512
 
 
+class Rejection(str, Enum):
+    """Why a payload was refused. The route maps HTTP status on this, never
+    on the wording of `reason`."""
+
+    NOT_PDF = "NOT_PDF"
+    TOO_LARGE = "TOO_LARGE"
+    TOO_MANY_PAGES = "TOO_MANY_PAGES"
+    BOMB = "BOMB"
+    TIMEOUT = "TIMEOUT"
+    UNPARSEABLE = "UNPARSEABLE"
+
+
 @dataclass(frozen=True)
 class RejectedDocument:
     """A document that did not parse — malformed, or over a cap. Never raised,
@@ -67,6 +80,7 @@ class RejectedDocument:
     """
 
     reason: str
+    kind: Rejection
 
 
 @dataclass(frozen=True)
@@ -126,14 +140,14 @@ def _parse_child(payload: bytes, limits: Limits, out: multiprocessing.Queue[Pars
 
     try:
         if _decompression_bomb(payload, limits.max_memory_mb * 1024 * 1024):
-            out.put(RejectedDocument("rejected: a stream would decompress past the memory cap"))
+            out.put(RejectedDocument("rejected: a stream would decompress past the memory cap", Rejection.BOMB))
             return
 
         doc = pdfium.PdfDocument(payload)
         try:
             page_count = len(doc)
             if page_count > limits.max_pages:
-                out.put(RejectedDocument(f"rejected: page count {page_count} exceeds the page cap"))
+                out.put(RejectedDocument(f"rejected: page count {page_count} exceeds the page cap", Rejection.TOO_MANY_PAGES))
                 return
 
             text_parts: list[str] = []
@@ -147,7 +161,7 @@ def _parse_child(payload: bytes, limits: Limits, out: multiprocessing.Queue[Pars
         finally:
             doc.close()
     except Exception as exc:  # noqa: BLE001 - a parse failure must return, never raise
-        out.put(RejectedDocument(f"rejected: could not parse ({exc})"))
+        out.put(RejectedDocument(f"rejected: could not parse ({exc})", Rejection.UNPARSEABLE))
 
 
 def parse_within_limits(payload: bytes, limits: Limits) -> ParseResult:
@@ -163,9 +177,9 @@ def parse_within_limits(payload: bytes, limits: Limits) -> ParseResult:
     reaches this process.
     """
     if not payload.startswith(b"%PDF"):
-        return RejectedDocument("rejected: not a PDF (bad magic bytes)")
+        return RejectedDocument("rejected: not a PDF (bad magic bytes)", Rejection.NOT_PDF)
     if len(payload) > limits.max_bytes:
-        return RejectedDocument(f"rejected: payload size {len(payload)} exceeds the size cap")
+        return RejectedDocument(f"rejected: payload size {len(payload)} exceeds the size cap", Rejection.TOO_LARGE)
 
     ctx = multiprocessing.get_context("spawn")
     queue: multiprocessing.Queue[ParseResult] = ctx.Queue()
@@ -176,9 +190,9 @@ def parse_within_limits(payload: bytes, limits: Limits) -> ParseResult:
     if process.is_alive():
         process.kill()
         process.join()
-        return RejectedDocument("rejected: parsing exceeded the wall-clock timeout")
+        return RejectedDocument("rejected: parsing exceeded the wall-clock timeout", Rejection.TIMEOUT)
 
     try:
         return queue.get_nowait()
     except Empty:
-        return RejectedDocument(f"rejected: parser exited without a result (code {process.exitcode})")
+        return RejectedDocument(f"rejected: parser exited without a result (code {process.exitcode})", Rejection.UNPARSEABLE)
