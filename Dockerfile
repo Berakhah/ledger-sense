@@ -30,6 +30,17 @@ COPY . .
 RUN uv sync --frozen --no-dev
 
 RUN chown -R ledger:ledger /app
+
+# C1: docker-compose.yml bind-mounts a named volume at this exact path for
+# the client profile. Docker initialises an empty named volume's mountpoint
+# by copying whatever already exists there in the image — root:root 0755 if
+# nothing does — so without this the directory BlobStore.put() writes into
+# is owned by root while the process runs as `ledger`, and every upload
+# fails with PermissionError. Creating and chowning it here, before the
+# volume is ever mounted, is what Docker copies onto the volume on first
+# mount.
+RUN mkdir -p /var/lib/ledger-sense/blobs && chown ledger:ledger /var/lib/ledger-sense/blobs
+
 USER ledger
 
 # --frozen --no-dev: the exact flags the two `uv sync` layers above already
