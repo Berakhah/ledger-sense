@@ -1,12 +1,15 @@
 import pathlib
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import sqlalchemy as sa
 from cryptography.fernet import Fernet
 
+from ledger_sense.store import session as store_session
 from ledger_sense.store.blobs import BlobStore
-from ledger_sense.store.retention import purge_expired, retention_days
-from tests.store.conftest import SeededDocuments
+from ledger_sense.store.retention import findings, purge_expired, retention_days
+from tests.store.conftest import EXPIRED_DOCUMENT_ID, SeededDocuments
 
 
 def test_a_document_past_its_retention_period_is_purged(
@@ -71,3 +74,20 @@ def test_a_purge_that_cannot_reach_the_ciphertext_refuses_to_run(
         purge_expired(now=datetime.now(UTC))
 
     assert seeded_documents.documents_for("doc-expired") != []
+
+
+def test_purge_removes_the_findings_derived_from_an_expired_document(
+    seeded_documents: SeededDocuments,
+) -> None:
+    with store_session.app_engine().begin() as conn:
+        conn.execute(findings.insert().values(
+            id=uuid.uuid4().hex, tenant_id=seeded_documents.tenant_id,
+            document_id=EXPIRED_DOCUMENT_ID, rule_id="A1", field="total_completed_and_stored",
+            message="does not foot", expected="1.00", actual="2.00",
+            page=0, x0=1.0, top=1.0, x1=2.0, bottom=2.0, created_at=datetime.now(UTC)))
+    report = purge_expired(now=datetime.now(UTC), blobs=None)
+    assert report.findings_purged == 1
+    with store_session.app_engine().connect() as conn:
+        left = conn.execute(
+            sa.select(findings).where(findings.c.document_id == EXPIRED_DOCUMENT_ID)).all()
+    assert left == []

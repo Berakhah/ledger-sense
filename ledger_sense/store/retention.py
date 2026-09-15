@@ -7,7 +7,7 @@ code, and it exists before the first document arrives rather than after.
 `purge_expired` runs from a compose-scheduled job. For each document whose
 tenant's retention term has run out it deletes, in this order:
 
-    the encrypted original  ->  the claims derived from it  ->  the row itself
+    the encrypted original  ->  the claims and findings derived from it  ->  the row itself
 
 then writes one `retention_audit_log` entry recording what went and why. The
 blob goes first deliberately: if the run dies halfway, the ciphertext is
@@ -172,6 +172,7 @@ class PurgeReport:
     documents_purged: int = 0
     claims_purged: int = 0
     blobs_deleted: int = 0
+    findings_purged: int = 0
 
 
 def _aware(value: datetime) -> datetime:
@@ -218,7 +219,7 @@ def purge_expired(
     partial failure completes the job rather than double-counting it.
     """
     now = _aware(now)
-    purged = claims_purged = blobs_deleted = 0
+    purged = claims_purged = blobs_deleted = findings_purged = 0
 
     with app_engine().begin() as conn:
         # ponytail: whole-table scan with the date arithmetic done in Python,
@@ -257,6 +258,9 @@ def purge_expired(
                 and row.blob_id
                 and blobs.delete(str(row.tenant_id), str(row.blob_id))
             )
+            deleted_findings = conn.execute(
+                findings.delete().where(findings.c.document_id == row.id)
+            ).rowcount
             deleted_claims = conn.execute(
                 claims.delete().where(claims.c.document_id == row.id)
             ).rowcount
@@ -277,7 +281,8 @@ def purge_expired(
             ))
             purged += 1
             claims_purged += deleted_claims
+            findings_purged += deleted_findings
             blobs_deleted += int(blob_deleted)
 
     return PurgeReport(documents_purged=purged, claims_purged=claims_purged,
-                       blobs_deleted=blobs_deleted)
+                       blobs_deleted=blobs_deleted, findings_purged=findings_purged)
