@@ -2,12 +2,15 @@
 
 import io
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pypdfium2 as pdfium
 import pytest
 import sqlalchemy as sa
 
 from ledger_sense.corpus.generate import generate
+from ledger_sense.extract.assemble import UnextractableField, assemble_pay_application
+from ledger_sense.provenance import Claim
 from ledger_sense.run.document import RunOutcome, run_document
 from ledger_sense.store.retention import documents, findings
 from tests.run.conftest import RunDb
@@ -152,3 +155,65 @@ def test_a_parse_crash_before_classification_is_recorded_as_failed(
     assert row.doc_type is None
     assert db.claims_for(document_id) == []
     assert row.run_attempts == 1
+
+
+def test_a_clean_document_is_extracted_with_one_claim_per_provenance_entry(db: RunDb) -> None:
+    pdf = _clean_pdf()
+    document_id = db.store_pdf(pdf)
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "extracted"
+    row = db.document(document_id)
+    assert row.status == "extracted"
+    assert row.doc_type == "pay_application"
+    assert row.run_note is None
+    assert row.rounding_policy_source == "tenant_default"
+
+    expected = {k: v for k, v in assemble_pay_application(pdf, document_id).provenance.items()
+                if not k.startswith("_")}
+    stored = {c.field: c for c in db.claims_for(document_id)}
+    assert set(stored) == set(expected)
+    assert outcome.claims_written == len(expected)
+    for field, claim in expected.items():
+        assert isinstance(claim, Claim)
+        s = stored[field]
+        assert s.tenant_id == db.tenant_id
+        assert s.method == "deterministic"
+        assert s.page == claim.source.page
+        assert (s.x0, s.top, s.x1, s.bottom) == claim.source.bbox
+        if isinstance(claim.value, Decimal):
+            assert s.value_type == "money"
+            assert Decimal(s.value) == claim.value
+
+
+def test_claims_keep_money_as_text_never_float(db: RunDb) -> None:
+    document_id = db.store_pdf(_clean_pdf())
+    run_document(db.engine, document_id)
+    money_claims = [c for c in db.claims_for(document_id) if c.value_type == "money"]
+    assert money_claims
+    assert all(isinstance(c.value, str) for c in money_claims)
+
+
+def test_an_unextractable_field_becomes_an_x0_finding_without_a_box(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ledger_sense.run.document as run_module
+
+    real = run_module.assemble_pay_application
+
+    def _drop_previous_payments(pdf: bytes, source_path: str) -> object:
+        app = real(pdf, source_path)
+        app.provenance.pop("previous_payments")
+        app.provenance["_unextractable"].append(
+            UnextractableField("previous_payments", "label not found on page"))
+        return app
+    monkeypatch.setattr(run_module, "assemble_pay_application", _drop_previous_payments)
+
+    document_id = db.store_pdf(_clean_pdf())
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "extracted"
+    x0 = [f for f in db.findings_for(document_id) if f.rule_id == "X0"]
+    assert [f.field for f in x0] == ["previous_payments"]
+    assert x0[0].message == "could not extract: label not found on page"
+    assert x0[0].page is None and x0[0].x0 is None
+    assert x0[0].state == "open"
+    assert "previous_payments" not in {c.field for c in db.claims_for(document_id)}
