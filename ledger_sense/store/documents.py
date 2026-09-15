@@ -45,7 +45,11 @@ def store_document(
     document_id = uuid.uuid4().hex
     # The blob lands first (blobs.py fsyncs before returning) so the row never
     # points at ciphertext that was not written. If the row then fails, the
-    # blob is removed: purge is row-driven and would never find an orphan.
+    # blob is removed: purge is row-driven and would never find an orphan. If
+    # that cleanup itself fails, the insert error is still what propagates —
+    # not the cleanup error — with a note recording that the blob is now an
+    # orphan needing manual deletion, so the caller learns why the insert
+    # failed instead of why the cleanup failed.
     blob_id = blobs.put(tenant_id, doc.payload)
     try:
         conn.execute(documents.insert().values(
@@ -57,8 +61,13 @@ def store_document(
             origin=doc.origin.value,
             provenance=doc.provenance,
         ))
-    except Exception:
-        blobs.delete(tenant_id, blob_id)
+    except Exception as insert_error:
+        try:
+            blobs.delete(tenant_id, blob_id)
+        except Exception as cleanup_error:  # noqa: BLE001 — the insert error is the one that matters
+            insert_error.add_note(
+                f"blob {blob_id} could not be removed after the insert failed "
+                f"({cleanup_error!r}); it is an orphan until deleted by hand")
         raise
     return document_id
 
