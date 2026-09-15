@@ -10,6 +10,13 @@ client = TestClient(app)
 PROTECTED_PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
                       "/api/inbox", "/api/vendors", "/api/metrics")
 
+# /api/inbox only answers POST (no GET "/") — everything else still has the
+# stub's GET "/" index. Route matching (path + method) happens before any
+# dependency runs, so a GET against a POST-only path 405s without ever
+# reaching require_session; each prefix must therefore be probed with a
+# method it actually serves.
+_PROBE_METHOD = {"/api/inbox": "post"}
+
 
 def test_every_api_route_requires_a_session() -> None:
     """The test that would have caught F-25 the day the first router landed."""
@@ -32,7 +39,8 @@ def test_every_api_route_requires_a_session() -> None:
 
 @pytest.mark.parametrize("prefix", PROTECTED_PREFIXES)
 def test_an_anonymous_request_is_refused(prefix: str) -> None:
-    assert client.get(f"{prefix}/").status_code == 401
+    method = getattr(client, _PROBE_METHOD.get(prefix, "get"))
+    assert method(f"{prefix}/").status_code == 401
 
 
 def test_a_document_from_another_tenant_is_not_found_rather_than_forbidden(
@@ -72,7 +80,7 @@ def test_a_session_expires() -> None:
                               "password": "changeme-in-test"}).json()["token"]
     from ledger_sense.auth.session import expire_now
     expire_now(token)
-    assert client.get("/api/inbox/", cookies={"session": token}).status_code == 401
+    assert client.post("/api/inbox/", cookies={"session": token}).status_code == 401
 
 
 def test_passwords_are_stored_as_argon2_hashes_not_plaintext() -> None:
