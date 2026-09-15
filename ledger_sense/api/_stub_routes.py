@@ -9,7 +9,7 @@ require_session runs, and the test proving the boundary would pass for the
 wrong reason. Same for owned(): 404-not-403 needs a real handler that looks a
 resource up and hands its tenant_id to owned().
 
-So each of the six prefixes gets a trivial placeholder, mounted through
+So each of the five prefixes gets a trivial placeholder, mounted through
 register() like everything else, and `stub_resources` holds the bare
 (id, tenant_id, sensitivity) rows the three ownership-checked handlers read.
 Documents, exceptions and their real tables belong to the extraction and
@@ -49,7 +49,7 @@ stub_resources = sa.Table(
 )
 
 PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
-            "/api/inbox", "/api/vendors", "/api/metrics")
+            "/api/vendors", "/api/metrics")
 
 
 def seed_resource(tenant_id: str) -> str:
@@ -93,22 +93,6 @@ def _accept_exception(exc_id: str, session: CurrentSession) -> dict[str, str]:
     return {"id": exc_id, "status": "accepted"}
 
 
-def _read_inbox_document(doc_id: str, session: CurrentSession) -> dict[str, str | None]:
-    """Same ownership contract as _read_document, plus the provenance label.
-
-    Guarded exactly like every other stub route — register() applies
-    require_session, owned() answers 404 for someone else's row. The demo
-    seeder gets in here on the session its own response set, not on an
-    exemption; see api/fixtures.py.
-    """
-    row = _row_of(doc_id)
-    # owned() has already raised 404 by the time row is None; the re-test is
-    # for the type checker, not a second code path.
-    owned(session, None if row is None else str(row.tenant_id))
-    label = None if row is None else row.sensitivity
-    return {"id": doc_id, "sensitivity": None if label is None else str(label)}
-
-
 def stub_routers() -> list[APIRouter]:
     routers = []
     for prefix in PREFIXES:
@@ -116,8 +100,6 @@ def stub_routers() -> list[APIRouter]:
         router.add_api_route("/", _index, methods=["GET"])
         if prefix == "/api/reconciliation":
             router.add_api_route("/{doc_id}", _read_document, methods=["GET"])
-        if prefix == "/api/inbox":
-            router.add_api_route("/{doc_id}", _read_inbox_document, methods=["GET"])
         if prefix == "/api/review":
             router.add_api_route("/exceptions/{exc_id}/accept", _accept_exception,
                                  methods=["POST"])
