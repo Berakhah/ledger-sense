@@ -151,6 +151,20 @@ def _rate_limited(client: str) -> bool:
 def build_app() -> FastAPI:
     app = FastAPI(title="Ledger Sense")
 
+    # Ordering matters: Starlette's add_middleware inserts at the front of
+    # the user_middleware list, and the *last* middleware added ends up
+    # OUTERMOST (it wraps every other middleware, including the app).
+    # InboxBodyCapMiddleware's 411/413 responses are returned directly by
+    # the middleware itself, short-circuiting the stack below it — so if
+    # CORSMiddleware were added after it (outside it), those responses would
+    # never pass through CORSMiddleware and would reach the browser with no
+    # Access-Control-Allow-Origin header. The web app is a separate origin
+    # calling this API with fetch()+credentials (see WEB_ORIGIN above), so a
+    # missing CORS header on that response is not a cosmetic gap: the
+    # browser reports an opaque network error instead of the 413/411 detail.
+    # Registering the body cap FIRST keeps CORSMiddleware outermost, so every
+    # response — including the body cap's own — passes through it.
+    app.add_middleware(InboxBodyCapMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[WEB_ORIGIN],
@@ -158,7 +172,6 @@ def build_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type"],
     )
-    app.add_middleware(InboxBodyCapMiddleware)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
