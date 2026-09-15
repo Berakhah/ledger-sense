@@ -109,8 +109,12 @@ def _exception_id(doc_id: str, index: int) -> str:
 def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     """Mint one synthetic document plus `exceptions` synthetic exceptions.
 
-    Idempotent by doc_id: re-seeding replaces the previous rows rather than
-    failing on the primary key, so an E2E suite can be run twice.
+    The document row is minted fresh every call — store_document assigns it
+    its own uuid, same as an upload, so re-seeding the same `doc_id` string
+    leaves the previous document row in place rather than replacing it. Only
+    the exception rows are idempotent by `doc_id`: re-seeding deletes and
+    reinserts them by their `doc_id`-prefixed key, so an E2E suite can be run
+    twice without a primary-key failure on those.
     """
     # ponytail: unauthenticated and unrate-limited, and each call mints a
     # tenant, a user (one argon2 hash) and a session that are never collected.
