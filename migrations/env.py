@@ -30,7 +30,15 @@ from ledger_sense.store.session import app_engine as ledger_sense_engine
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: fileConfig's default (True) silently
+    # disables every logger already created elsewhere in the process (any
+    # ledger_sense.* module logger, if this runs programmatically rather
+    # than via the `alembic` CLI in its own process) the moment this module
+    # is imported. That is a real hazard wherever migrations run
+    # in-process before or alongside application logging — not just in the
+    # test suite, where it broke log.exception() calls made after the first
+    # test that triggered `alembic upgrade head`.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = auth_metadata
 
