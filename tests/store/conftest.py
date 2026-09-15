@@ -126,6 +126,12 @@ def seeded_documents(tmp_path: pathlib.Path) -> Iterator[SeededDocuments]:
                 id=uuid.uuid4().hex,
                 tenant_id=tenant_id,
                 document_id=EXPIRED_DOCUMENT_ID,
+                field="total_completed_and_stored",
+                value="0.00",
+                value_type="money",
+                method="deterministic",
+                page=0, x0=0.0, top=0.0, x1=0.0, bottom=0.0,
+                observed_at=datetime.now(UTC),
             ))
 
         yield SeededDocuments(tenant_id)

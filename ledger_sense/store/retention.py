@@ -41,6 +41,16 @@ from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.store.blobs import BlobStore
 from ledger_sense.store.session import app_engine
 
+DOCUMENT_STATUSES = ("received", "extracted", "cannot_extract", "duplicate", "failed")
+DOC_TYPES = ("pay_application", "continuation_sheet", "invoice", "lien_waiver", "unknown")
+FINDING_STATES = ("open", "accepted", "edited", "rejected")
+CLAIM_VALUE_TYPES = ("money", "date", "int", "str")
+
+
+def _one_of(column: str, values: tuple[str, ...]) -> str:
+    return f"{column} IN ({', '.join(repr(v) for v in values)})"
+
+
 documents = sa.Table(
     "documents",
     metadata,
@@ -56,14 +66,29 @@ documents = sa.Table(
     # 0004: the name the client gave the file. Display only — never a path,
     # never provenance. NOT NULL, no default, same discipline as the label.
     sa.Column("filename", sa.Text, nullable=False),
-    # Named to match 0003 exactly: SQLite batch recreate keeps named CHECKs.
+    # 0005: the run. `status` and `run_attempts` keep server defaults (a row
+    # that exists is received, zero times tried); the rest is written by
+    # ledger_sense.run.document and NULL until it has something to say.
+    sa.Column("status", sa.Text, nullable=False, server_default="received"),
+    sa.Column("content_sha256", sa.Text, nullable=True),
+    sa.Column("doc_type", sa.Text, nullable=True),
+    sa.Column("run_note", sa.Text, nullable=True),
+    sa.Column("rounding_policy_source", sa.Text, nullable=True),
+    sa.Column("run_attempts", sa.Integer, nullable=False, server_default="0"),
+    # Named to match the migrations exactly: SQLite batch recreate keeps named CHECKs.
     sa.CheckConstraint(
         "sensitivity IN (" + ", ".join(f"'{s.value}'" for s in Sensitivity) + ")",
         name="ck_documents_sensitivity"),
     sa.CheckConstraint(
         "origin IN (" + ", ".join(f"'{o.value}'" for o in Origin) + ")",
         name="ck_documents_origin"),
+    sa.CheckConstraint(_one_of("status", DOCUMENT_STATUSES), name="ck_documents_status"),
+    sa.CheckConstraint(f"doc_type IS NULL OR {_one_of('doc_type', DOC_TYPES)}",
+                       name="ck_documents_doc_type"),
     sa.Index("ix_documents_tenant_id_id", "tenant_id", "id"),
+    sa.Index("ix_documents_tenant_sha", "tenant_id", "content_sha256",
+             sqlite_where=sa.text("content_sha256 IS NOT NULL"),
+             postgresql_where=sa.text("content_sha256 IS NOT NULL")),
 )
 
 claims = sa.Table(
@@ -72,8 +97,50 @@ claims = sa.Table(
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("tenant_id", sa.Text, sa.ForeignKey("tenants.id"), nullable=False),
     sa.Column("document_id", sa.Text, sa.ForeignKey("documents.id"), nullable=False),
+    # 0005: one row per Claim the run produced. `value` is TEXT on purpose —
+    # Money never leaves as a float. confidence/match_quality/bbox are scores
+    # and geometry, the only REAL columns in the store.
+    sa.Column("field", sa.Text, nullable=False),
+    sa.Column("value", sa.Text, nullable=False),
+    sa.Column("value_type", sa.Text, nullable=False),
+    sa.Column("method", sa.Text, nullable=False),
+    sa.Column("confidence", sa.Float, nullable=True),
+    sa.Column("match_quality", sa.Float, nullable=True),
+    sa.Column("page", sa.Integer, nullable=False),
+    sa.Column("x0", sa.Float, nullable=False),
+    sa.Column("top", sa.Float, nullable=False),
+    sa.Column("x1", sa.Float, nullable=False),
+    sa.Column("bottom", sa.Float, nullable=False),
+    sa.Column("caveat", sa.Text, nullable=True),
+    sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint(_one_of("value_type", CLAIM_VALUE_TYPES), name="ck_claims_value_type"),
     sa.Index("ix_claims_tenant_id_id", "tenant_id", "id"),
     sa.Index("ix_claims_document_id", "document_id"),
+    # NOT unique: Phase 4 writes a HUMAN claim on the same field per accept/edit.
+    sa.Index("ix_claims_document_field", "document_id", "field"),
+)
+
+findings = sa.Table(
+    "findings",
+    metadata,
+    sa.Column("id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, sa.ForeignKey("tenants.id"), nullable=False),
+    sa.Column("document_id", sa.Text, sa.ForeignKey("documents.id"), nullable=False),
+    sa.Column("rule_id", sa.Text, nullable=False),
+    sa.Column("field", sa.Text, nullable=False),
+    sa.Column("message", sa.Text, nullable=False),
+    sa.Column("expected", sa.Text, nullable=True),
+    sa.Column("actual", sa.Text, nullable=True),
+    sa.Column("page", sa.Integer, nullable=True),
+    sa.Column("x0", sa.Float, nullable=True),
+    sa.Column("top", sa.Float, nullable=True),
+    sa.Column("x1", sa.Float, nullable=True),
+    sa.Column("bottom", sa.Float, nullable=True),
+    sa.Column("state", sa.Text, nullable=False, server_default="open"),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint(_one_of("state", FINDING_STATES), name="ck_findings_state"),
+    sa.Index("ix_findings_document_order", "document_id", "page", "top", "x0"),
+    sa.Index("ix_findings_tenant_id_id", "tenant_id", "id"),
 )
 
 # NOT `audit`: Phase 5's writeback log owns that name and a completely
