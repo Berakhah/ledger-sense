@@ -47,13 +47,71 @@ def test_the_door_and_the_store_do_construct_it() -> None:
         assert calls_to(tree, "Labelled"), f"{site} no longer builds a Labelled"
 
 
+def _documents_insert_calls(tree: ast.Module) -> list[int]:
+    """Line numbers of every call that inserts into the `documents` table.
+
+    Matches `documents.insert(...)`, `<alias>.insert(...)` where `<alias>` is
+    a local name bound by `from ledger_sense.store.retention import documents
+    as <alias>`, and `<anything>.documents.insert(...)` (e.g.
+    `retention.documents.insert(...)` or
+    `ledger_sense.store.retention.documents.insert(...)`).
+    """
+    aliases = {"documents"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "ledger_sense.store.retention":
+            aliases |= {alias.asname or alias.name
+                        for alias in node.names if alias.name == "documents"}
+
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "insert"):
+            continue
+        target = func.value
+        is_alias = isinstance(target, ast.Name) and target.id in aliases
+        is_documents_attr = isinstance(target, ast.Attribute) and target.attr == "documents"
+        if is_alias or is_documents_attr:
+            lines.append(node.lineno)
+    return lines
+
+
 def test_documents_insert_is_called_only_by_store_document() -> None:
-    offenders = [
-        str(path) for path, _tree in _sources()
-        if path != PACKAGE / "store" / "documents.py"
-        and "documents.insert(" in path.read_text(encoding="utf-8")
-    ]
+    offenders = [f"{path}:{line}" for path, tree in _sources()
+                 if path != PACKAGE / "store" / "documents.py"
+                 for line in _documents_insert_calls(tree)]
     assert offenders == [], f"a second writer to documents: {offenders}"
+
+
+def test_the_store_does_call_documents_insert() -> None:
+    """The guard above would pass vacuously if the writer moved. Pin it."""
+    site = PACKAGE / "store" / "documents.py"
+    tree = ast.parse(site.read_text(encoding="utf-8"))
+    assert _documents_insert_calls(tree), f"{site} no longer calls documents.insert"
+
+
+def test_documents_insert_calls_direct_name() -> None:
+    tree = ast.parse("documents.insert()")
+    assert _documents_insert_calls(tree) == [1]
+
+
+def test_documents_insert_calls_aliased_import() -> None:
+    tree = ast.parse(
+        "from ledger_sense.store.retention import documents as d\n"
+        "d.insert()\n"
+    )
+    assert _documents_insert_calls(tree) == [2]
+
+
+def test_documents_insert_calls_attribute_chain() -> None:
+    tree = ast.parse("retention.documents.insert()")
+    assert _documents_insert_calls(tree) == [1]
+
+
+def test_documents_insert_ignores_an_unrelated_insert() -> None:
+    tree = ast.parse("items.insert(0, x)")
+    assert _documents_insert_calls(tree) == []
 
 
 def test_no_module_outside_the_gateway_imports_a_provider_client() -> None:
