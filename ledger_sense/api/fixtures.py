@@ -55,11 +55,12 @@ from pydantic import BaseModel, Field
 from ledger_sense.api._stub_routes import STUB_METADATA, stub_resources
 from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.auth.session import SESSION_TTL, issue_session
+from ledger_sense.boundary import Sensitivity
 from ledger_sense.store.session import app_engine
 
 SEED_PATH = "/api/fixtures/seed"
 DEMO_PROFILE = "demo"
-SYNTHETIC = "SYNTHETIC"
+SYNTHETIC = Sensitivity.SYNTHETIC.value
 
 # Ids are interpolated into row keys and into the URL Playwright navigates to,
 # so they are constrained at the boundary rather than trusted: no separators,

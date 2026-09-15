@@ -31,8 +31,15 @@ likely to matter:
   inference may train on its inputs. `CLIENT_CONFIDENTIAL` hard-fails at the
   model gateway; the model lane accepts `SYNTHETIC` or `REDACTED` only, and
   `REDACTED` additionally requires the client's written opt-in and a passing
-  redaction verification. See rule 1 in `CLAUDE.md`. A client who declines the
-  model lane entirely still gets a working product.
+  redaction verification. See rule 1 in `CLAUDE.md`.
+  The label is a type (`ledger_sense/boundary.py`), attached at the door
+  (`ingest/intake.py::accept_document`, derived from the document's origin —
+  there is no parameter through which an upload can be called synthetic),
+  judged at the seam (`gateway.py::admit`, before any provider state is
+  consulted) and persisted with a CHECK constraint (migration 0003). The
+  tests in `tests/boundary/` prove the refusal, its ordering, and that the
+  codebase has no second path.
+  A client who declines the model lane entirely still gets a working product.
 - **A hostile PDF.** Uploads are untrusted input parsed by a library that has
   had memory-safety history. Parsing runs under explicit resource caps
   (`ingest/limits.py`), in a container that is read-only, non-root, memory-
