@@ -5,6 +5,8 @@ The spy doubles the TRANSPORT only. `admit` is always the real one — a mocked
 boundary stops nothing at 2am in week 11.
 """
 
+from typing import cast
+
 import pytest
 
 from ledger_sense.boundary import Labelled, Origin, Sensitivity, SensitivityViolation
@@ -111,3 +113,25 @@ def test_the_local_lane_admits_everything_with_every_provider_disabled(
 
 def test_only_the_local_fallback_lane_is_not_a_model_lane() -> None:
     assert [lane for lane in Lane if not lane.is_model] == [Lane.LOCAL_FALLBACK]
+
+
+def test_a_plain_string_redacted_label_is_still_checked_for_opt_in() -> None:
+    """`Sensitivity` is a `str` enum; `Labelled` has no `__post_init__`. A
+    document carrying the raw string "REDACTED" instead of the enum member
+    must not slip past the opt-in check via a stray identity comparison."""
+    spy = SpyTransport()
+    doc = Labelled(payload=PAYLOAD, sensitivity=cast(Sensitivity, "REDACTED"),
+                    origin=Origin.UPLOAD, provenance="test")
+    no_opt_in = ProviderPolicy(enabled=True, redacted_opt_in=False)
+    with pytest.raises(SensitivityViolation):
+        admit(Lane.EXTRACT_VISION, doc, policy=no_opt_in, transport=spy)
+    assert spy.sent == []
+
+
+def test_a_plain_string_client_confidential_label_is_refused_not_attributeerror() -> None:
+    spy = SpyTransport()
+    doc = Labelled(payload=PAYLOAD, sensitivity=cast(Sensitivity, "CLIENT_CONFIDENTIAL"),
+                    origin=Origin.UPLOAD, provenance="test")
+    with pytest.raises(SensitivityViolation):
+        admit(Lane.EXTRACT_VISION, doc, policy=ENABLED, transport=spy)
+    assert spy.sent == []
