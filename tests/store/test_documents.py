@@ -40,7 +40,7 @@ def test_a_document_round_trips_with_its_label(
     doc = _labelled(origin)
     with store_session.app_engine().begin() as conn:
         document_id = store_document(conn, tenant_id=seeded_documents.tenant_id, doc=doc,
-                                     blobs=blobs, received_at=RECEIVED_AT)
+                                     blobs=blobs, received_at=RECEIVED_AT, filename="test.pdf")
     with store_session.app_engine().connect() as conn:
         loaded = load_document(conn, tenant_id=seeded_documents.tenant_id,
                                document_id=document_id, blobs=blobs)
@@ -53,7 +53,7 @@ def test_the_row_carries_the_label_and_the_blob_is_not_plaintext(
     doc = _labelled(Origin.UPLOAD)
     with store_session.app_engine().begin() as conn:
         document_id = store_document(conn, tenant_id=seeded_documents.tenant_id, doc=doc,
-                                     blobs=blobs, received_at=RECEIVED_AT)
+                                     blobs=blobs, received_at=RECEIVED_AT, filename="test.pdf")
     (row,) = seeded_documents.documents_for(document_id)
     assert (row.sensitivity, row.origin, row.provenance) == (
         "CLIENT_CONFIDENTIAL", "UPLOAD", "test:UPLOAD")
@@ -70,7 +70,7 @@ def test_another_tenants_document_is_not_found(
     with store_session.app_engine().begin() as conn:
         document_id = store_document(conn, tenant_id=seeded_documents.tenant_id,
                                      doc=_labelled(Origin.CORPUS), blobs=blobs,
-                                     received_at=RECEIVED_AT)
+                                     received_at=RECEIVED_AT, filename="test.pdf")
     with store_session.app_engine().connect() as conn, pytest.raises(DocumentNotFound):
         load_document(conn, tenant_id="someone-else", document_id=document_id, blobs=blobs)
 
@@ -96,12 +96,25 @@ def test_a_purged_blob_is_not_found(seeded_documents: SeededDocuments, blobs: Bl
     with store_session.app_engine().begin() as conn:
         document_id = store_document(conn, tenant_id=seeded_documents.tenant_id,
                                      doc=_labelled(Origin.CORPUS), blobs=blobs,
-                                     received_at=RECEIVED_AT)
+                                     received_at=RECEIVED_AT, filename="test.pdf")
     (row,) = seeded_documents.documents_for(document_id)
     assert blobs.delete(seeded_documents.tenant_id, row.blob_id)
     with store_session.app_engine().connect() as conn, pytest.raises(DocumentNotFound):
         load_document(conn, tenant_id=seeded_documents.tenant_id, document_id=document_id,
                       blobs=blobs)
+
+
+def test_the_row_carries_the_filename_separately_from_the_label(
+    seeded_documents: SeededDocuments, blobs: BlobStore
+) -> None:
+    """Filename is a display attribute the client chose; provenance is who put
+    it through the door. They are different columns on purpose."""
+    with store_session.app_engine().begin() as conn:
+        document_id = store_document(conn, tenant_id=seeded_documents.tenant_id,
+                                     doc=_labelled(Origin.UPLOAD), blobs=blobs,
+                                     received_at=RECEIVED_AT, filename="payapp-07.pdf")
+    (row,) = seeded_documents.documents_for(document_id)
+    assert (row.filename, row.provenance) == ("payapp-07.pdf", "test:UPLOAD")
 
 
 class _FailingConnection:
@@ -116,7 +129,8 @@ def test_a_failed_insert_leaves_no_orphan_blob(
     conn = cast(Connection, _FailingConnection())
     with pytest.raises(RuntimeError, match="simulated"):
         store_document(conn, tenant_id=seeded_documents.tenant_id,
-                       doc=_labelled(Origin.CORPUS), blobs=blobs, received_at=RECEIVED_AT)
+                       doc=_labelled(Origin.CORPUS), blobs=blobs, received_at=RECEIVED_AT,
+                       filename="test.pdf")
     assert list((tmp_path / "blobs").iterdir()) == []
 
 
@@ -144,7 +158,7 @@ def test_a_failed_cleanup_does_not_hide_the_insert_failure(
     with pytest.raises(RuntimeError, match="simulated insert failure") as excinfo:
         store_document(conn, tenant_id=seeded_documents.tenant_id,
                        doc=_labelled(Origin.CORPUS), blobs=failing_blobs,
-                       received_at=RECEIVED_AT)
+                       received_at=RECEIVED_AT, filename="test.pdf")
     assert "orphan" in "".join(excinfo.value.__notes__)
 
 
@@ -164,7 +178,7 @@ def test_a_stored_confidential_document_is_still_refused_after_reload(
     with store_session.app_engine().begin() as conn:
         document_id = store_document(conn, tenant_id=seeded_documents.tenant_id,
                                      doc=_labelled(Origin.UPLOAD), blobs=blobs,
-                                     received_at=RECEIVED_AT)
+                                     received_at=RECEIVED_AT, filename="test.pdf")
     with store_session.app_engine().connect() as conn:
         loaded = load_document(conn, tenant_id=seeded_documents.tenant_id,
                                document_id=document_id, blobs=blobs)
