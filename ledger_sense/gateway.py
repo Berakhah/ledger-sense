@@ -73,12 +73,19 @@ _MODEL_LANE_ADMITS: Final[frozenset[Sensitivity]] = frozenset(
 
 
 def _check_label(lane: Lane, doc: Labelled[bytes], policy: ProviderPolicy) -> None:
-    if doc.sensitivity not in _MODEL_LANE_ADMITS:
+    # `Sensitivity` is a `str` enum and `Labelled` has no `__post_init__`, so a
+    # caller can hand us the plain string "REDACTED" instead of the enum
+    # member. Coerce once here and compare against the coerced value for the
+    # rest of the function — never `doc.sensitivity` directly — so a raw
+    # string fails closed the same way a garbage label does (ValueError from
+    # the enum constructor, uncaught, is acceptable: fail closed).
+    sensitivity = Sensitivity(doc.sensitivity)
+    if sensitivity not in _MODEL_LANE_ADMITS:
         raise SensitivityViolation(
-            f"{doc.sensitivity.value} may not reach the {lane.value} lane "
+            f"{sensitivity.value} may not reach the {lane.value} lane "
             f"(02 Never #1: SYNTHETIC or REDACTED only); origin {doc.origin.value}, "
             f"provenance {doc.provenance}")
-    if doc.sensitivity is Sensitivity.REDACTED and not policy.redacted_opt_in:
+    if sensitivity is Sensitivity.REDACTED and not policy.redacted_opt_in:
         raise SensitivityViolation(
             f"REDACTED may reach the {lane.value} lane only with the client's written "
             "opt-in, and this tenant has not opted in")
