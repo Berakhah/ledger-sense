@@ -3,7 +3,7 @@ import pathlib
 import pytest
 from cryptography.fernet import Fernet
 
-from ledger_sense.store.blobs import BlobStore, kek_from_environment
+from ledger_sense.store.blobs import BlobStore, blob_store_from_environment, kek_from_environment
 
 
 def _store(tmp_path: pathlib.Path) -> BlobStore:
@@ -68,3 +68,23 @@ def test_a_blob_id_cannot_escape_the_store_root(tmp_path: pathlib.Path) -> None:
     store = _store(tmp_path)
     assert store.raw("../../.env") is None
     assert store.get("tenant-a", "../../.env") is None
+
+
+def test_the_blob_store_is_wired_from_the_environment(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
+    monkeypatch.setenv("LEDGER_SENSE_BLOB_ROOT", str(tmp_path / "blobs"))
+    store = blob_store_from_environment()
+    blob_id = store.put("t1", b"%PDF-1.4 x")
+    assert store.get("t1", blob_id) == b"%PDF-1.4 x"
+    assert (tmp_path / "blobs" / blob_id).is_file()
+
+
+def test_an_unset_blob_root_refuses_to_start_rather_than_guessing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
+    monkeypatch.delenv("LEDGER_SENSE_BLOB_ROOT", raising=False)
+    with pytest.raises(RuntimeError, match="LEDGER_SENSE_BLOB_ROOT"):
+        blob_store_from_environment()
