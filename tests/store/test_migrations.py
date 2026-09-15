@@ -215,9 +215,18 @@ def test_0004_backfills_a_filename_and_then_refuses_to_invent_one(
             filename = conn.execute(sa.text(
                 "SELECT filename FROM documents WHERE id = 'doc-pre-0004'")).scalar()
         assert filename == "unknown:pre-0004"
+        # An explicit filename=NULL would be refused by the NOT NULL alone,
+        # whether or not the server default was actually dropped — it proves
+        # nothing about the drop. Omitting the column entirely is the case
+        # that only fails if the default is gone: with the default still in
+        # place this INSERT would happily invent a filename.
         with pytest.raises(sa.exc.IntegrityError), store_session.app_engine().begin() as conn:
-            _raw_insert(conn, _PRE_0003_ROW["tenant_id"], document_id="doc-no-name",
-                        sensitivity="SYNTHETIC", origin="CORPUS", filename=None)
+            conn.execute(sa.text(
+                "INSERT INTO documents (id, tenant_id, blob_id, received_at, sensitivity, "
+                "origin, provenance) VALUES (:id, :tenant_id, NULL, :received_at, "
+                "'SYNTHETIC', 'CORPUS', 'tests/store/test_migrations.py')"),
+                {"id": "doc-no-name", "tenant_id": _PRE_0003_ROW["tenant_id"],
+                 "received_at": _PRE_0003_ROW["received_at"]})
         command.downgrade(config, "0003_sensitivity")
         columns = {c["name"] for c in sa.inspect(store_session.app_engine())
                    .get_columns("documents")}
