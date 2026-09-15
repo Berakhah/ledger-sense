@@ -37,6 +37,7 @@ from datetime import UTC, datetime, timedelta
 import sqlalchemy as sa
 
 from ledger_sense.auth.models import metadata, tenants
+from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.store.blobs import BlobStore
 from ledger_sense.store.session import app_engine
 
@@ -47,6 +48,18 @@ documents = sa.Table(
     sa.Column("tenant_id", sa.Text, sa.ForeignKey("tenants.id"), nullable=False),
     sa.Column("blob_id", sa.Text, nullable=True),
     sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
+    # 0003: the label, persisted. NOT NULL with no default — a row without a
+    # label is refused by the schema, and store/documents.py is the one writer.
+    sa.Column("sensitivity", sa.Text, nullable=False),
+    sa.Column("origin", sa.Text, nullable=False),
+    sa.Column("provenance", sa.Text, nullable=False),
+    # Named to match 0003 exactly: SQLite batch recreate keeps named CHECKs.
+    sa.CheckConstraint(
+        "sensitivity IN (" + ", ".join(f"'{s.value}'" for s in Sensitivity) + ")",
+        name="ck_documents_sensitivity"),
+    sa.CheckConstraint(
+        "origin IN (" + ", ".join(f"'{o.value}'" for o in Origin) + ")",
+        name="ck_documents_origin"),
     sa.Index("ix_documents_tenant_id_id", "tenant_id", "id"),
 )
 

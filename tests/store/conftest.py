@@ -27,6 +27,7 @@ import sqlalchemy as sa
 from sqlalchemy import Row
 
 from ledger_sense.auth.models import tenants
+from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.store import session as store_session
 from ledger_sense.store.retention import claims, documents, retention_audit_log
 
@@ -66,13 +67,22 @@ class SeededDocuments:
 
     def add_document(self, document_id: str, *, age_days: int,
                      blob_id: str | None = None) -> str:
-        """Seed one more document, for tests that need a blob attached."""
+        """Seed one more document, for tests that need a blob attached.
+
+        A raw insert, not store_document: these rows carry blob_id=None (a
+        purged or never-landed blob), which the one writer cannot produce.
+        The label columns are explicit because the schema refuses a row
+        without them — that refusal is the point of 0003.
+        """
         with store_session.app_engine().begin() as conn:
             conn.execute(documents.insert().values(
                 id=document_id,
                 tenant_id=self.tenant_id,
                 blob_id=blob_id,
                 received_at=datetime.now(UTC) - timedelta(days=age_days),
+                sensitivity=Sensitivity.SYNTHETIC.value,
+                origin=Origin.CORPUS.value,
+                provenance="tests/store/conftest.py",
             ))
         return document_id
 
@@ -106,6 +116,9 @@ def seeded_documents(tmp_path: pathlib.Path) -> Iterator[SeededDocuments]:
                 tenant_id=tenant_id,
                 blob_id=None,
                 received_at=datetime.now(UTC) - timedelta(days=DOCUMENT_AGE_DAYS),
+                sensitivity=Sensitivity.SYNTHETIC.value,
+                origin=Origin.CORPUS.value,
+                provenance="tests/store/conftest.py",
             ))
             conn.execute(claims.insert().values(
                 id=uuid.uuid4().hex,
