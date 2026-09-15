@@ -49,6 +49,9 @@ def accept_document(
 ) -> Labelled[bytes]:
     """Label `payload` from its `origin`. The single entry point for every
     externally-supplied document; one of the two places a Labelled is built."""
+    # Coerce, as gateway._check_label does for Sensitivity: a raw "UPLOAD"
+    # string would otherwise hash into _LABEL_OF and be stored un-coerced.
+    origin = Origin(origin)
     sensitivity = _LABEL_OF[origin]
     if sensitivity is Sensitivity.REDACTED:
         if redaction is None:

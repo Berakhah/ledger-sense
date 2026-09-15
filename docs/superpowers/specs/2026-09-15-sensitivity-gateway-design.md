@@ -128,6 +128,18 @@ Decisions recorded:
   fields; adding them is the day that decision is reversed, not before.
 - No real `Transport` ships. The seam is the deliverable; the first transport
   arrives with `models.yaml` and a working free-tier account (`00` B1).
+- **Known limitation (final review, 2026-09-15):** `admit(Lane.LOCAL_FALLBACK,
+  doc, ..., transport=t)` follows the same §3 steps 1→4 as any lane and ends
+  by calling `t.send(LOCAL_FALLBACK, doc.payload)` — so once a real HTTP
+  `Transport` exists, confidential bytes on the local lane stay off the wire
+  only because that transport's own implementation happens to branch on
+  `LOCAL_FALLBACK` before making a request, not because `admit` enforces it.
+  This is a spec defect, ruled out of scope for this task and deferred to the
+  first `Transport` task: the local lane must not go through the provider
+  `Transport` at all — e.g. a separate local callable outside `Transport`, or
+  a `Transport.send` typed to accept only model lanes — plus a test asserting
+  a `Transport` is never called with `Lane.LOCAL_FALLBACK`. Close this note
+  when that lands.
 
 ## §4 — Persistence
 

@@ -49,7 +49,11 @@ def store_document(
     # that cleanup itself fails, the insert error is still what propagates —
     # not the cleanup error — with a note recording that the blob is now an
     # orphan needing manual deletion, so the caller learns why the insert
-    # failed instead of why the cleanup failed.
+    # failed instead of why the cleanup failed. The blob write happens outside
+    # the caller's own transaction, so a caller that rolls back its
+    # transaction after store_document returns leaves an orphaned blob that
+    # the row-driven purge will never reclaim (there is no row to drive it);
+    # that case is the caller's to own.
     blob_id = blobs.put(tenant_id, doc.payload)
     try:
         conn.execute(documents.insert().values(

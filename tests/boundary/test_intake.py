@@ -2,6 +2,7 @@
 bytes came from. There is no sensitivity parameter to get wrong."""
 
 import inspect
+from typing import cast
 
 import pytest
 
@@ -74,3 +75,16 @@ def test_a_verdict_does_not_lift_a_non_redacted_origin(origin: Origin) -> None:
 def test_the_parse_pass_through_is_untouched() -> None:
     """Rule 2: intake() is still the only caller of parse_within_limits."""
     assert callable(intake)
+
+
+def test_a_raw_string_origin_is_coerced_at_the_door() -> None:
+    """Symmetry with gateway._check_label's Sensitivity coercion: a raw
+    "UPLOAD" string must not hash into _LABEL_OF un-coerced."""
+    doc = accept_document(PAYLOAD, origin=cast(Origin, "UPLOAD"), provenance="test")
+    assert doc.origin is Origin.UPLOAD
+    assert doc.sensitivity is Sensitivity.CLIENT_CONFIDENTIAL
+
+
+def test_an_unknown_raw_string_origin_fails_closed() -> None:
+    with pytest.raises(ValueError):
+        accept_document(PAYLOAD, origin=cast(Origin, "EMAIL"), provenance="test")
