@@ -54,7 +54,11 @@ likely to matter:
 - **A hostile PDF.** Uploads are untrusted input parsed by a library that has
   had memory-safety history. Parsing runs under explicit resource caps
   (`ingest/limits.py`), in a container that is read-only, non-root, memory-
-  and CPU-capped, with `no-new-privileges`.
+  and CPU-capped, with `no-new-privileges`. The app itself caps the request
+  body before Starlette's multipart parser spools a byte of it to disk (a
+  plain ASGI middleware on `POST /api/inbox`, `api/app.py`); a fronting
+  reverse proxy in front of the container must enforce its own body-size
+  cap too, since the app's cap only starts working once bytes reach it.
 - **Credential and session theft.** Passwords are stored as Argon2id digests;
   session tokens are 256 random bits stored only as a SHA-256 digest, so a
   database dump does not hand over live sessions.
