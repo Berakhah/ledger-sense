@@ -51,24 +51,59 @@ def test_gateway_call_is_trapped_when_bok_core_exists(gateway_call_traps: None) 
 def test_the_deterministic_packages_never_import_the_gateway() -> None:
     """The local trap for the local seam: if extract/rules/ingest/domain/corpus/
     baseline imported ledger_sense.gateway, the 70% deterministic floor would
-    depend on a provider. Static, so an `import ... as` cannot dodge it."""
+    depend on a provider. Static, so none of `import ledger_sense.gateway`,
+    `import ledger_sense.gateway as gw`, `from ledger_sense import gateway`,
+    `from ledger_sense.gateway import admit`, or a relative `from .. import
+    gateway` / `from ..gateway import admit` can dodge it. Each deterministic
+    package directory is also asserted to exist, so a misspelled package name
+    here fails loudly instead of scanning nothing."""
     import ast
     import pathlib
+
+    def _resolve_relative(
+        file_path: pathlib.Path, level: int, module: str | None,
+    ) -> str:
+        """What `from <level dots><module> import ...` resolves to, absolute,
+        given the importing file's own path. Mirrors
+        importlib._bootstrap._resolve_name: the file's own package is its
+        containing directory as a dotted path; level 1 stays in that package,
+        each extra level goes up one more."""
+        package_parts = list(file_path.parent.parts)
+        base_parts = package_parts[: max(0, len(package_parts) - (level - 1))]
+        if module:
+            return ".".join((*base_parts, module))
+        return ".".join(base_parts)
 
     deterministic = ("extract", "rules", "ingest", "domain", "corpus", "baseline")
     offenders = []
     for package in deterministic:
-        for path in (pathlib.Path("ledger_sense") / package).rglob("*.py"):
+        package_dir = pathlib.Path("ledger_sense") / package
+        assert package_dir.is_dir(), f"deterministic package missing: {package_dir}"
+        for path in package_dir.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    names = [node.module or ""]
+                    if node.level > 0:
+                        resolved = _resolve_relative(path, node.level, node.module)
+                    else:
+                        resolved = node.module or ""
+                    is_offender = (
+                        resolved == "ledger_sense.gateway"
+                        or resolved.startswith("ledger_sense.gateway.")
+                        or (
+                            resolved == "ledger_sense"
+                            and any(alias.name == "gateway" for alias in node.names)
+                        )
+                    )
+                    if is_offender:
+                        offenders.append(f"{path}:{node.lineno}")
                 elif isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                else:
-                    continue
-                if any(name.startswith("ledger_sense.gateway") for name in names):
-                    offenders.append(f"{path}:{node.lineno}")
+                    if any(
+                        alias.name == "ledger_sense.gateway"
+                        or alias.name.startswith("ledger_sense.gateway.")
+                        for alias in node.names
+                    ):
+                        offenders.append(f"{path}:{node.lineno}")
     assert offenders == [], f"deterministic code imports the gateway: {offenders}"
 
 
