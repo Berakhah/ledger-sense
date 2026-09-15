@@ -16,6 +16,7 @@ from httpx import Response
 
 from ledger_sense.api.app import MULTIPART_OVERHEAD_BYTES
 from ledger_sense.boundary import Origin
+from ledger_sense.corpus.generate import generate
 from ledger_sense.ingest.intake import accept_document
 from ledger_sense.ingest.limits import DEFAULT_LIMITS
 from ledger_sense.store import session as store_session
@@ -54,7 +55,8 @@ def test_an_upload_is_stored_confidential_from_an_upload(
     response = _upload(a, _pdf())
     assert response.status_code == 201, response.text
     body = response.json()
-    assert set(body) == {"id", "filename", "sensitivity", "origin", "received_at"}
+    assert set(body) == {"id", "filename", "sensitivity", "origin", "received_at",
+                          "status", "doc_type", "run_note", "finding_count", "claim_count"}
     assert (body["sensitivity"], body["origin"], body["filename"]) == (
         "CLIENT_CONFIDENTIAL", "UPLOAD", "payapp.pdf")
     row = _row(body["id"])
@@ -330,7 +332,8 @@ def test_the_list_is_the_tenants_own_documents_newest_first(
     _upload(b, _pdf(), filename="theirs.pdf")
     items = a.get("/api/inbox").json()["items"]
     assert [i["id"] for i in items][:2] == [second, first]
-    assert all(set(i) == {"id", "filename", "sensitivity", "origin", "received_at"}
+    assert all(set(i) == {"id", "filename", "sensitivity", "origin", "received_at",
+                          "status", "doc_type", "run_note", "finding_count", "claim_count"}
                for i in items)
     assert "theirs.pdf" not in {i["filename"] for i in items}
 
@@ -384,8 +387,93 @@ def test_the_keyset_tie_breaks_on_id_when_received_at_is_identical(
 def test_a_document_reads_back_for_its_owner_and_404s_for_anyone_else(
     two_tenants: tuple[TenantClient, TenantClient],
 ) -> None:
+    # Not a full-body equality: the background run completes (synchronously,
+    # under TestClient) between the 201 and this GET, so status/run_note can
+    # legitimately differ — the identity and static fields must not.
     a, b = two_tenants
     body = _upload(a, _pdf(), filename="mine.pdf").json()
-    assert a.get(f"/api/inbox/{body['id']}").json() == body
+    read_back = a.get(f"/api/inbox/{body['id']}").json()
+    assert (read_back["id"], read_back["filename"], read_back["sensitivity"],
+            read_back["origin"], read_back["received_at"]) == (
+        body["id"], body["filename"], body["sensitivity"],
+        body["origin"], body["received_at"])
     assert b.get(f"/api/inbox/{body['id']}").status_code == 404
     assert a.get("/api/inbox/nope").status_code == 404
+
+
+def _corpus_pdf(error: str = "clean") -> bytes:
+    return generate(seed=1, error=error)[2]  # type: ignore[arg-type]
+
+
+def test_an_upload_answers_received_and_is_extracted_by_the_time_it_is_read_back(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    a, _ = two_tenants
+    response = _upload(a, _corpus_pdf())
+    assert response.status_code == 201
+    assert response.json()["status"] == "received"
+    # TestClient runs BackgroundTasks before returning, so the run is done.
+    body = a.get(f"/api/inbox/{response.json()['id']}").json()
+    assert body["status"] == "extracted"
+    assert body["doc_type"] == "pay_application"
+    assert body["run_note"] is None
+    assert body["claim_count"] > 0
+    assert body["finding_count"] == 0
+
+
+def test_a_footing_error_shows_up_as_an_open_finding_count(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    a, _ = two_tenants
+    document_id = _upload(a, _corpus_pdf("A1_footing")).json()["id"]
+    assert a.get(f"/api/inbox/{document_id}").json()["finding_count"] >= 1
+
+
+def test_a_blank_pdf_is_stored_and_honestly_cannot_extract(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    a, _ = two_tenants
+    document_id = _upload(a, _pdf()).json()["id"]
+    body = a.get(f"/api/inbox/{document_id}").json()
+    assert body["status"] == "cannot_extract"
+    assert body["run_note"].startswith("no text layer")
+
+
+def test_a_crashing_background_run_leaves_the_row_received(
+    two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ledger_sense.api.inbox as inbox_module
+
+    def _boom(document_id: str, tenant_id: str) -> None:
+        raise RuntimeError("x")
+    monkeypatch.setattr(inbox_module, "run_in_background", _boom)
+    a, _ = two_tenants
+    # Starlette's TestClient re-raises a background task's exception (a real
+    # server only logs it); the 201 was already built and the row committed.
+    with pytest.raises(RuntimeError):
+        _upload(a, _corpus_pdf())
+    with store_session.app_engine().connect() as conn:
+        latest = conn.execute(sa.select(documents.c.status)
+                              .where(documents.c.tenant_id == a.tenant_id)
+                              .order_by(documents.c.received_at.desc(), documents.c.id.desc())
+                              ).scalar()
+    assert latest == "received"
+
+
+def test_the_list_filters_by_status_and_rejects_unknown_statuses(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    a, _ = two_tenants
+    extracted = _upload(a, _corpus_pdf()).json()["id"]
+    blank = _upload(a, _pdf()).json()["id"]
+    ids = {d["id"] for d in a.get("/api/inbox?status=cannot_extract").json()["items"]}
+    assert blank in ids and extracted not in ids
+    assert a.get("/api/inbox?status=bogus").status_code == 422
+
+
+def test_counts_are_per_tenant(two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, b = two_tenants
+    mine = _upload(a, _corpus_pdf("A1_footing")).json()["id"]
+    assert a.get(f"/api/inbox/{mine}").json()["finding_count"] >= 1
+    assert b.get(f"/api/inbox/{mine}").status_code == 404
+    assert all(d["finding_count"] == 0 for d in b.get("/api/inbox").json()["items"])
