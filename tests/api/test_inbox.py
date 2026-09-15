@@ -4,15 +4,23 @@ intake → accept_document → store_document and adds nothing of its own."""
 import ast
 import io
 import pathlib
+import tempfile
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import cast
 
 import pypdfium2 as pdfium
 import pytest
 import sqlalchemy as sa
-from fastapi import UploadFile
 from httpx import Response
 
+from ledger_sense.api.app import MULTIPART_OVERHEAD_BYTES
+from ledger_sense.boundary import Origin
+from ledger_sense.ingest.intake import accept_document
+from ledger_sense.ingest.limits import DEFAULT_LIMITS
 from ledger_sense.store import session as store_session
+from ledger_sense.store.blobs import blob_store_from_environment
+from ledger_sense.store.documents import store_document
 from ledger_sense.store.retention import documents
 from tests.api.conftest import TenantClient, client
 
@@ -121,21 +129,72 @@ def test_a_declared_oversized_upload_is_refused_before_any_read(
     two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The 413 above proves the status code; this proves *how* it is
-    reached — file.size is checked, and UploadFile.read is never called, so
-    the oversized body is never pulled into this process as one buffer."""
+    reached — file.size is checked, and the spooled file backing the upload
+    is never read, so the oversized body is never pulled into this process
+    as one buffer. The route reads via the sync `file.file.read` (I2), not
+    `UploadFile.read`, so the counting patch targets the underlying
+    SpooledTemporaryFile Starlette's multipart parser spools uploads into."""
     a, _ = two_tenants
     read_calls = 0
-    original_read = UploadFile.read
+    original_read = tempfile.SpooledTemporaryFile.read
 
-    async def _counting_read(self: UploadFile, size: int = -1) -> bytes:
+    def _counting_read(self: "tempfile.SpooledTemporaryFile[bytes]", n: int = -1) -> bytes:
         nonlocal read_calls
         read_calls += 1
-        return await original_read(self, size)
+        return original_read(self, n)
 
-    monkeypatch.setattr(UploadFile, "read", _counting_read)
+    monkeypatch.setattr(tempfile.SpooledTemporaryFile, "read", _counting_read)
     response = _upload(a, b"%PDF-1.4" + b"\x00" * 26_000_000)
     assert response.status_code == 413
     assert read_calls == 0
+
+
+def test_a_declared_content_length_over_the_cap_is_413_before_the_body_is_read(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    """I3: the upstream body cap. A forged Content-Length above the route's
+    own cap (plus the fixed multipart-framing allowance) is refused by the
+    ASGI middleware before Starlette's multipart parser spools anything —
+    proven here by sending a tiny actual body under a huge declared length
+    and confirming nothing lands in the table."""
+    a, _ = two_tenants
+    before = _count(a.tenant_id)
+    declared = DEFAULT_LIMITS.max_bytes + MULTIPART_OVERHEAD_BYTES + 1
+    response = cast(Response, client.post(
+        "/api/inbox", content=b"tiny",
+        headers={"content-length": str(declared),
+                 "content-type": "multipart/form-data; boundary=x"},
+        cookies={"session": a.token}))
+    assert response.status_code == 413
+    assert _count(a.tenant_id) == before
+
+
+def test_a_chunked_request_with_no_content_length_is_411(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    """I3: a body with no declared length (chunked transfer-encoding) cannot
+    be refused on size before it is read, so it is refused outright."""
+    a, _ = two_tenants
+    before = _count(a.tenant_id)
+
+    def _chunks() -> Iterator[bytes]:
+        yield b"tiny"
+
+    response = cast(Response, client.post(
+        "/api/inbox", content=_chunks(),
+        headers={"content-type": "multipart/form-data; boundary=x"},
+        cookies={"session": a.token}))
+    assert response.status_code == 411
+    assert _count(a.tenant_id) == before
+
+
+def test_the_body_cap_middleware_leaves_other_paths_alone() -> None:
+    """The middleware is scoped to POST /api/inbox exactly: health and login
+    must behave exactly as they did before it existed."""
+    assert client.get("/api/health").status_code == 200
+    response = cast(Response, client.post(
+        "/api/auth/login", json={"email": "nope@example.test", "password": "wrong"}))
+    assert response.status_code == 401
 
 
 def test_a_non_pdf_is_422_and_nothing_is_stored(
@@ -252,6 +311,36 @@ def test_the_list_pages_by_keyset_and_caps_the_page(
     assert a.get("/api/inbox?limit=201").status_code == 422
     assert a.get("/api/inbox?limit=0").status_code == 422
     assert a.get(f"/api/inbox?before_id={last['id']}").status_code == 422
+
+
+def test_the_keyset_tie_breaks_on_id_when_received_at_is_identical(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    """M6: two documents sharing one received_at must not collide at the page
+    boundary — a keyset on received_at alone would drop or repeat one of
+    them. Stored directly via store_document (not the route, which always
+    stamps datetime.now(UTC) and so cannot produce a tie) with a fixed
+    timestamp for both rows."""
+    a, _ = two_tenants
+    tied_at = datetime(2026, 9, 15, 10, 0, tzinfo=UTC)
+    blobs = blob_store_from_environment()
+    with store_session.app_engine().begin() as conn:
+        ids = [
+            store_document(
+                conn, tenant_id=a.tenant_id,
+                doc=accept_document(_pdf(), origin=Origin.UPLOAD,
+                                    provenance=f"tests/api/test_inbox.py#{i}"),
+                blobs=blobs, received_at=tied_at, filename="tie.pdf")
+            for i in range(2)
+        ]
+    newer_id, older_id = sorted(ids, reverse=True)
+
+    first_page = a.get("/api/inbox?limit=1").json()["items"]
+    assert [i["id"] for i in first_page] == [newer_id]
+    cursor = first_page[0]
+    second_page = a.get(f"/api/inbox?limit=1&before_received_at={cursor['received_at']}"
+                        f"&before_id={cursor['id']}").json()["items"]
+    assert [i["id"] for i in second_page] == [older_id]
 
 
 def test_a_document_reads_back_for_its_owner_and_404s_for_anyone_else(
