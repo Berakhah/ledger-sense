@@ -1,7 +1,7 @@
 """run_document: the guard. Extraction behaviour arrives in later tests."""
 
 import io
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pypdfium2 as pdfium
@@ -304,3 +304,50 @@ def test_a7_never_fires_because_no_uploaded_document_has_a_contract(
     document_id = db.store_pdf(_clean_pdf())
     run_document(db.engine, document_id)
     assert "A7" not in {f.rule_id for f in db.findings_for(document_id)}
+
+
+def test_a_byte_identical_resubmission_is_flagged_not_re_extracted(db: RunDb) -> None:
+    pdf = _clean_pdf()
+    t0 = datetime(2026, 9, 15, 10, 0, tzinfo=UTC)
+    first = db.store_pdf(pdf, received_at=t0)
+    second = db.store_pdf(pdf, received_at=t0 + timedelta(minutes=5))
+    assert run_document(db.engine, first).status == "extracted"
+    outcome = run_document(db.engine, second)
+    assert outcome.status == "duplicate"
+    assert outcome.findings_written == 1
+    row = db.document(second)
+    assert row.run_note == f"duplicate of {first}"
+    assert db.claims_for(second) == []
+    d0 = db.findings_for(second)
+    assert [(f.rule_id, f.field) for f in d0] == [("D0", "document")]
+    assert first in d0[0].message
+    assert d0[0].page is None
+
+
+def test_the_original_of_a_pair_is_decided_by_received_at_then_id(db: RunDb) -> None:
+    pdf = _clean_pdf()
+    same_instant = datetime(2026, 9, 15, 10, 0, tzinfo=UTC)
+    a = db.store_pdf(pdf, received_at=same_instant)
+    b = db.store_pdf(pdf, received_at=same_instant)
+    original, twin = sorted([a, b])
+    assert run_document(db.engine, twin).status == "duplicate"
+    assert run_document(db.engine, original).status == "extracted"
+
+
+def test_the_same_bytes_from_another_tenant_are_not_a_duplicate(db: RunDb) -> None:
+    pdf = _clean_pdf()
+    other = db.new_tenant()
+    mine = db.store_pdf(pdf)
+    theirs = db.store_pdf(pdf, tenant_id=other)
+    assert run_document(db.engine, mine).status == "extracted"
+    assert run_document(db.engine, theirs).status == "extracted"
+
+
+def test_a_row_without_a_hash_is_never_matched(db: RunDb) -> None:
+    pdf = _clean_pdf()
+    legacy = db.store_pdf(pdf, received_at=datetime(2020, 1, 1, tzinfo=UTC))
+    with db.engine.begin() as conn:
+        conn.execute(documents.update().where(documents.c.id == legacy)
+                     .values(content_sha256=None))
+    later = db.store_pdf(pdf)
+    assert run_document(db.engine, later).status == "extracted"
