@@ -291,6 +291,45 @@ def test_arithmetic_is_not_run_on_a_field_that_could_not_be_extracted(
     assert rules_fired == {"X0"}, rules_fired
 
 
+def _pdf_with_one_unparseable_cell() -> tuple[bytes, str]:
+    """A clean corpus document whose second line's `this_period` cell reads
+    "n/a". Rendered through the generator's own `_render` (the way generate.py
+    does it) so the document is otherwise indistinguishable from the corpus;
+    per-line retainage is made real so A8 has something to sum. Returns the
+    PDF and the provenance key `assemble` records for the lost cell."""
+    from types import SimpleNamespace
+
+    from ledger_sense.corpus.generate import _clean as clean_app
+    from ledger_sense.corpus.generate import _render
+
+    contract, app = clean_app(1)
+    lines = [ln.model_copy(update={"retainage": money(ln.total_completed_and_stored / 10)})
+             for ln in app.lines]
+    app = app.model_copy(update={
+        "lines": lines,
+        "retainage_total": money(sum((ln.retainage for ln in lines), money("0")))})
+    broken = SimpleNamespace(**{k: getattr(lines[1], k) for k in type(lines[1]).model_fields})
+    broken.this_period = "n/a"
+    rendered = app.model_copy(update={"lines": [lines[0], broken, *lines[2:]]})
+    return _render(rendered, contract, "baseline"), f"line[{lines[1].item_no}].this_period"
+
+
+def test_a_dropped_line_suppresses_the_rules_that_sum_over_lines(db: RunDb) -> None:
+    """assemble drops a whole continuation row when one cell is not money.
+    A1/A8 sum over the surviving rows, so an incomplete sum would read as a
+    confident footing error that is really a missing row. X0 says the truth."""
+    pdf, lost_field = _pdf_with_one_unparseable_cell()
+    document_id = db.store_pdf(pdf)
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "extracted"
+    found = db.findings_for(document_id)
+    assert [f.field for f in found if f.rule_id == "X0"] == [lost_field]
+    assert lost_field not in {c.field for c in db.claims_for(document_id)}
+    rules_fired = {f.rule_id for f in found}
+    assert "A1" not in rules_fired, rules_fired
+    assert "A8" not in rules_fired, rules_fired
+
+
 def test_a7_never_fires_because_no_uploaded_document_has_a_contract(
     db: RunDb, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

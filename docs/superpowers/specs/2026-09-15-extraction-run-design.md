@@ -146,8 +146,10 @@ The runner owns its transactions (it needs two on failure), which is why it take
    "error" that is really a missing field. So: `unverifiable = unverifiable_money_fields(app)`;
    `run_rules(app, contract=_tenant_default_contract(), exclude={"A7"})`; any `Finding` whose
    `field` is in `unverifiable`, or whose `field` is `line[...]` and `"lines"` is in
-   `unverifiable`, or whose rule is A5/A6 while any summary field is unverifiable, is
-   **dropped** — the `X0` finding already states the truth. `run_rules` gains an `exclude`
+   `unverifiable`, or whose rule is A5/A6 while any summary field is unverifiable, or whose
+   rule is A1/A8 (they sum over `app.lines`) while `"lines"` or any `line[...]` entry is
+   unverifiable — `assemble` drops a whole row when one cell is not money-shaped, so the sum
+   is incomplete — is **dropped** — the `X0` finding already states the truth. `run_rules` gains an `exclude`
    parameter (rule ids); A7 is excluded because it reads `contract.original_sum`, which no
    uploaded document has. The helper builds a `Contract` with `rounding=RoundingPolicy(2, 2)`,
    `id="tenant-default"`, and placeholder `original_sum`/`retainage` that no surviving rule
@@ -279,3 +281,8 @@ routing is its own slice) · single-parse threading of `ParsedPDF` through `clas
 HUMAN claims would violate; `FOR UPDATE` being a no-op on SQLite; exception messages leaking
 page text into `run_note`; a non-existent `load_document` allowlist; A5/A6 findings having no
 bbox; the corpus covering only three arithmetic error classes.
+
+2026-09-16 branch review, fix round 1: A1/A8 fired on an incomplete sum when `assemble` had
+dropped a continuation row for one unparseable cell (`line[<n>].<field>` in `_unextractable`)
+or the grid was empty (`"lines"`); step 5 now drops A1/A8 in either case
+(`_LINE_AGGREGATING_RULES`), proven end to end by a corpus document with one "n/a" cell.
