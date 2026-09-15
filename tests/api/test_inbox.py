@@ -2,12 +2,14 @@
 intake → accept_document → store_document and adds nothing of its own."""
 
 import ast
+import io
 import pathlib
 from typing import cast
 
 import pypdfium2 as pdfium
 import pytest
 import sqlalchemy as sa
+from fastapi import UploadFile
 from httpx import Response
 
 from ledger_sense.store import session as store_session
@@ -19,11 +21,9 @@ def _pdf(pages: int = 1) -> bytes:
     doc = pdfium.PdfDocument.new()
     for _ in range(pages):
         doc.new_page(612, 792)
-    out = pathlib.Path(__file__).parent / f"_inbox_{pages}.pdf"
-    doc.save(out)
-    payload = out.read_bytes()
-    out.unlink()
-    return payload
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
 
 
 def _upload(tenant: TenantClient, payload: bytes, filename: str = "payapp.pdf",
@@ -117,6 +117,27 @@ def test_an_oversized_payload_is_413_and_nothing_is_stored(
     assert _count(a.tenant_id) == before
 
 
+def test_a_declared_oversized_upload_is_refused_before_any_read(
+    two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 413 above proves the status code; this proves *how* it is
+    reached — file.size is checked, and UploadFile.read is never called, so
+    the oversized body is never pulled into this process as one buffer."""
+    a, _ = two_tenants
+    read_calls = 0
+    original_read = UploadFile.read
+
+    async def _counting_read(self: UploadFile, size: int = -1) -> bytes:
+        nonlocal read_calls
+        read_calls += 1
+        return await original_read(self, size)
+
+    monkeypatch.setattr(UploadFile, "read", _counting_read)
+    response = _upload(a, b"%PDF-1.4" + b"\x00" * 26_000_000)
+    assert response.status_code == 413
+    assert read_calls == 0
+
+
 def test_a_non_pdf_is_422_and_nothing_is_stored(
     two_tenants: tuple[TenantClient, TenantClient],
 ) -> None:
@@ -167,6 +188,21 @@ def test_the_filename_is_a_basename_with_no_path_or_control_characters(
     assert _upload(a, _pdf(), filename="C:\\Users\\x\\pay\x00app.pdf").json()["filename"] == "payapp.pdf"
     assert _upload_raw_multipart(a, "", _pdf()).json()["filename"] == "document.pdf"
     assert len(_upload(a, _pdf(), filename="a" * 400 + ".pdf").json()["filename"]) == 255
+
+
+def test_a_literal_percent_in_a_filename_is_not_url_decoded(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    """Only the WHATWG multipart/form-data escape set (`"`, C0 controls other
+    than ESC) is ever undone. `%25`/`%20`/`%2F`/a non-ASCII percent-triplet
+    are not escapes that algorithm produces, so a file genuinely named with
+    one of these round-trips untouched rather than being mistaken for a
+    percent-encoded byte."""
+    a, _ = two_tenants
+    assert _upload(a, _pdf(), filename="50%25off.pdf").json()["filename"] == "50%25off.pdf"
+    assert _upload(a, _pdf(), filename="100%20done.pdf").json()["filename"] == "100%20done.pdf"
+    assert _upload(a, _pdf(), filename="Q3%2Freport.pdf").json()["filename"] == "Q3%2Freport.pdf"
+    assert _upload(a, _pdf(), filename="caf%E9.pdf").json()["filename"] == "caf%E9.pdf"
 
 
 def test_an_anonymous_upload_is_refused() -> None:
