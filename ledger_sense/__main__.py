@@ -24,7 +24,9 @@ from alembic.config import Config
 
 from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.ingest.classify import classify
+from ledger_sense.run.document import run_document, run_pending
 from ledger_sense.store.blobs import blob_store_from_environment
+from ledger_sense.store.session import app_engine
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -61,10 +63,35 @@ def _probe_blob_store() -> None:
 
 
 def _extract(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: python -m ledger_sense extract <path>", file=sys.stderr)
+    """`extract <path>`                — stateless probe: parse a file, print a summary.
+    `extract --pending [--limit N]`   — run every received/failed document, oldest first.
+    `extract --document <id>`        — run one stored document."""
+    usage = ("usage: python -m ledger_sense extract <path> | --pending [--limit N] "
+             "| --document <id>")
+    args = argv[2:]
+    if not args:
+        print(usage, file=sys.stderr)
         return 2
-    path = pathlib.Path(argv[2])
+    if args[0] == "--pending":
+        limit = 100
+        if len(args) == 3 and args[1] == "--limit" and args[2].isdigit():
+            limit = int(args[2])
+        elif len(args) != 1:
+            print(usage, file=sys.stderr)
+            return 2
+        for outcome in run_pending(app_engine(), limit=limit):
+            print(json.dumps(outcome._asdict()))
+        return 0
+    if args[0] == "--document":
+        if len(args) != 2:
+            print(usage, file=sys.stderr)
+            return 2
+        print(json.dumps(run_document(app_engine(), args[1])._asdict()))
+        return 0
+    if len(args) != 1:
+        print(usage, file=sys.stderr)
+        return 2
+    path = pathlib.Path(args[0])
     pdf = path.read_bytes()
     app = assemble_pay_application(pdf, str(path))
     unextractable = app.provenance["_unextractable"]
