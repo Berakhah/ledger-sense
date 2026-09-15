@@ -255,8 +255,49 @@ def _write(conn: Connection, row: sa.Row[tuple[object, ...]],
     return RunOutcome(document_id, "extracted", None, len(claim_rows), len(finding_rows))
 
 
+def _earlier_twin(conn: Connection, row: sa.Row[tuple[object, ...]]) -> str | None:
+    """The id of the earliest document on the same tenant with the same
+    plaintext hash, if this row is not it. Tenant-scoped in SQL: another
+    tenant's bytes are never a match. Rows without a hash (pre-0005) never
+    match in either direction. `row.received_at` is compared in the form the
+    same engine handed it back, so the naive-vs-aware SQLite trap
+    (api/inbox.py list_documents) does not arise here."""
+    if row.content_sha256 is None:
+        return None
+    twin = conn.execute(
+        sa.select(documents.c.id)
+        .where(documents.c.tenant_id == row.tenant_id,
+               documents.c.content_sha256 == row.content_sha256,
+               documents.c.id != row.id,
+               sa.tuple_(documents.c.received_at, documents.c.id)
+               < sa.tuple_(sa.literal(row.received_at), sa.literal(row.id)))
+        .order_by(documents.c.received_at, documents.c.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    return None if twin is None else str(twin)
+
+
+def _flag_duplicate(conn: Connection, row: sa.Row[tuple[object, ...]], twin: str) -> RunOutcome:
+    document_id, tenant_id = str(row.id), str(row.tenant_id)
+    note = f"duplicate of {twin}"
+    conn.execute(findings.delete().where(findings.c.document_id == document_id))
+    conn.execute(claims.delete().where(claims.c.document_id == document_id))
+    conn.execute(findings.insert().values(
+        id=uuid.uuid4().hex, tenant_id=tenant_id, document_id=document_id,
+        rule_id="D0", field="document",
+        message=f"byte-identical to document {twin}, received earlier",
+        expected=None, actual=None, page=None, x0=None, top=None, x1=None, bottom=None,
+        state="open", created_at=datetime.now(UTC)))
+    conn.execute(documents.update().where(documents.c.id == document_id)
+                 .values(status="duplicate", run_note=note))
+    return RunOutcome(document_id, "duplicate", note, 0, 1)
+
+
 def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore) -> RunOutcome:
     document_id, tenant_id = str(row.id), str(row.tenant_id)
+    twin = _earlier_twin(conn, row)
+    if twin is not None:
+        return _flag_duplicate(conn, row, twin)
     # `load_document` stays outside the try: DocumentNotFound / blob / KEK
     # failures are infrastructure, not a document-level problem, and must
     # propagate rather than becoming an honest `failed` row.
