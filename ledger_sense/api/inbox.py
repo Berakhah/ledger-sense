@@ -3,8 +3,9 @@
 POST composes three functions that already exist and are already guarded —
 intake() (resource caps), accept_document() (the only Labelled constructor),
 store_document() (the only documents.insert()) — and adds nothing of its own.
-No extraction, no rules, no gateway call: those come later and read the row
-this route writes.
+No extraction inline: after the row commits, `run_in_background` is
+scheduled through BackgroundTasks and reads the row this route wrote. The
+201 says `received`; the run's answer arrives on the next read.
 
 Mounted through api.deps.register() in api/app.py, so require_session is
 applied there; depended on here too because the handlers need the tenant and
@@ -17,7 +18,16 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 
 from ledger_sense.api.deps import owned, require_session
 from ledger_sense.api.fixtures import demo_profile_enabled
@@ -25,9 +35,10 @@ from ledger_sense.auth.session import Session
 from ledger_sense.boundary import Origin, SensitivityViolation
 from ledger_sense.ingest.intake import accept_document, intake
 from ledger_sense.ingest.limits import DEFAULT_LIMITS, RejectedDocument, Rejection
+from ledger_sense.run.document import run_in_background
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import store_document
-from ledger_sense.store.retention import documents
+from ledger_sense.store.retention import DOCUMENT_STATUSES, claims, documents, findings
 from ledger_sense.store.session import app_engine
 
 router = APIRouter(prefix="/api/inbox")
@@ -94,7 +105,9 @@ def _provenance(origin: Origin, session: Session) -> str:
 
 
 def _row(document_id: str, *, filename: str, sensitivity: str, origin: str,
-         received_at: datetime) -> dict[str, Any]:
+         received_at: datetime, status: str = "received", doc_type: str | None = None,
+         run_note: str | None = None, finding_count: int = 0,
+         claim_count: int = 0) -> dict[str, Any]:
     # "+00:00" contains a literal "+", which a URL query string decodes as a
     # space (application/x-www-form-urlencoded, which is what the keyset
     # pager's before_received_at round-trips through) unless the caller
@@ -102,12 +115,15 @@ def _row(document_id: str, *, filename: str, sensitivity: str, origin: str,
     # thing and survives an unencoded round trip through a query string.
     stamp = received_at.isoformat().replace("+00:00", "Z")
     return {"id": document_id, "filename": filename, "sensitivity": sensitivity,
-            "origin": origin, "received_at": stamp}
+            "origin": origin, "received_at": stamp, "status": status,
+            "doc_type": doc_type, "run_note": run_note,
+            "finding_count": finding_count, "claim_count": claim_count}
 
 
 @router.post("", status_code=201)
 def upload(
     session: CurrentSession,
+    background: BackgroundTasks,
     file: Annotated[UploadFile, File()],
     origin: Annotated[Origin, Form()] = Origin.UPLOAD,
 ) -> dict[str, Any]:
@@ -182,6 +198,8 @@ def upload(
         document_id = store_document(conn, tenant_id=session.tenant_id, doc=doc,
                                      blobs=blob_store_from_environment(),
                                      received_at=received_at, filename=filename)
+    # Scheduled only once the row is committed: the runner reads it back.
+    background.add_task(run_in_background, document_id, session.tenant_id)
     return _row(document_id, filename=filename, sensitivity=doc.sensitivity.value,
                 origin=doc.origin.value, received_at=received_at)
 
@@ -189,8 +207,16 @@ def upload(
 DEFAULT_PAGE = 50
 MAX_PAGE = 200
 
+_OPEN_FINDINGS = (sa.select(sa.func.count()).select_from(findings)
+                  .where(findings.c.document_id == documents.c.id, findings.c.state == "open")
+                  .correlate(documents).scalar_subquery().label("finding_count"))
+_CLAIMS = (sa.select(sa.func.count()).select_from(claims)
+           .where(claims.c.document_id == documents.c.id)
+           .correlate(documents).scalar_subquery().label("claim_count"))
+
 _COLUMNS = (documents.c.id, documents.c.filename, documents.c.sensitivity,
-            documents.c.origin, documents.c.received_at)
+            documents.c.origin, documents.c.received_at, documents.c.status,
+            documents.c.doc_type, documents.c.run_note, _OPEN_FINDINGS, _CLAIMS)
 
 
 def _row_of(row: sa.Row[Any]) -> dict[str, Any]:
@@ -201,7 +227,9 @@ def _row_of(row: sa.Row[Any]) -> dict[str, Any]:
     if received_at.tzinfo is None:
         received_at = received_at.replace(tzinfo=UTC)
     return _row(row.id, filename=row.filename, sensitivity=row.sensitivity,
-                origin=row.origin, received_at=received_at)
+                origin=row.origin, received_at=received_at, status=row.status,
+                doc_type=row.doc_type, run_note=row.run_note,
+                finding_count=int(row.finding_count), claim_count=int(row.claim_count))
 
 
 @router.get("")
@@ -210,16 +238,22 @@ def list_documents(
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = DEFAULT_PAGE,
     before_received_at: datetime | None = None,
     before_id: str | None = None,
+    status: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     # Keyset on (received_at, id): a page boundary on received_at alone drops
     # every row that shares the boundary's timestamp.
     if (before_received_at is None) != (before_id is None):
         raise HTTPException(status_code=422,
                             detail="before_received_at and before_id go together")
+    if status is not None and status not in DOCUMENT_STATUSES:
+        raise HTTPException(status_code=422,
+                            detail=f"status must be one of {', '.join(DOCUMENT_STATUSES)}")
     query = (sa.select(*_COLUMNS)
              .where(documents.c.tenant_id == session.tenant_id)
              .order_by(documents.c.received_at.desc(), documents.c.id.desc())
              .limit(limit))
+    if status is not None:
+        query = query.where(documents.c.status == status)
     if before_received_at is not None and before_id is not None:
         # SQLite stores DateTime(timezone=True) naively, so a tz-aware
         # `before_received_at` (parsed from the query string's offset) can
