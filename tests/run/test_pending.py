@@ -1,5 +1,6 @@
 """run_pending and the concurrency guard."""
 
+import logging
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -10,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 from ledger_sense.corpus.generate import generate
 from ledger_sense.run.document import run_document, run_in_background, run_pending
 from ledger_sense.store.retention import documents
-from tests.run.conftest import RunDb
+from tests.run.conftest import RunDb, _ledger_sense_loggers_enabled
 
 
 def _pdf(seed: int = 1) -> bytes:
@@ -108,3 +109,25 @@ def test_run_in_background_swallows_and_logs_everything(
     with caplog.at_level("ERROR"):
         run_in_background("doc-1", "tenant-1")  # must not raise
     assert any("doc-1" in r.message and "tenant-1" in r.message for r in caplog.records)
+
+
+def test_db_fixture_leaves_the_run_document_logger_enabled(db: RunDb) -> None:
+    """The minimum covering assertion: whatever the `db` fixture does about
+    alembic disabling loggers, ledger_sense.run.document's logger — the one
+    run_in_background logs through — must be usable while `db` is live."""
+    assert logging.getLogger("ledger_sense.run.document").disabled is False
+
+
+def test_ledger_sense_loggers_enabled_restores_the_pre_entry_disabled_state() -> None:
+    """Proves the scoping directly, without depending on alembic or on test
+    execution order: a logger disabled before the context is entered comes
+    back disabled after it exits, even though the context (as the `db`
+    fixture uses it) force-enables it for the duration in between."""
+    probe = logging.getLogger("ledger_sense.throwaway_probe")
+    probe.disabled = True
+    with _ledger_sense_loggers_enabled() as loggers:
+        assert probe.disabled is True  # entering alone does not force anything
+        for logger in loggers.values():
+            logger.disabled = False
+        assert probe.disabled is False  # caller's force-enable took effect
+    assert probe.disabled is True  # restored to the pre-entry snapshot
