@@ -14,6 +14,8 @@ from ledger_sense.extract.assemble import assemble_pay_application
 # two of them silently. run_rules(rule_classes=...) asks the registry instead.
 from ledger_sense.rules.arithmetic import foot, lines, payment  # noqa: F401
 from ledger_sense.rules.engine import run_rules
+from ledger_sense.run.document import run_document
+from tests.run.conftest import RunDb
 
 
 @pytest.fixture(autouse=True)
@@ -123,3 +125,12 @@ def test_injected_errors_are_caught_with_no_model(error: ErrorClass, expected_ru
     built = assemble_pay_application(pdf, "corpus://seed-1")
     fired = {f.rule_id for f in run_rules(built, contract, rule_classes={"arithmetic"})}
     assert expected_rule in fired
+
+
+def test_a_stored_document_is_run_end_to_end_with_every_provider_disabled(
+    every_provider_disabled: None, db: RunDb,
+) -> None:
+    document_id = db.store_pdf(generate(seed=3, error="A1_footing")[2])
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "extracted"
+    assert "A1" in {f.rule_id for f in db.findings_for(document_id)}

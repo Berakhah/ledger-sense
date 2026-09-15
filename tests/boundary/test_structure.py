@@ -202,3 +202,26 @@ def test_dataclass_replace_ignores_str_replace() -> None:
 def test_dataclass_replace_ignores_unrelated_bare_call() -> None:
     tree = ast.parse("replace(x)")
     assert _dataclass_replace_calls(tree) == []
+
+
+# The runner is the first code to touch a CLIENT_CONFIDENTIAL document after
+# the door. It must be deterministic all the way down: no gateway, no OCR
+# escalation (which is where a model lane would hang), no provider client.
+_RUNNER_FORBIDDEN = ("ledger_sense.gateway", "ledger_sense.extract.ocr", *PROVIDER_CLIENTS)
+
+
+def test_the_runner_imports_nothing_that_could_reach_a_provider() -> None:
+    offenders = []
+    for path, tree in _sources():
+        if "run" not in path.parts:
+            continue
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                if any(name == f or name.startswith(f + ".") for f in _RUNNER_FORBIDDEN):
+                    offenders.append(f"{path}:{node.lineno} imports {name}")
+    assert offenders == [], offenders
