@@ -59,6 +59,13 @@ class Limits:
     max_memory_mb: int = 512
 
 
+# The one Limits instance the rest of the app consults — never a second copy
+# of max_bytes. The inbox route's declared-size pre-check, the ASGI body-cap
+# middleware in api/app.py, and intake()'s own default all read this same
+# instance so the cap can never drift between them (I4).
+DEFAULT_LIMITS = Limits()
+
+
 class Rejection(str, Enum):
     """Why a payload was refused. The route maps HTTP status on this, never
     on the wording of `reason`."""

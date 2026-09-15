@@ -24,7 +24,7 @@ from ledger_sense.api.fixtures import demo_profile_enabled
 from ledger_sense.auth.session import Session
 from ledger_sense.boundary import Origin, SensitivityViolation
 from ledger_sense.ingest.intake import accept_document, intake
-from ledger_sense.ingest.limits import Limits, RejectedDocument, Rejection
+from ledger_sense.ingest.limits import DEFAULT_LIMITS, RejectedDocument, Rejection
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import store_document
 from ledger_sense.store.retention import documents
@@ -37,11 +37,13 @@ CurrentSession = Annotated[Session, Depends(require_session)]
 FALLBACK_FILENAME = "document.pdf"
 MAX_FILENAME = 255
 
-# The one Limits instance the route consults — never a second copy of
-# max_bytes. ingest.limits.parse_within_limits enforces the same cap again,
-# independently, on the bytes this route hands it; this one exists only so
-# an oversized upload can be refused before those bytes are read at all.
-_LIMITS = Limits()
+# The one Limits instance this route consults — the same instance intake()
+# defaults to and the ASGI body-cap middleware in api/app.py reads, so the
+# cap can never drift between the three (I4). parse_within_limits enforces
+# the same cap again, independently, on the bytes this route hands it; this
+# one exists only so an oversized upload can be refused before those bytes
+# are read at all.
+_LIMITS = DEFAULT_LIMITS
 
 # Only TOO_LARGE is the client's payload being too big for the server (413).
 # Everything else is a payload the server cannot process as sent (422).
@@ -104,17 +106,27 @@ def _row(document_id: str, *, filename: str, sensitivity: str, origin: str,
 
 
 @router.post("", status_code=201)
-async def upload(
+def upload(
     session: CurrentSession,
     file: Annotated[UploadFile, File()],
     origin: Annotated[Origin, Form()] = Origin.UPLOAD,
 ) -> dict[str, Any]:
+    # Synchronous on purpose (I2): this handler spawns and joins a child
+    # process (intake(), up to Limits().timeout_seconds) and does blocking
+    # file/DB I/O (store_document's fsync, the insert). An `async def`
+    # handler runs on the event loop and would block every other request for
+    # the duration; FastAPI runs a plain `def` handler in a worker thread
+    # instead, which is what this blocking work actually needs.
+    #
     # Route-level policy, not the door's: CORPUS means "our generator made
     # this", which only the demo profile has any business asserting. Read
-    # per request, deliberately — unlike app.py's build-time read (which
-    # decides once whether the demo-seed route is mounted at all), a
-    # profile flip must take effect on this route's very next call, not on
-    # the next process restart.
+    # per request rather than once at import: a running process's own
+    # environment is not externally mutable, so per-request and at-import
+    # reads are equivalent in production — the difference only shows up in
+    # tests, which monkeypatch the variable per test, and that is exactly why
+    # this route (unlike app.py's seed-mount decision, made once at build
+    # time because that route must be *absent*, not merely refused) reads it
+    # fresh on every call.
     if origin is Origin.CORPUS and not demo_profile_enabled():
         raise HTTPException(
             status_code=422,
@@ -145,11 +157,15 @@ async def upload(
     # count), and intake() re-checks the same cap independently on whatever
     # this reads. Bounding the read itself is what actually keeps a
     # multi-gigabyte body from landing in this process as one buffer.
-    payload = await file.read(_LIMITS.max_bytes + 1)
+    #
+    # file.file.read, not the async file.read: this handler is sync (I2), and
+    # UploadFile.file is the underlying SpooledTemporaryFile — a plain
+    # blocking file object — that FastAPI's own async wrapper delegates to.
+    payload = file.file.read(_LIMITS.max_bytes + 1)
     if not payload:
         raise HTTPException(status_code=422, detail="file is empty")
 
-    parsed = intake(payload)
+    parsed = intake(payload, _LIMITS)
     if isinstance(parsed, RejectedDocument):
         raise HTTPException(status_code=_STATUS_OF.get(parsed.kind, 422), detail=parsed.reason)
 
