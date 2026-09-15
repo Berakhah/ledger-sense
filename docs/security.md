@@ -40,6 +40,9 @@ likely to matter:
   tests in `tests/boundary/` prove the refusal, its ordering, and that the
   codebase has no second path.
   A client who declines the model lane entirely still gets a working product.
+  No `Transport` ships in v1; when one does, the local-fallback lane must be
+  routed around it rather than through it (see the design spec §3 known
+  limitation).
 - **A hostile PDF.** Uploads are untrusted input parsed by a library that has
   had memory-safety history. Parsing runs under explicit resource caps
   (`ingest/limits.py`), in a container that is read-only, non-root, memory-
