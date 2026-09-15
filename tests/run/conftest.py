@@ -10,6 +10,7 @@ exercises load_document's decrypt path, not a stub.
 test here gets a document row.
 """
 
+import contextlib
 import logging
 import pathlib
 import uuid
@@ -31,6 +32,32 @@ from ledger_sense.store.documents import store_document
 from ledger_sense.store.retention import claims, documents, findings
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+
+
+@contextlib.contextmanager
+def _ledger_sense_loggers_enabled() -> Iterator[dict[str, logging.Logger]]:
+    """Alembic's `migrations/env.py` calls
+    `logging.config.fileConfig(alembic.ini)`, whose default
+    `disable_existing_loggers=True` silently disables every already-created
+    `ledger_sense.*` logger for the rest of the process — so
+    `log.exception(...)` stops reaching `caplog` in tests unrelated to this
+    fixture, the moment any earlier test runs `alembic upgrade head`.
+
+    Snapshots each affected logger's `.disabled` flag on entry (i.e. before
+    the caller runs the upgrade), hands them back so the caller can force
+    them enabled for as long as it needs, and restores the pre-entry
+    snapshot on exit — scoped to this context like the env var patches
+    around it, not a one-way leak in either direction. Restoring to the
+    *pre-entry* value (not "however alembic left them") matters: it is what
+    keeps loggers usable for tests that never touch this fixture at all."""
+    loggers = {name: logger for name, logger in logging.Logger.manager.loggerDict.items()
+              if isinstance(logger, logging.Logger) and name.startswith("ledger_sense")}
+    was_disabled = {name: logger.disabled for name, logger in loggers.items()}
+    try:
+        yield loggers
+    finally:
+        for name, logger in loggers.items():
+            logger.disabled = was_disabled[name]
 
 
 class RunDb:
@@ -80,16 +107,15 @@ def db(tmp_path: pathlib.Path) -> Iterator[RunDb]:
         store_session.reset_app_engine()
         config = Config(str(ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(ROOT / "migrations"))
-        command.upgrade(config, "head")
-        # migrations/env.py calls logging.config.fileConfig(alembic.ini),
-        # whose default disable_existing_loggers=True silently disables
-        # every logger already created in this process (e.g.
-        # ledger_sense.run.document's), so log.exception() elsewhere in the
-        # suite stops reaching caplog after the first test using this
-        # fixture. Undo that side effect rather than let it leak forward.
-        for logger in logging.Logger.manager.loggerDict.values():
-            if isinstance(logger, logging.Logger):
+        with _ledger_sense_loggers_enabled() as loggers:
+            command.upgrade(config, "head")
+            # alembic's fileConfig call inside `upgrade` just disabled every
+            # logger snapshotted above; force them back on for the fixture's
+            # lifetime. `_ledger_sense_loggers_enabled`'s `finally` restores
+            # each one to what it was before `upgrade` ran, once this
+            # `with` block exits.
+            for logger in loggers.values():
                 logger.disabled = False
-        engine = store_session.app_engine()
-        yield RunDb(engine, create_tenant(f"tenant-{uuid.uuid4().hex[:8]}"))
+            engine = store_session.app_engine()
+            yield RunDb(engine, create_tenant(f"tenant-{uuid.uuid4().hex[:8]}"))
     store_session.reset_app_engine()
