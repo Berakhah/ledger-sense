@@ -48,6 +48,30 @@ def test_gateway_call_is_trapped_when_bok_core_exists(gateway_call_traps: None) 
         Gateway.call()
 
 
+def test_the_deterministic_packages_never_import_the_gateway() -> None:
+    """The local trap for the local seam: if extract/rules/ingest/domain/corpus/
+    baseline imported ledger_sense.gateway, the 70% deterministic floor would
+    depend on a provider. Static, so an `import ... as` cannot dodge it."""
+    import ast
+    import pathlib
+
+    deterministic = ("extract", "rules", "ingest", "domain", "corpus", "baseline")
+    offenders = []
+    for package in deterministic:
+        for path in (pathlib.Path("ledger_sense") / package).rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                elif isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                else:
+                    continue
+                if any(name.startswith("ledger_sense.gateway") for name in names):
+                    offenders.append(f"{path}:{node.lineno}")
+    assert offenders == [], f"deterministic code imports the gateway: {offenders}"
+
+
 @pytest.mark.parametrize("seed", list(range(1, 11)))
 def test_clean_documents_extract_and_validate_with_no_model(seed: int) -> None:
     contract, _app, pdf = generate(seed=seed, error="clean")
