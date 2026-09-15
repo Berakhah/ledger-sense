@@ -159,6 +159,58 @@ def test_a_parse_crash_before_classification_is_recorded_as_failed(
     assert row.run_attempts == 1
 
 
+def _fail_then(db: RunDb, monkeypatch: pytest.MonkeyPatch, document_id: str,
+               between: object) -> None:
+    """Make extraction raise, and run `between` after the run transaction has
+    rolled back but before `_mark_failed` writes -- the gap in which another
+    runner, unblocked by our rollback, can legitimately take the row."""
+    import ledger_sense.run.document as run_module
+
+    def _boom(pdf: bytes, source_path: str) -> object:
+        raise ValueError("page text: $1,234.56")
+    monkeypatch.setattr(run_module, "assemble_pay_application", _boom)
+    real_mark_failed = run_module._mark_failed
+
+    def _mark_failed_after_race(engine: object, doc_id: str, cause: Exception,
+                                doc_type: str | None) -> RunOutcome:
+        between()  # type: ignore[operator]
+        return real_mark_failed(engine, doc_id, cause, doc_type)  # type: ignore[arg-type]
+    monkeypatch.setattr(run_module, "_mark_failed", _mark_failed_after_race)
+
+
+def test_a_failure_superseded_by_another_runner_reports_the_row_not_a_crash(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document_id = db.store_pdf(_clean_pdf())
+
+    def _other_runner_finished() -> None:
+        with db.engine.begin() as conn:
+            conn.execute(documents.update().where(documents.c.id == document_id)
+                         .values(status="extracted", run_note=None, run_attempts=1))
+    _fail_then(db, monkeypatch, document_id, _other_runner_finished)
+
+    outcome = run_document(db.engine, document_id)
+    assert outcome == RunOutcome(document_id, "extracted", "already extracted", 0, 0)
+    row = db.document(document_id)
+    assert row.status == "extracted"
+    assert row.run_note is None
+    assert row.run_attempts == 1
+
+
+def test_a_failure_on_a_row_deleted_mid_run_propagates_the_cause(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document_id = db.store_pdf(_clean_pdf())
+
+    def _purged() -> None:
+        with db.engine.begin() as conn:
+            conn.execute(documents.delete().where(documents.c.id == document_id))
+    _fail_then(db, monkeypatch, document_id, _purged)
+
+    with pytest.raises(ValueError, match="1,234.56"):
+        run_document(db.engine, document_id)
+
+
 def test_a_clean_document_is_extracted_with_one_claim_per_provenance_entry(db: RunDb) -> None:
     pdf = _clean_pdf()
     document_id = db.store_pdf(pdf)
