@@ -43,6 +43,14 @@ likely to matter:
   No `Transport` ships in v1; when one does, the local-fallback lane must be
   routed around it rather than through it (see the design spec §3 known
   limitation).
+
+  **The inbox route.** `POST /api/inbox` is that door's HTTP front: `intake()`
+  bounds the parse, `accept_document()` labels from the caller's declared
+  origin (defaulting to `UPLOAD`, the most restrictive), and `store_document()`
+  writes the one row. `CORPUS` is accepted only under the demo profile;
+  `REDACTED_UPLOAD` is refused until a verifier ships. The demo seeder stores
+  through the same three calls, so "the demo holds no client data" is proven
+  against the real `documents` table.
 - **A hostile PDF.** Uploads are untrusted input parsed by a library that has
   had memory-safety history. Parsing runs under explicit resource caps
   (`ingest/limits.py`), in a container that is read-only, non-root, memory-
