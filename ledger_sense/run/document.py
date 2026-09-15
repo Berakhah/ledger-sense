@@ -228,6 +228,11 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
         now = datetime.now(UTC)
         claim_rows = _claim_rows(tenant_id, document_id, app)
         finding_rows = _x0_rows(tenant_id, document_id, app, now)
-        return _write(conn, row, claim_rows, finding_rows)
     except Exception as exc:  # every document-level error becomes `failed`
         raise _RunFailure(exc, doc_type) from exc
+    # Outside the try on purpose (spec §2 step 7's catch-all covers steps 3-5
+    # only): `_write`'s guarded UPDATE matching zero rows is a lock-integrity
+    # violation — infrastructure, not an extraction failure — so its
+    # RuntimeError must propagate and roll back the transaction rather than
+    # become an ordinary `failed` row indistinguishable from a real crash.
+    return _write(conn, row, claim_rows, finding_rows)

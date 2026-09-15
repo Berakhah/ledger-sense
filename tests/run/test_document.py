@@ -217,3 +217,22 @@ def test_an_unextractable_field_becomes_an_x0_finding_without_a_box(
     assert x0[0].page is None and x0[0].x0 is None
     assert x0[0].state == "open"
     assert "previous_payments" not in {c.field for c in db.claims_for(document_id)}
+
+
+def test_a_row_that_changes_status_during_the_write_raises_instead_of_failing(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ledger_sense.run.document as run_module
+
+    def _boom(conn: object, row: object, claim_rows: object, finding_rows: object) -> object:
+        raise RuntimeError("document x changed status during the run")
+    monkeypatch.setattr(run_module, "_write", _boom)
+
+    document_id = db.store_pdf(_clean_pdf())
+    with pytest.raises(RuntimeError):
+        run_document(db.engine, document_id)
+
+    row = db.document(document_id)
+    assert row.status == "received"
+    assert row.run_attempts == 0
+    assert db.claims_for(document_id) == []
