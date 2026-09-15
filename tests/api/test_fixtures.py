@@ -1,5 +1,9 @@
 import pytest
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
+
+from ledger_sense.store import session as store_session
+from ledger_sense.store.retention import documents
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, profile: str) -> TestClient:
@@ -34,11 +38,6 @@ def test_seeded_documents_are_labelled_synthetic(monkeypatch: pytest.MonkeyPatch
 
 
 def test_the_seeded_row_records_who_seeded_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sqlalchemy as sa
-
-    from ledger_sense.store import session as store_session
-    from ledger_sense.store.retention import documents
-
     client = _client(monkeypatch, "demo")
     body = client.post("/api/fixtures/seed", json={"doc_id": "doc-4", "exceptions": 0}).json()
     with store_session.app_engine().connect() as conn:

@@ -1,19 +1,29 @@
 """E2E seeding — mounted under the `demo` profile and nowhere else.
 
-Phase 4's Playwright suite navigates to /review/doc-50 and clears fifty
-exceptions. Something has to mint doc-50. That something must not exist in a
-deployment holding real pay applications, so app.build_app() mounts this route
-only when LEDGER_SENSE_PROFILE == "demo" — an absent route, not a guarded one:
-a 403 tells a prober the demo hatch is compiled in and merely switched off.
-The default (unset, or any other value) is the `client` profile.
+Phase 4's Playwright suite navigates to /review/{doc_id} and clears fifty
+exceptions. Something has to mint that document and its exceptions. That
+something must not exist in a deployment holding real pay applications, so
+app.build_app() mounts this route only when LEDGER_SENSE_PROFILE == "demo" —
+an absent route, not a guarded one: a 403 tells a prober the demo hatch is
+compiled in and merely switched off. The default (unset, or any other value)
+is the `client` profile.
 
 The document row goes through the same door as an upload — accept_document,
-then store_document — and lands in the real `documents` table. Its label is
-always SYNTHETIC (the only label CORPUS origin can produce), and that label
-is what /api/inbox/{id} hands back, so "the demo holds no client data" is a
-property the API can be asked about rather than a claim in a README. The
-exception rows are unrelated stub rows, kept in `stub_resources` until
-/api/review is real, and are labelled SYNTHETIC too.
+then store_document — and lands in the real `documents` table. store_document
+mints the row's actual id (a fresh uuid, same as any upload); the caller's
+`doc_id` in the request body never reaches the table as a primary key any
+more, it is only the exception-key prefix and the filename stem. The response
+hands back the stored id as `doc_id`, and that is what e2e/seed.ts reads and
+navigates with. Its label is always SYNTHETIC (the only label CORPUS origin
+can produce), and that label is what /api/inbox/{id} hands back, so "the demo
+holds no client data" is a property the API can be asked about rather than a
+claim in a README. The exception rows are unrelated stub rows, kept in
+`stub_resources` until /api/review is real, and are labelled SYNTHETIC too.
+
+One consequence of the document row no longer being keyed by the caller's
+`doc_id`: repeated seed() calls with the same `doc_id` accumulate document
+rows — each under its own freshly minted tenant — rather than replacing the
+previous one. Only the exception rows are replaced on re-seed.
 
 ## The Secure-flag relaxation, stated plainly
 
