@@ -8,7 +8,9 @@ import pypdfium2 as pdfium
 import pytest
 import sqlalchemy as sa
 
+from ledger_sense.corpus.errors import ErrorClass
 from ledger_sense.corpus.generate import generate
+from ledger_sense.domain.money import money
 from ledger_sense.extract.assemble import UnextractableField, assemble_pay_application
 from ledger_sense.provenance import Claim
 from ledger_sense.run.document import RunOutcome, run_document
@@ -236,3 +238,69 @@ def test_a_row_that_changes_status_during_the_write_raises_instead_of_failing(
     assert row.status == "received"
     assert row.run_attempts == 0
     assert db.claims_for(document_id) == []
+
+
+def test_a_clean_document_produces_no_findings(db: RunDb) -> None:
+    document_id = db.store_pdf(_clean_pdf())
+    outcome = run_document(db.engine, document_id)
+    assert outcome.findings_written == 0
+    assert db.findings_for(document_id) == []
+
+
+@pytest.mark.parametrize("error,rule_id", [
+    ("A1_footing", "A1"), ("A2_line_sum", "A2"), ("A8_retainage", "A8")])
+def test_an_injected_error_becomes_a_finding_boxed_at_its_claim(
+    db: RunDb, error: ErrorClass, rule_id: str,
+) -> None:
+    document_id = db.store_pdf(generate(seed=1, error=error)[2])
+    run_document(db.engine, document_id)
+    hits = [f for f in db.findings_for(document_id) if f.rule_id == rule_id]
+    assert hits, f"{rule_id} did not fire"
+    claims_by_field = {c.field: c for c in db.claims_for(document_id)}
+    for f in hits:
+        assert f.state == "open"
+        assert f.expected is not None and f.actual is not None
+        assert Decimal(f.expected) != Decimal(f.actual)
+        if f.field in claims_by_field:
+            c = claims_by_field[f.field]
+            assert (f.page, f.x0, f.top, f.x1, f.bottom) == (c.page, c.x0, c.top, c.x1, c.bottom)
+        else:
+            assert f.page is None
+
+
+def test_arithmetic_is_not_run_on_a_field_that_could_not_be_extracted(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """assemble defaults an unextractable total to 0.00 so the model validates;
+    a footing rule run on that zero is a confident lie. X0 says the truth."""
+    import ledger_sense.run.document as run_module
+
+    real = run_module.assemble_pay_application
+
+    def _scrub_total(pdf: bytes, source_path: str) -> object:
+        app = real(pdf, source_path)
+        app.provenance.pop("total_completed_and_stored")
+        app.provenance["_unextractable"].append(
+            UnextractableField("total_completed_and_stored", "label not found on page"))
+        return app.model_copy(update={"total_completed_and_stored": money("0.00")})
+    monkeypatch.setattr(run_module, "assemble_pay_application", _scrub_total)
+
+    document_id = db.store_pdf(_clean_pdf())
+    run_document(db.engine, document_id)
+    rules_fired = {f.rule_id for f in db.findings_for(document_id)}
+    assert rules_fired == {"X0"}, rules_fired
+
+
+def test_a7_never_fires_because_no_uploaded_document_has_a_contract(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ledger_sense.run.document as run_module
+
+    real = run_module.assemble_pay_application
+
+    def _negative_change_orders(pdf: bytes, source_path: str) -> object:
+        return real(pdf, source_path).model_copy(update={"change_orders_net": money("-1.00")})
+    monkeypatch.setattr(run_module, "assemble_pay_application", _negative_change_orders)
+    document_id = db.store_pdf(_clean_pdf())
+    run_document(db.engine, document_id)
+    assert "A7" not in {f.rule_id for f in db.findings_for(document_id)}
