@@ -41,10 +41,14 @@ def scan(paths: list[str]) -> list[str]:
     return hits
 
 
+MAIN_ROOTS = ["ledger_sense/domain", "ledger_sense/rules", "ledger_sense/writeback",
+              "ledger_sense/run"]
+
+
 if __name__ == "__main__":
     import sys
 
-    found = scan(["ledger_sense/domain", "ledger_sense/rules", "ledger_sense/writeback"])
+    found = scan(MAIN_ROOTS)
     for hit in found:
         print(hit, file=sys.stderr)
     sys.exit(1 if found else 0)
