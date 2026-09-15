@@ -120,6 +120,34 @@ def test_a_failed_insert_leaves_no_orphan_blob(
     assert list((tmp_path / "blobs").iterdir()) == []
 
 
+class _CleanupFailingBlobStore:
+    """Delegates `put` to a real BlobStore; `delete` always raises, simulating
+    an unlink failure (or InvalidToken) during the orphan cleanup itself."""
+
+    def __init__(self, blobs: BlobStore) -> None:
+        self._blobs = blobs
+
+    def put(self, tenant_id: str, payload: bytes) -> str:
+        return self._blobs.put(tenant_id, payload)
+
+    def delete(self, tenant_id: str, blob_id: str) -> bool:
+        raise OSError("simulated unlink failure")
+
+
+def test_a_failed_cleanup_does_not_hide_the_insert_failure(
+    seeded_documents: SeededDocuments, blobs: BlobStore
+) -> None:
+    """The insert error is what the caller learns about — not why the orphan
+    cleanup itself failed — but the orphan is still recorded, not silent."""
+    failing_blobs = cast(BlobStore, _CleanupFailingBlobStore(blobs))
+    conn = cast(Connection, _FailingConnection())
+    with pytest.raises(RuntimeError, match="simulated insert failure") as excinfo:
+        store_document(conn, tenant_id=seeded_documents.tenant_id,
+                       doc=_labelled(Origin.CORPUS), blobs=failing_blobs,
+                       received_at=RECEIVED_AT)
+    assert "orphan" in "".join(excinfo.value.__notes__)
+
+
 class _Spy:
     def __init__(self) -> None:
         self.sent: list[bytes] = []
