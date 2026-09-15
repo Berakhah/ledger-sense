@@ -16,6 +16,7 @@ existence is not this tenant's to learn.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime
 
@@ -42,7 +43,7 @@ def store_document(
     received_at: datetime,
     filename: str,
 ) -> str:
-    """Encrypt the payload, insert the row with its label and filename, return the new id."""
+    """Encrypt the payload, insert the row with its label, filename and the SHA-256 of the plaintext, return the new id. The hash is of plaintext on purpose: it is how the run recognises a byte-identical re-submission within a tenant, and it reveals nothing but equality."""
     document_id = uuid.uuid4().hex
     # The blob lands first (blobs.py fsyncs before returning) so the row never
     # points at ciphertext that was not written. If the row then fails, the
@@ -66,6 +67,7 @@ def store_document(
             origin=doc.origin.value,
             provenance=doc.provenance,
             filename=filename,
+            content_sha256=hashlib.sha256(doc.payload).hexdigest(),
         ))
     except Exception as insert_error:
         try:
