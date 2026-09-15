@@ -16,9 +16,10 @@ import unicodedata
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+import sqlalchemy as sa
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
-from ledger_sense.api.deps import require_session
+from ledger_sense.api.deps import owned, require_session
 from ledger_sense.api.fixtures import demo_profile_enabled
 from ledger_sense.auth.session import Session
 from ledger_sense.boundary import Origin, SensitivityViolation
@@ -26,6 +27,7 @@ from ledger_sense.ingest.intake import accept_document, intake
 from ledger_sense.ingest.limits import Limits, RejectedDocument, Rejection
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import store_document
+from ledger_sense.store.retention import documents
 from ledger_sense.store.session import app_engine
 
 router = APIRouter(prefix="/api/inbox")
@@ -91,8 +93,14 @@ def _provenance(origin: Origin, session: Session) -> str:
 
 def _row(document_id: str, *, filename: str, sensitivity: str, origin: str,
          received_at: datetime) -> dict[str, Any]:
+    # "+00:00" contains a literal "+", which a URL query string decodes as a
+    # space (application/x-www-form-urlencoded, which is what the keyset
+    # pager's before_received_at round-trips through) unless the caller
+    # percent-encodes it. Every timestamp here is UTC, so "Z" says the same
+    # thing and survives an unencoded round trip through a query string.
+    stamp = received_at.isoformat().replace("+00:00", "Z")
     return {"id": document_id, "filename": filename, "sensitivity": sensitivity,
-            "origin": origin, "received_at": received_at.isoformat()}
+            "origin": origin, "received_at": stamp}
 
 
 @router.post("", status_code=201)
@@ -160,3 +168,64 @@ async def upload(
                                      received_at=received_at, filename=filename)
     return _row(document_id, filename=filename, sensitivity=doc.sensitivity.value,
                 origin=doc.origin.value, received_at=received_at)
+
+
+DEFAULT_PAGE = 50
+MAX_PAGE = 200
+
+_COLUMNS = (documents.c.id, documents.c.filename, documents.c.sensitivity,
+            documents.c.origin, documents.c.received_at)
+
+
+def _row_of(row: sa.Row[Any]) -> dict[str, Any]:
+    # SQLite hands DateTime(timezone=True) columns back naive; Postgres hands
+    # them back aware. Attach UTC (everything here is written in UTC) so the
+    # JSON response always carries an offset regardless of engine.
+    received_at = row.received_at
+    if received_at.tzinfo is None:
+        received_at = received_at.replace(tzinfo=UTC)
+    return _row(row.id, filename=row.filename, sensitivity=row.sensitivity,
+                origin=row.origin, received_at=received_at)
+
+
+@router.get("")
+def list_documents(
+    session: CurrentSession,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = DEFAULT_PAGE,
+    before_received_at: datetime | None = None,
+    before_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    # Keyset on (received_at, id): a page boundary on received_at alone drops
+    # every row that shares the boundary's timestamp.
+    if (before_received_at is None) != (before_id is None):
+        raise HTTPException(status_code=422,
+                            detail="before_received_at and before_id go together")
+    query = (sa.select(*_COLUMNS)
+             .where(documents.c.tenant_id == session.tenant_id)
+             .order_by(documents.c.received_at.desc(), documents.c.id.desc())
+             .limit(limit))
+    if before_received_at is not None and before_id is not None:
+        # SQLite stores DateTime(timezone=True) naively, so a tz-aware
+        # `before_received_at` (parsed from the query string's offset) can
+        # never compare equal to a naive stored value even at the same
+        # instant; strip the offset for that dialect only. Postgres keeps
+        # its own tz-aware value and needs no adjustment.
+        cutoff = before_received_at
+        if app_engine().dialect.name == "sqlite":
+            cutoff = cutoff.astimezone(UTC).replace(tzinfo=None)
+        query = query.where(sa.tuple_(documents.c.received_at, documents.c.id)
+                            < sa.tuple_(sa.literal(cutoff), sa.literal(before_id)))
+    with app_engine().connect() as conn:
+        rows = conn.execute(query).all()
+    return {"items": [_row_of(r) for r in rows]}
+
+
+@router.get("/{document_id}")
+def read_document(document_id: str, session: CurrentSession) -> dict[str, Any]:
+    with app_engine().connect() as conn:
+        row = conn.execute(
+            sa.select(*_COLUMNS, documents.c.tenant_id)
+            .where(documents.c.id == document_id)).one_or_none()
+    owned(session, None if row is None else str(row.tenant_id))
+    assert row is not None  # owned() raised otherwise; for the type checker
+    return _row_of(row)

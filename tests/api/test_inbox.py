@@ -222,3 +222,43 @@ def _count(tenant_id: str) -> int:
     with store_session.app_engine().connect() as conn:
         return conn.execute(sa.select(sa.func.count()).select_from(documents)
                             .where(documents.c.tenant_id == tenant_id)).scalar_one()
+
+
+def test_the_list_is_the_tenants_own_documents_newest_first(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    a, b = two_tenants
+    first = _upload(a, _pdf(), filename="first.pdf").json()["id"]
+    second = _upload(a, _pdf(), filename="second.pdf").json()["id"]
+    _upload(b, _pdf(), filename="theirs.pdf")
+    items = a.get("/api/inbox").json()["items"]
+    assert [i["id"] for i in items][:2] == [second, first]
+    assert all(set(i) == {"id", "filename", "sensitivity", "origin", "received_at"}
+               for i in items)
+    assert "theirs.pdf" not in {i["filename"] for i in items}
+
+
+def test_the_list_pages_by_keyset_and_caps_the_page(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    a, _ = two_tenants
+    ids = [_upload(a, _pdf()).json()["id"] for _ in range(3)]
+    page = a.get("/api/inbox?limit=2").json()["items"]
+    assert [i["id"] for i in page] == [ids[2], ids[1]]
+    last = page[-1]
+    rest = a.get(f"/api/inbox?limit=2&before_received_at={last['received_at']}"
+                 f"&before_id={last['id']}").json()["items"]
+    assert [i["id"] for i in rest] == [ids[0]]
+    assert a.get("/api/inbox?limit=201").status_code == 422
+    assert a.get("/api/inbox?limit=0").status_code == 422
+    assert a.get(f"/api/inbox?before_id={last['id']}").status_code == 422
+
+
+def test_a_document_reads_back_for_its_owner_and_404s_for_anyone_else(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    a, b = two_tenants
+    body = _upload(a, _pdf(), filename="mine.pdf").json()
+    assert a.get(f"/api/inbox/{body['id']}").json() == body
+    assert b.get(f"/api/inbox/{body['id']}").status_code == 404
+    assert a.get("/api/inbox/nope").status_code == 404
