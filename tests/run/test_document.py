@@ -132,3 +132,23 @@ def test_a_failed_document_is_runnable_again(db: RunDb, monkeypatch: pytest.Monk
     outcome = run_document(db.engine, document_id)
     assert outcome.status != "failed"
     assert db.document(document_id).run_attempts == 2
+
+
+def test_a_parse_crash_before_classification_is_recorded_as_failed(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ledger_sense.run.document as run_module
+
+    def _boom(pdf: bytes) -> bool:
+        raise ValueError("page text: $1,234.56")
+    monkeypatch.setattr(run_module, "has_text_layer", _boom)
+    document_id = db.store_pdf(_clean_pdf())
+    outcome = run_document(db.engine, document_id)
+    assert outcome.status == "failed"
+    row = db.document(document_id)
+    assert row.status == "failed"
+    assert row.run_note == "failed: ValueError"
+    assert "1,234.56" not in row.run_note
+    assert row.doc_type is None
+    assert db.claims_for(document_id) == []
+    assert row.run_attempts == 1
