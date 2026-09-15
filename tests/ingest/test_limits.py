@@ -62,6 +62,26 @@ def test_a_rejection_is_surfaced_to_the_reviewer_not_swallowed() -> None:
     assert isinstance(result, RejectedDocument) and result.reason
 
 
+def test_a_rejection_names_its_kind_not_just_a_sentence() -> None:
+    """The route maps 413/422 on `kind`; substring-matching `reason` would
+    break the day the wording changes."""
+    from ledger_sense.ingest.limits import Rejection
+
+    assert parse_within_limits(b"MZ\x90\x00", Limits()) == RejectedDocument(
+        "rejected: not a PDF (bad magic bytes)", Rejection.NOT_PDF)
+    oversized = parse_within_limits(b"%PDF-1.4" + b"\x00" * 26_000_000, Limits())
+    assert isinstance(oversized, RejectedDocument) and oversized.kind is Rejection.TOO_LARGE
+    bomb = parse_within_limits((MALFORMED / "many_pages.pdf").read_bytes(), Limits())
+    assert isinstance(bomb, RejectedDocument) and bomb.kind is Rejection.TOO_MANY_PAGES
+
+
+def test_a_parse_failure_is_unparseable() -> None:
+    from ledger_sense.ingest.limits import Rejection
+
+    result = parse_within_limits((MALFORMED / "corrupted_header.pdf").read_bytes(), Limits())
+    assert isinstance(result, RejectedDocument) and result.kind is Rejection.UNPARSEABLE
+
+
 def test_intake_is_the_only_caller_of_the_parser() -> None:
     """Rule 2. A parse outside intake is a parse without the caps."""
     import ast
