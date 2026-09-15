@@ -14,13 +14,22 @@ class Finding(NamedTuple):
     actual: Money
 
 
+# Rules that read Contract fields an uploaded document cannot supply until a
+# contracts table exists. The extraction run excludes them; a rule that runs
+# against a placeholder original_sum reports a confident, wrong finding.
+# tests/rules/test_contract_surface.py pins this set against the rule bodies.
+CONTRACT_DEPENDENT_RULES: frozenset[str] = frozenset({"A7"})
+
+
 def run_rules(
     app: PayApplication,
     contract: Contract,
     *,
     rule_classes: Iterable[RuleClass] | None = None,
+    exclude: Iterable[str] = frozenset(),
 ) -> list[Finding]:
-    """Run every registered rule (or only the given rule classes) and collect findings.
+    """Run every registered rule (or only the given rule classes, minus `exclude`)
+    and collect findings.
 
     Replaces the `ALL_RULES = [...]` list that was being hand-built at each call
     site. A rule that trusts a defaulted Money("0.00") still reports "consistent"
@@ -28,9 +37,12 @@ def run_rules(
     See `unverifiable_money_fields` for the second question.
     """
     wanted = None if rule_classes is None else frozenset(rule_classes)
+    skipped = frozenset(exclude)
     findings: list[Finding] = []
     for rule in registered_rules().values():
         if wanted is not None and rule.rule_class not in wanted:
+            continue
+        if rule.rule_id in skipped:
             continue
         findings.extend(rule.fn(app, contract))
     return findings

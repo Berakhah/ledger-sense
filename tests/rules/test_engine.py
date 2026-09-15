@@ -5,7 +5,7 @@ from typing import NamedTuple
 from ledger_sense.domain.models import Contract, PayApplication, RetainageTerms
 from ledger_sense.domain.money import RoundingPolicy, money
 from ledger_sense.rules.engine import Finding, run_rules, unverifiable_money_fields
-from ledger_sense.rules.registry import register
+from ledger_sense.rules.registry import register, registered_rules
 
 
 def _contract() -> Contract:
@@ -178,3 +178,32 @@ def test_a1_silent_pass_is_caught_by_the_checkpoint_not_by_a1() -> None:
 
     unverifiable = unverifiable_money_fields(app)
     assert unverifiable == ("lines", "total_completed_and_stored")
+
+
+def test_exclude_skips_exactly_the_named_rules() -> None:
+    @register("T_excluded", "arithmetic")
+    def _excluded(app: PayApplication, contract: Contract) -> list[Finding]:
+        return [Finding("T_excluded", "x", "fired", money("0"), money("1"))]
+
+    @register("T_kept", "arithmetic")
+    def _kept(app: PayApplication, contract: Contract) -> list[Finding]:
+        return [Finding("T_kept", "x", "fired", money("0"), money("1"))]
+
+    fired = {f.rule_id for f in run_rules(_app(), _contract(), exclude={"T_excluded"})}
+    assert "T_kept" in fired
+    assert "T_excluded" not in fired
+
+
+def test_registers_a_throwaway_rule_for_the_isolation_check() -> None:
+    """Paired with the next test. tests/rules/conftest.py's autouse fixture
+    snapshots and restores the registry around every test in this directory;
+    without it, this rule would leak into every test collected after this one."""
+    @register("TEST_ISOLATION_THROWAWAY", "arithmetic")
+    def _throwaway(app: PayApplication, contract: Contract) -> list[Finding]:
+        return []
+
+    assert "TEST_ISOLATION_THROWAWAY" in registered_rules()
+
+
+def test_the_previous_tests_throwaway_rule_did_not_survive() -> None:
+    assert "TEST_ISOLATION_THROWAWAY" not in registered_rules()
