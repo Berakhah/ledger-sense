@@ -1,6 +1,10 @@
 # tests/api/test_auth.py
+from collections.abc import Callable
+from typing import cast
+
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from ledger_sense.api.app import UNGUARDED_PREFIXES, app
 from tests.api.conftest import TenantClient
@@ -10,12 +14,20 @@ client = TestClient(app)
 PROTECTED_PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
                       "/api/inbox", "/api/vendors", "/api/metrics")
 
-# /api/inbox only answers POST (no GET "/") — everything else still has the
-# stub's GET "/" index. Route matching (path + method) happens before any
-# dependency runs, so a GET against a POST-only path 405s without ever
-# reaching require_session; each prefix must therefore be probed with a
-# method it actually serves.
-_PROBE_METHOD = {"/api/inbox": "post"}
+# /api/inbox only answers POST at the bare prefix (no GET "/" index, unlike
+# every other stub) — everything else still has the stub's GET "/". Route
+# matching (path + method) happens before any dependency runs, so a probe
+# against a path/method the route table doesn't actually serve either 405s
+# without reaching require_session, or (a mismatched trailing slash) 307s
+# there first: Starlette's redirect_slashes would make `POST /api/inbox/`
+# read as a pass, via a hop this test never asked for. Each prefix is
+# therefore probed at the exact method and path it serves.
+_PROBE = {"/api/inbox": ("post", "/api/inbox")}
+
+
+def _probe(prefix: str) -> tuple[Callable[..., Response], str]:
+    method_name, path = _PROBE.get(prefix, ("get", f"{prefix}/"))
+    return cast(Callable[..., Response], getattr(client, method_name)), path
 
 
 def test_every_api_route_requires_a_session() -> None:
@@ -39,8 +51,8 @@ def test_every_api_route_requires_a_session() -> None:
 
 @pytest.mark.parametrize("prefix", PROTECTED_PREFIXES)
 def test_an_anonymous_request_is_refused(prefix: str) -> None:
-    method = getattr(client, _PROBE_METHOD.get(prefix, "get"))
-    assert method(f"{prefix}/").status_code == 401
+    method, path = _probe(prefix)
+    assert method(path).status_code == 401
 
 
 def test_a_document_from_another_tenant_is_not_found_rather_than_forbidden(
@@ -80,7 +92,7 @@ def test_a_session_expires() -> None:
                               "password": "changeme-in-test"}).json()["token"]
     from ledger_sense.auth.session import expire_now
     expire_now(token)
-    assert client.post("/api/inbox/", cookies={"session": token}).status_code == 401
+    assert client.post("/api/inbox", cookies={"session": token}).status_code == 401
 
 
 def test_passwords_are_stored_as_argon2_hashes_not_plaintext() -> None:
