@@ -10,6 +10,7 @@ exercises load_document's decrypt path, not a stub.
 test here gets a document row.
 """
 
+import logging
 import pathlib
 import uuid
 from collections.abc import Iterator
@@ -80,6 +81,15 @@ def db(tmp_path: pathlib.Path) -> Iterator[RunDb]:
         config = Config(str(ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(ROOT / "migrations"))
         command.upgrade(config, "head")
+        # migrations/env.py calls logging.config.fileConfig(alembic.ini),
+        # whose default disable_existing_loggers=True silently disables
+        # every logger already created in this process (e.g.
+        # ledger_sense.run.document's), so log.exception() elsewhere in the
+        # suite stops reaching caplog after the first test using this
+        # fixture. Undo that side effect rather than let it leak forward.
+        for logger in logging.Logger.manager.loggerDict.values():
+            if isinstance(logger, logging.Logger):
+                logger.disabled = False
         engine = store_session.app_engine()
         yield RunDb(engine, create_tenant(f"tenant-{uuid.uuid4().hex[:8]}"))
     store_session.reset_app_engine()
