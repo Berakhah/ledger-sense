@@ -60,9 +60,12 @@ def test_rule_source_is_reexported_from_rules_provenance() -> None:
 
 
 def test_labelled_wraps_a_payload_with_sensitivity_and_provenance() -> None:
+    from ledger_sense.boundary import Origin, Sensitivity
     from ledger_sense.provenance import Labelled
-    wrapped = Labelled(payload=b"%PDF-1.4", sensitivity="SYNTHETIC", provenance="corpus")
+    wrapped = Labelled(payload=b"%PDF-1.4", sensitivity=Sensitivity.SYNTHETIC,
+                       origin=Origin.CORPUS, provenance="corpus")
     assert wrapped.payload == b"%PDF-1.4"
+    assert wrapped.sensitivity is Sensitivity.SYNTHETIC
     assert wrapped.provenance == "corpus"
 
 

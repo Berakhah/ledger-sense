@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Protocol, TypeVar, runtime_checkable
 
+from ledger_sense.boundary import Labelled
 from ledger_sense.rules.provenance import RuleSource
 
 __all__ = ["Claim", "ClaimProtocol", "FileSource", "HumanSource", "Labelled", "Method", "RuleSource"]
@@ -86,15 +87,3 @@ class Claim[T]:
     match_quality: float | None = None
     parents: tuple["Claim[object]", ...] = field(default_factory=tuple)
     caveat: str | None = None
-
-
-U = TypeVar("U")
-
-
-@dataclass(frozen=True)
-class Labelled[U]:
-    """A wrapper for a payload with sensitivity classification and provenance tracking."""
-
-    payload: U
-    sensitivity: object
-    provenance: str
