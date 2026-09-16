@@ -17,8 +17,9 @@ hands back the stored id as `doc_id`, and that is what e2e/seed.ts reads and
 navigates with. Its label is always SYNTHETIC (the only label CORPUS origin
 can produce), and that label is what /api/inbox/{id} hands back, so "the demo
 holds no client data" is a property the API can be asked about rather than a
-claim in a README. The exception rows are unrelated stub rows, kept in
-`stub_resources` until /api/review is real, and are labelled SYNTHETIC too.
+claim in a README. The exception rows land in the real `findings` table now
+that /api/review is real, tied to the freshly minted document id, and carry
+the same SYNTHETIC-only guarantee.
 
 One consequence of the document row no longer being keyed by the caller's
 `doc_id`: repeated seed() calls with the same `doc_id` accumulate document
@@ -66,7 +67,7 @@ from typing import Annotated
 from fastapi import Response
 from pydantic import BaseModel, Field
 
-from ledger_sense.api._stub_routes import STUB_METADATA, stub_resources
+from ledger_sense.api._stub_routes import STUB_METADATA
 from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.auth.session import SESSION_TTL, issue_session
 from ledger_sense.boundary import Origin, Sensitivity
@@ -74,6 +75,7 @@ from ledger_sense.corpus.generate import generate
 from ledger_sense.ingest.intake import accept_document
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import store_document
+from ledger_sense.store.retention import findings
 from ledger_sense.store.session import app_engine
 
 SEED_PATH = "/api/fixtures/seed"
@@ -146,14 +148,13 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     tenant_id = create_tenant(f"demo-{suffix}")
     user_id = create_user(tenant_id, f"demo-{suffix}@example.invalid", uuid.uuid4().hex)
 
-    exception_rows = [{"id": _exception_id(body.doc_id, i), "tenant_id": tenant_id,
-                       "sensitivity": SYNTHETIC} for i in range(body.exceptions)]
-
     # The document goes through the same door as an upload: accept_document
     # labels it from its origin (CORPUS → SYNTHETIC), store_document writes
     # the only documents row. No stub row for the document any more — the
     # demo-profile proof now runs against the real table. The exception rows
-    # stay in stub_resources until /api/review is real.
+    # land in the real findings table, tied to this freshly minted document
+    # id — findings.document_id is a foreign key, so they cannot exist ahead
+    # of it the way the old stub rows could.
     _, _, payload = generate(seed=0, error="clean")
     doc = accept_document(payload, origin=Origin.CORPUS,
                           provenance=f"corpus://seed/{tenant_id}/{user_id}")
@@ -162,10 +163,19 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
                                      blobs=blob_store_from_environment(),
                                      received_at=datetime.now(UTC),
                                      filename=f"{body.doc_id}.pdf")
-        conn.execute(stub_resources.delete().where(
-            stub_resources.c.id.startswith(f"{body.doc_id}:exc:", autoescape=True)))
-        if exception_rows:
-            conn.execute(stub_resources.insert(), exception_rows)
+        conn.execute(findings.delete().where(
+            findings.c.id.startswith(f"{body.doc_id}:exc:", autoescape=True)))
+        finding_rows = [{
+            "id": _exception_id(body.doc_id, i), "tenant_id": tenant_id,
+            "document_id": document_id, "rule_id": "A2",
+            "field": f"line[{i:03d}].total_completed_and_stored",
+            "message": "previous + this period + stored does not equal the total",
+            "expected": "1000.00", "actual": "1005.00", "page": 0,
+            "x0": 288.0, "top": 100.0 + i * 18.0, "x1": 368.0, "bottom": 112.0 + i * 18.0,
+            "state": "open", "created_at": datetime.now(UTC),
+        } for i in range(body.exceptions)]
+        if finding_rows:
+            conn.execute(findings.insert(), finding_rows)
 
     response.set_cookie(
         "session",

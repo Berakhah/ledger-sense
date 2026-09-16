@@ -71,18 +71,25 @@ in Task 14, not here.
     that module or that class, so Phase 6 does not import. Every handler below constructs one and returns it
     alongside the claim.
 
-**Three cross-cutting requirements this router must satisfy:**
+**One cross-cutting requirement this router must satisfy, and two the audit raised that this slice defers:**
 
 1. **Mount through `register` (F-25).** `app.include_router(router)` leaves the queue unauthenticated. Every
    handler resolves the exception, then calls `owned(session, exception.tenant_id)` — which raises **404, not
    403**, because a 403 tells a prober the exception exists.
-2. **Every accept and edit calls `ProfileCache.learn` (F-17).** This is the loop spec §4.3 calls *"the
-   commercial one"* and it had no implementing task: `ProfileCache` was built in Task 19 and never called.
-   `edit` writes the corrected field's bbox against the document's fingerprint; the next document from the same
-   producer extracts that field without a correction.
-3. **Every action appends a calibration label (F-46), with the basis derived from the document's sensitivity,
-   never from a parameter.** Phase 6 Task 42 asserts `"basis" not in signature(record_action).parameters`, so no
-   caller can promote a synthetic review session to field evidence.
+
+2. **Deferred — F-17, "every accept/edit calls `ProfileCache.learn`."** Not wired in this slice. The loop has
+   two disconnected halves: the runner never passes a `ProfileCache` into `assemble` (the `cache=` parameter
+   exists, unused), and `ProfileKey` is computed from raw PDF bytes — the API would have to decrypt
+   `CLIENT_CONFIDENTIAL` documents just to key the write. Wiring one half here would make a `learn()` call that
+   nothing ever reads. Ships whole, as its own "profile learning" slice, after this screen exists — the
+   reviewer's confirm/move-box action is the only edit that carries the new geometry `learn()` needs.
+   Tracked in `2026-08-29-REVISIONS.md` F-17 follow-up.
+
+3. **Deferred — F-46, "every action appends a calibration label."** No new work needed here or later in this
+   slice. The claims table already records the label: a `HUMAN` claim on a field with `observed_at`, next to the
+   `DETERMINISTIC` claim it judges. Phase 6 derives `(predicted, actual)` pairs from that with one query; basis
+   comes from the document's `sensitivity` column, so no caller can spoof it. No separate labels table, no
+   `ReviewAction` class until Phase 6 says what it needs. Tracked in `2026-08-29-REVISIONS.md` F-46 follow-up.
 
 - [ ] **Step 1: Write the failing test**
 

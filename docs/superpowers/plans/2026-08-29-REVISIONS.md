@@ -272,6 +272,13 @@ exist.
 `learn()` with the corrected bbox; an integration test asserts the second document needs no correction.
 **Fixed in:** Phase 2 Tasks 18, 19; Phase 4 Task 28.
 
+**Follow-up (2026-09-16):** deferred out of Phase 4 Task 28 / review-queue API Slice 1, with sign-off. Wiring
+`learn()` into the API alone would write a signal nothing reads — the runner still never passes a `ProfileCache`
+into `assemble`, and `ProfileKey` is computed from raw PDF bytes, which the API would have to decrypt
+`CLIENT_CONFIDENTIAL` documents to compute. Ships whole as its own "profile learning" slice after the review
+screen exists, once the reviewer can confirm/move the box — the only edit that carries the geometry `learn()`
+needs. Recorded in the Slice 1 spec (`2025-03-11-ledger-sense-phase-4-review-ui.md`, Task 28).
+
 ### F-18 · S1 · The profile cache is shared across clients with no tenant scope
 
 The key is `producer:column_hash`. Two clients whose subcontractors use the same accounting package share a
@@ -593,6 +600,13 @@ explicitly *not* a probability, which is why it must be calibrated before it rou
 phase already makes. `Claim.confidence` stays `None` for `DETERMINISTIC`; `Claim.match_quality: float` is the new
 field, and the router consumes that. **Fixed in:** Phase 2 Task 18; Phase 6 Tasks 40, 41.
 
+**Follow-up (2026-09-16):** the "every action appends a calibration label" half of this finding, as it bears on
+Phase 4 Task 28 / review-queue API Slice 1, is already satisfied — no new work deferred or otherwise. The claims
+table records a `HUMAN` claim with `observed_at` next to the `DETERMINISTIC` claim it judges. Phase 6 derives
+`(predicted, actual)` pairs from that with one query, and basis comes from the document's `sensitivity` column,
+so no caller can spoof it. No separate labels table, no `ReviewAction` class until Phase 6 says what it needs.
+Recorded in the Slice 1 spec (`2025-03-11-ledger-sense-phase-4-review-ui.md`, Task 28).
+
 ### F-47 · S1 · `MIN_LABELS_FOR_FIELD = 200` cannot support a 99.5% claim
 
 **Verified:** a 95% lower confidence bound at 99.5% accuracy needs, by the rule of three, `n ≥ 3/0.005 = 600`
@@ -690,7 +704,7 @@ Each is required by the spec or the definition of done and is implemented by not
 | G-8 | **`gitleaks`, `pip-audit`, `npm audit`, SBOM** | `00` §3.4, §8; F-31 | Three hard constraints unenforced |
 | G-9 | **E2E backend seeding** — every Playwright test navigates to `/review/doc-50` with no task creating the fixture route | Tasks 30–33 | Every E2E test 404s |
 | G-10 | **Duplicate-history and vendor persistence** | `02` §5; F-37, F-38 | I1–I3 do not survive a restart |
-| G-11 | **The profile-cache learning loop** | Spec §4.3; F-17 | The central commercial claim is unimplemented |
+| G-11 | **The profile-cache learning loop** | Spec §4.3; F-17 | The central commercial claim is unimplemented — deferred by sign-off (2026-09-16) to a dedicated "profile learning" slice; see F-17 follow-up |
 
 G-1 to G-4 and G-9 together are roughly a week the eight-week plan does not contain.
 **Fix:** a new **Phase 0 — Platform** document scheduled in week 5 alongside Task 1, carrying P1–P7. See
