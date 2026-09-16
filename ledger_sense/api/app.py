@@ -35,6 +35,7 @@ from ledger_sense.api.baseline import router as baseline_router
 from ledger_sense.api.deps import register
 from ledger_sense.api.fixtures import SEED_PATH, demo_profile_enabled, seed
 from ledger_sense.api.inbox import router as inbox_router
+from ledger_sense.api.review import router as review_router
 from ledger_sense.auth.models import authenticate
 from ledger_sense.auth.session import SESSION_TTL, issue_session
 from ledger_sense.ingest.limits import DEFAULT_LIMITS
@@ -210,12 +211,14 @@ def build_app() -> FastAPI:
         app.add_api_route(SEED_PATH, seed, methods=["POST"], status_code=201,
                           tags=["fixtures"])
 
-    # /api/baseline and /api/inbox are not among the three UNGUARDED_PREFIXES
-    # exceptions above (unlike /api/fixtures/seed) and follow the same profile
-    # discipline as any other normal route: register() applies require_session,
-    # and each is available whichever profile this process runs under.
+    # /api/baseline, /api/inbox and /api/review are not among the three
+    # UNGUARDED_PREFIXES exceptions above (unlike /api/fixtures/seed) and
+    # follow the same profile discipline as any other normal route:
+    # register() applies require_session, and each is available whichever
+    # profile this process runs under.
     register(app, baseline_router)
     register(app, inbox_router)
+    register(app, review_router)
 
     for router in stub_routers():
         register(app, router)

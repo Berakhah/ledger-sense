@@ -9,17 +9,19 @@ require_session runs, and the test proving the boundary would pass for the
 wrong reason. Same for owned(): 404-not-403 needs a real handler that looks a
 resource up and hands its tenant_id to owned().
 
-So each of the five prefixes gets a trivial placeholder, mounted through
+So each of the remaining prefixes gets a trivial placeholder, mounted through
 register() like everything else, and `stub_resources` holds the bare
-(id, tenant_id, sensitivity) rows the three ownership-checked handlers read.
-Documents, exceptions and their real tables belong to the extraction and
-review-queue phases.
+(id, tenant_id, sensitivity) rows the ownership-checked handler reads.
+Documents and their real tables belong to the extraction and review-queue
+phases.
 
-**Replace, do not add alongside**: when the real /api/review router lands,
-delete this file's review entries — and delete the file outright once the last
-prefix is real. `stub_resources` goes with it; it is created by the test
-fixtures, never by a migration, so nothing in a client's database depends on
-it.
+**/api/review is real** — ledger_sense/api/review.py, registered in
+api/app.py — and is no longer among these prefixes.
+
+**Replace, do not add alongside**: when the next real router lands, delete
+this file's entry for it — and delete the file outright once the last prefix
+is real. `stub_resources` goes with it; it is created by the test fixtures,
+never by a migration, so nothing in a client's database depends on it.
 """
 
 import uuid
@@ -48,8 +50,7 @@ stub_resources = sa.Table(
     sa.Index("ix_stub_resources_tenant_id_id", "tenant_id", "id"),
 )
 
-PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
-            "/api/vendors", "/api/metrics")
+PREFIXES = ("/api/baseline", "/api/reconciliation", "/api/vendors", "/api/metrics")
 
 
 def seed_resource(tenant_id: str) -> str:
@@ -88,11 +89,6 @@ def _read_document(doc_id: str, session: CurrentSession) -> dict[str, str]:
     return {"id": doc_id}
 
 
-def _accept_exception(exc_id: str, session: CurrentSession) -> dict[str, str]:
-    owned(session, _owner_of(exc_id))
-    return {"id": exc_id, "status": "accepted"}
-
-
 def stub_routers() -> list[APIRouter]:
     routers = []
     for prefix in PREFIXES:
@@ -100,8 +96,5 @@ def stub_routers() -> list[APIRouter]:
         router.add_api_route("/", _index, methods=["GET"])
         if prefix == "/api/reconciliation":
             router.add_api_route("/{doc_id}", _read_document, methods=["GET"])
-        if prefix == "/api/review":
-            router.add_api_route("/exceptions/{exc_id}/accept", _accept_exception,
-                                 methods=["POST"])
         routers.append(router)
     return routers

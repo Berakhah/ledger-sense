@@ -138,6 +138,9 @@ findings = sa.Table(
     sa.Column("bottom", sa.Float, nullable=True),
     sa.Column("state", sa.Text, nullable=False, server_default="open"),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    # 0006: why a reviewer rejected this finding as a false positive. NULL for
+    # every finding never rejected, and never for the rule's own `message`.
+    sa.Column("reason", sa.Text, nullable=True),
     sa.CheckConstraint(_one_of("state", FINDING_STATES), name="ck_findings_state"),
     sa.Index("ix_findings_document_order", "document_id", "page", "top", "x0"),
     sa.Index("ix_findings_tenant_id_id", "tenant_id", "id"),

@@ -7,15 +7,19 @@ these tests fail rather than passing against a schema no deployment has.
 
 `two_tenants` hands back two live, logged-in clients — separate tenants,
 separate users, separate sessions — because a cross-tenant test is worthless
-if either side is faked. What it does NOT do is model documents or review
-exceptions: those rows live in `stub_resources` (see api/_stub_routes.py) and
-carry nothing but an id and an owner, which is all an ownership check reads.
-The real tables arrive with the phases that own them.
+if either side is faked. `create_document()` models a document for the
+still-stub prefixes (reconciliation, vendors, metrics): those rows live in
+`stub_resources` (see api/_stub_routes.py) and carry nothing but an id and an
+owner, which is all an ownership check reads. `seed_exception()` is for the
+real /api/review router, so it writes real `documents` and `findings` rows
+directly by SQL — findings.document_id is a foreign key, so it needs a real
+document to point at, not a stub row.
 """
 
 import pathlib
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
@@ -26,7 +30,9 @@ from httpx import Response
 from ledger_sense.api._stub_routes import STUB_METADATA, seed_resource
 from ledger_sense.api.app import _login_hits, app
 from ledger_sense.auth.models import create_tenant, create_user
+from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.store import session as store_session
+from ledger_sense.store.retention import documents, findings
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
@@ -97,7 +103,22 @@ class TenantClient:
         return seed_resource(self.tenant_id)
 
     def seed_exception(self) -> str:
-        return seed_resource(self.tenant_id)
+        document_id = uuid.uuid4().hex
+        exc_id = uuid.uuid4().hex
+        with store_session.app_engine().begin() as conn:
+            conn.execute(documents.insert().values(
+                id=document_id, tenant_id=self.tenant_id, blob_id=None,
+                received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
+                origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
+                filename="fixture.pdf"))
+            conn.execute(findings.insert().values(
+                id=exc_id, tenant_id=self.tenant_id, document_id=document_id,
+                rule_id="A2", field="line[000].total_completed_and_stored",
+                message="previous + this period + stored does not equal the total",
+                expected="1000.00", actual="1005.00", page=0,
+                x0=0.0, top=0.0, x1=10.0, bottom=10.0,
+                state="open", created_at=datetime.now(UTC)))
+        return exc_id
 
 
 @pytest.fixture
