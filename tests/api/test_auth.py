@@ -15,14 +15,19 @@ PROTECTED_PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
                       "/api/inbox", "/api/vendors", "/api/metrics")
 
 # /api/inbox only answers POST at the bare prefix (no GET "/" index, unlike
-# every other stub) — everything else still has the stub's GET "/". Route
-# matching (path + method) happens before any dependency runs, so a probe
-# against a path/method the route table doesn't actually serve either 405s
-# without reaching require_session, or (a mismatched trailing slash) 307s
-# there first: Starlette's redirect_slashes would make `POST /api/inbox/`
-# read as a pass, via a hop this test never asked for. Each prefix is
-# therefore probed at the exact method and path it serves.
-_PROBE = {"/api/inbox": ("post", "/api/inbox")}
+# every other stub) — everything else still has the stub's GET "/". /api/review
+# is real (Task 28) and was never given a bare "/" index either — its
+# narrowest GET is the exceptions list. Route matching (path + method) happens
+# before any dependency runs, so a probe against a path/method the route table
+# doesn't actually serve either 405s without reaching require_session, or (a
+# mismatched trailing slash) 307s there first: Starlette's redirect_slashes
+# would make `POST /api/inbox/` read as a pass, via a hop this test never
+# asked for. Each prefix is therefore probed at the exact method and path it
+# serves.
+_PROBE = {
+    "/api/inbox": ("post", "/api/inbox"),
+    "/api/review": ("get", "/api/review/documents/probe/exceptions"),
+}
 
 
 def _probe(prefix: str) -> tuple[Callable[..., Response], str]:
