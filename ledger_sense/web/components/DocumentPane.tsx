@@ -24,21 +24,32 @@ interface Props {
 export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    const loadingTask = pdfjs.getDocument({ url: pdfUrl })
+    setLoadError(null)
     void (async () => {
-      const doc = await pdfjs.getDocument({ url: pdfUrl }).promise
-      const pdfPage = await doc.getPage(page + 1)
-      const viewport = pdfPage.getViewport({ scale })
-      const canvas = canvasRef.current
-      if (!canvas || cancelled) return
-      canvas.width = viewport.width
-      canvas.height = viewport.height
-      setSize({ width: viewport.width, height: viewport.height })
-      await pdfPage.render({ canvas, viewport }).promise
+      try {
+        const doc = await loadingTask.promise
+        if (cancelled) return
+        const pdfPage = await doc.getPage(page + 1)
+        const viewport = pdfPage.getViewport({ scale })
+        const canvas = canvasRef.current
+        if (!canvas || cancelled) return
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        setSize({ width: viewport.width, height: viewport.height })
+        await pdfPage.render({ canvas, viewport }).promise
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Could not load document')
+      }
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      void loadingTask.destroy()
+    }
   }, [pdfUrl, page, scale])
 
   const focus = useMemo(
@@ -52,6 +63,12 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
       style={{ width: size.width, height: size.height }}
       data-testid="document-pane"
     >
+      {loadError && (
+        <div role="alert" data-testid="document-pane-error" className="text-flag">
+          Could not load document: {loadError}
+        </div>
+      )}
+
       <canvas
         ref={canvasRef}
         className="block"
@@ -67,8 +84,8 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
        * hole appears — so the layer dimmed the field under review, which is the
        * opposite of the intent, on the signature screen.
        *
-       * Four rectangles. Fewer lines than the polygon, works everywhere, and
-       * each one animates independently under prefers-reduced-motion. */}
+       * Four rectangles instead: fewer lines than the polygon, and correct
+       * under every fill rule. */}
       {focus && (
         <div aria-hidden data-testid="dim-layer" className="pointer-events-none">
           {[
@@ -80,8 +97,7 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
               width: Math.max(0, size.width - focus.left - focus.width),
               height: focus.height },
           ].map((rect, i) => (
-            <div key={i} className="absolute bg-ink/40"
-                 style={{ position: 'absolute', ...rect }} />
+            <div key={i} className="absolute bg-ink/40" style={rect} />
           ))}
         </div>
       )}
@@ -92,7 +108,7 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
           key={a.id}
           data-testid={`accepted-rule-${a.id}`}
           className="absolute border-b-2 border-accent pointer-events-none"
-          style={{ position: 'absolute', ...toOverlayStyle(a.bbox, scale) }}
+          style={toOverlayStyle(a.bbox, scale)}
         />
       ))}
 
@@ -100,7 +116,7 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
         <div
           data-testid="focus-box"
           className="absolute border-2 border-accent pointer-events-none"
-          style={{ position: 'absolute', ...focus }}
+          style={focus}
         />
       )}
     </div>
