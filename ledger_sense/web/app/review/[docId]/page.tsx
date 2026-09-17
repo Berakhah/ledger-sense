@@ -9,5 +9,7 @@ export default async function ReviewPage({
   params: Promise<{ docId: string }>
 }) {
   const { docId } = await params
-  return <ReviewQueue docId={docId} />
+  // Keyed: a client-side navigation between documents remounts the queue
+  // (fresh model, guards and type-ahead) instead of acting on stale refs.
+  return <ReviewQueue key={docId} docId={docId} />
 }

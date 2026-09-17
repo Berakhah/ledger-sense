@@ -65,6 +65,13 @@ describe('useReviewKeys', () => {
     expect(h.onNext).not.toHaveBeenCalled()
   })
 
+  it('ignores auto-repeat, so a held Enter does not accept a stream of exceptions', () => {
+    const h = setup()
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', repeat: true, cancelable: true, bubbles: true }))
+    expect(h.onAccept).not.toHaveBeenCalled()
+  })
+
   it('prevents default so J does not scroll the document pane', () => {
     setup()
     expect(press('j').defaultPrevented).toBe(true)

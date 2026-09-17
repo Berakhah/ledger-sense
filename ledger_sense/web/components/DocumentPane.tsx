@@ -25,7 +25,11 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null)
 
+  // Fetch once per document. A scale change (the review queue derives scale
+  // from its container width, so every resize tick is one) must re-render,
+  // never re-fetch the bytes.
   useEffect(() => {
     let cancelled = false
     // withCredentials: the API is a separate origin and the bytes are behind
@@ -33,18 +37,11 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
     // is anonymous and 401s.
     const loadingTask = pdfjs.getDocument({ url: pdfUrl, withCredentials: true })
     setLoadError(null)
+    setDoc(null)
     void (async () => {
       try {
-        const doc = await loadingTask.promise
-        if (cancelled) return
-        const pdfPage = await doc.getPage(page + 1)
-        const viewport = pdfPage.getViewport({ scale })
-        const canvas = canvasRef.current
-        if (!canvas || cancelled) return
-        canvas.width = viewport.width
-        canvas.height = viewport.height
-        setSize({ width: viewport.width, height: viewport.height })
-        await pdfPage.render({ canvas, viewport }).promise
+        const loaded = await loadingTask.promise
+        if (!cancelled) setDoc(loaded)
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Could not load document')
       }
@@ -53,7 +50,35 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
       cancelled = true
       void loadingTask.destroy()
     }
-  }, [pdfUrl, page, scale])
+  }, [pdfUrl])
+
+  // Render the page at the current scale from the already-loaded document.
+  useEffect(() => {
+    if (!doc) return
+    let cancelled = false
+    // pdf.js refuses two overlapping render() calls on one canvas, so a
+    // superseded render is cancelled, not left to finish.
+    let inFlight: pdfjs.RenderTask | null = null
+    void (async () => {
+      try {
+        const pdfPage = await doc.getPage(page + 1)
+        const viewport = pdfPage.getViewport({ scale })
+        const canvas = canvasRef.current
+        if (!canvas || cancelled) return
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        setSize({ width: viewport.width, height: viewport.height })
+        inFlight = pdfPage.render({ canvas, viewport })
+        await inFlight.promise
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Could not load document')
+      }
+    })()
+    return () => {
+      cancelled = true
+      inFlight?.cancel()
+    }
+  }, [doc, page, scale])
 
   const focus = useMemo(
     () => (focusBox ? toOverlayStyle(focusBox, scale) : null),
