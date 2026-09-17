@@ -102,6 +102,78 @@ test('Enter before the queue has loaded accepts nothing', async ({ page }) => {
   await expect(page.getByTestId('progress')).toHaveText('0 / 3')
 })
 
+test('a write that fails leaves a marker on the item until it is retried', async ({ page }) => {
+  const docId = await seedDocument(page, docKey('doc-3'), 3)
+  await page.goto(`/review/${docId}`)
+  await expect(page.getByTestId('progress')).toHaveText('0 / 3')
+
+  // The accept fails; the resync GETs that follow are untouched and succeed.
+  await page.route('**/api/review/exceptions/*/accept', (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{}' }))
+  await page.keyboard.press('Enter')
+
+  // Advanced on the keystroke; the failure shows up where the reviewer is
+  // not, and on the item when they go back to it.
+  await expect(page.getByRole('status')).toContainText('2 of 3')
+  await expect(page.getByTestId('failed-count')).toBeVisible()
+  await expect(page.getByTestId('progress')).toHaveText('0 / 3')
+  await page.keyboard.press('k')
+  await expect(page.getByTestId('item-failure')).toBeVisible()
+  await expect(page.getByTestId('failed-count')).toHaveCount(0)
+
+  await page.unroute('**/api/review/exceptions/*/accept')
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('progress')).toHaveText('1 / 3')
+  await expect(page.getByTestId('item-failure')).toHaveCount(0)
+  await expect(page.getByTestId('failed-count')).toHaveCount(0)
+})
+
+test('a failed write whose resync also fails is never reported as cleared', async ({ page }) => {
+  const docId = await seedDocument(page, docKey('doc-2'), 2)
+  await page.goto(`/review/${docId}`)
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2')
+
+  const fail = (route: import('@playwright/test').Route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+  await page.route('**/api/review/exceptions/*/accept', fail)
+  await page.route('**/api/review/documents/*/exceptions', fail)
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('unverified-count')).toBeVisible()
+  await expect(page.getByTestId('all-cleared')).toHaveCount(0)
+
+  // Writes work again: the next successful one resyncs rather than merely
+  // recounting, so the unverified item surfaces as a marked, open exception.
+  await page.unroute('**/api/review/exceptions/*/accept')
+  await page.unroute('**/api/review/documents/*/exceptions')
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2')
+  await expect(page.getByTestId('unverified-count')).toHaveCount(0)
+  await expect(page.getByTestId('all-cleared')).toHaveCount(0)
+  await page.keyboard.press('k')
+  await expect(page.getByTestId('item-failure')).toBeVisible()
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('progress')).toHaveText('2 / 2')
+  await expect(page.getByTestId('all-cleared')).toBeVisible()
+})
+
+test('Escape drops an edit in progress and Enter then accepts the original', async ({ page }) => {
+  const docId = await seedDocument(page, docKey('doc-3'), 3)
+  await page.goto(`/review/${docId}`)
+  await page.keyboard.press('e')
+  await expect(page.getByTestId('edit-input')).toBeFocused()
+  const original = await page.getByTestId('edit-input').inputValue()
+
+  await page.keyboard.type('x')
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('edit-input')).not.toBeFocused()
+  await expect(page.getByTestId('edit-input')).toHaveValue(original)
+
+  const accepted = page.waitForRequest((r) => r.url().endsWith('/accept') && r.method() === 'POST')
+  await page.keyboard.press('Enter')
+  await accepted
+  await expect(page.getByTestId('progress')).toHaveText('1 / 3')
+})
+
 test('a write the server has already applied resyncs instead of reopening', async ({ page }) => {
   const key = docKey('doc-2')
   const docId = await seedDocument(page, key, 2)

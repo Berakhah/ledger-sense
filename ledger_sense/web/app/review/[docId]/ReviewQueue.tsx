@@ -240,7 +240,10 @@ export function ReviewQueue({ docId }: { docId: string }) {
   // own request simply has not answered yet.
   const inFlight = useRef(new Set<string>())
   // Failures waiting for the next committed resync to turn them into markers.
+  // `unverified` mirrors its size for rendering: while it is non-zero the
+  // local model has closed something the server has not confirmed.
   const pendingFailures = useRef(new Map<string, string>())
+  const [unverified, setUnverified] = useState(0)
 
   /** Replace the local model with the server's. The cursor stays where it is
    *  (clamped); Enter on a now-closed item advances, so nobody is stranded.
@@ -267,6 +270,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
     // open; every marker outlives its item only while the item is open.
     const parked = new Map(pendingFailures.current)
     pendingFailures.current.clear()
+    setUnverified(0)
     setFailures((prev) => {
       const next = { ...prev }
       for (const [id, detail] of parked) {
@@ -340,7 +344,16 @@ export function ReviewQueue({ docId }: { docId: string }) {
           const box: AcceptedBox = { id: item.id, page: item.page, bbox: item.bbox }
           setAccepted((prev) => [...prev, box])
         }
-        refetchProgress()
+        // A parked failure whose resync itself failed is still unverified:
+        // the next successful write is the next chance to resync, not just
+        // to recount.
+        if (pendingFailures.current.size > 0) {
+          void resync().catch((resyncErr: unknown) => {
+            setActionError(resyncErr instanceof Error ? resyncErr.message : 'Could not reload the queue')
+          })
+        } else {
+          refetchProgress()
+        }
       })
       .catch(async (err: unknown) => {
         inFlight.current.delete(item.id)
@@ -348,6 +361,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
         // one that superseded it) applies every parked failure against the
         // server's list, so a superseded resync neither sets nor loses one.
         pendingFailures.current.set(item.id, err instanceof Error ? err.message : 'the write failed')
+        setUnverified(pendingFailures.current.size)
         try {
           await resync()
         } catch (resyncErr: unknown) {
@@ -373,16 +387,38 @@ export function ReviewQueue({ docId }: { docId: string }) {
     focusQueue()
   }, [actOnCurrent, focusQueue])
 
+  /** E and R on a closed item say so, like Enter does, rather than focusing
+   *  a disabled input. */
+  const closedNotice = useCallback((): boolean => {
+    const item = model.current.items[model.current.cursor]
+    if (!item || item.state === 'open') return false
+    setActionError(`This exception is already ${STATE_LABEL[item.state].toLowerCase()}.`)
+    return true
+  }, [])
+
   const onEdit = useCallback(() => {
+    if (closedNotice()) return
     const input = editRef.current
     if (!input) return
     input.focus()
     input.select()
-  }, [])
+  }, [closedNotice])
 
   const onReject = useCallback(() => {
+    if (closedNotice()) return
     reasonRef.current?.focus()
-  }, [])
+  }, [closedNotice])
+
+  /** Escape: drop whatever was typed, hand the keys back to the queue. */
+  const cancelEdit = useCallback(() => {
+    setEditValue(model.current.items[model.current.cursor]?.actual ?? '')
+    focusQueue()
+  }, [focusQueue])
+
+  const cancelReject = useCallback(() => {
+    setReason('')
+    focusQueue()
+  }, [focusQueue])
 
   // Type-ahead, for navigation and focus only. A reviewer who presses J or E
   // while the queue is still loading has said where they want to be; the
@@ -422,7 +458,9 @@ export function ReviewQueue({ docId }: { docId: string }) {
 
   const total = progress?.total ?? items.length
   const cleared = progress?.cleared ?? 0
-  const allCleared = items.length > 0 && items.every((e) => e.state !== 'open')
+  // "All cleared" is the server's word, not the local model's: the count
+  // must say nothing remains AND nothing may be waiting on a resync.
+  const allCleared = items.length > 0 && unverified === 0 && progress?.remaining === 0
   const failedCount = Object.keys(failures).length
   const focusBox: BBox | null = current?.bbox ?? null
 
@@ -488,6 +526,12 @@ export function ReviewQueue({ docId }: { docId: string }) {
                   Still open — the last write failed: {failures[current.id]}
                 </p>
               )}
+              {unverified > 0 && (
+                <p data-testid="unverified-count" className="mt-3 text-sm text-flag">
+                  {unverified} {unverified === 1 ? 'write' : 'writes'} failed and the queue could not be
+                  reloaded to check {unverified === 1 ? 'it' : 'them'} — the count above may be behind.
+                </p>
+              )}
               {failedCount > 0 && failures[current.id] === undefined && (
                 <p data-testid="failed-count" className="mt-3 text-sm text-flag">
                   {failedCount} {failedCount === 1 ? 'exception' : 'exceptions'} could not be written and{' '}
@@ -513,7 +557,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
                       submitEdit(editValue)
                     } else if (e.key === 'Escape') {
                       e.preventDefault()
-                      focusQueue()
+                      cancelEdit()
                     }
                   }}
                 />
@@ -565,7 +609,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
                       submitReject(reason)
                     } else if (e.key === 'Escape') {
                       e.preventDefault()
-                      focusQueue()
+                      cancelReject()
                     }
                   }}
                 />
@@ -578,21 +622,26 @@ export function ReviewQueue({ docId }: { docId: string }) {
               )}
 
               <div className="mt-5 flex flex-wrap gap-2 text-sm">
-                <button type="button" className="border border-rule px-3 py-1" onClick={onAccept}>
-                  Accept <kbd className="text-ink-muted">Enter</kbd>
-                </button>
-                <button type="button" className="border border-rule px-3 py-1" onClick={onEdit}>
-                  Edit <kbd className="text-ink-muted">E</kbd>
-                </button>
-                <button type="button" className="border border-rule px-3 py-1" onClick={onReject}>
-                  Reject <kbd className="text-ink-muted">R</kbd>
-                </button>
-                <button type="button" className="border border-rule px-3 py-1" onClick={onPrev}>
-                  Previous <kbd className="text-ink-muted">K</kbd>
-                </button>
-                <button type="button" className="border border-rule px-3 py-1" onClick={onNext}>
-                  Next <kbd className="text-ink-muted">J</kbd>
-                </button>
+                {/* The shortcut is announced through aria-keyshortcuts; the
+                    visible <kbd> is hidden from the accessible name so the
+                    button reads "Accept", not "Accept Enter". */}
+                {([
+                  ['Accept', 'Enter', onAccept],
+                  ['Edit', 'E', onEdit],
+                  ['Reject', 'R', onReject],
+                  ['Previous', 'K', onPrev],
+                  ['Next', 'J', onNext],
+                ] as const).map(([label, shortcut, action]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className="border border-rule px-3 py-1"
+                    aria-keyshortcuts={shortcut}
+                    onClick={action}
+                  >
+                    {label} <kbd aria-hidden="true" className="text-ink-muted">{shortcut}</kbd>
+                  </button>
+                ))}
                 <button
                   type="button"
                   data-testid="jump-to-document"
