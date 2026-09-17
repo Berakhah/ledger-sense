@@ -126,7 +126,8 @@ jobs:
       # gate too — the frontend's equivalent of `mypy --strict`.
       - run: npm run build
 
-  accessibility:
+  e2e:
+    name: e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +139,12 @@ jobs:
       # playwright.config.ts's webServer brings up the demo compose stack
       # (`docker compose --profile demo up --build`) itself; ubuntu-latest
       # ships Docker preinstalled, so no separate compose step is needed.
-      - run: npx playwright test ledger_sense/web/e2e/test_accessibility.spec.ts
+      # The whole testDir (playwright.config.ts), not just the accessibility
+      # spec: review.spec.ts (the fifty-exception keyboard-only run),
+      # reconciliation.spec.ts, accumulating_rule.spec.ts and
+      # test_baseline_screen.spec.ts all pay for the same docker-compose
+      # stack and deserve the same CI enforcement.
+      - run: npx playwright test
 
   supply-chain:
     runs-on: ubuntu-latest
