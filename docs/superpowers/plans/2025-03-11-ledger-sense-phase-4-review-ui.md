@@ -852,11 +852,14 @@ replaced the item list without touching `accepted`, so a field the server had cl
 The Playwright spec lives at `ledger_sense/web/e2e/accumulating_rule.spec.ts` (the suite's real
 `testDir`) and adds a resync case to the three below. No `useAcceptedBoxes.ts` exists.
 
-**Files:**
-- Create: `ledger_sense/web/lib/useAcceptedBoxes.ts`
-- Modify: `ledger_sense/web/app/review/[docId]/page.tsx`
-- Test: `ledger_sense/web/lib/useAcceptedBoxes.test.ts`
-- Test: `tests/e2e/test_accumulating_rule.spec.ts`
+**Files (as built — the original list is struck through):**
+- Create: `ledger_sense/web/lib/acceptedBoxes.ts` + `acceptedBoxes.test.ts`
+- Modify: `ledger_sense/web/app/review/[docId]/ReviewQueue.tsx`, `ledger_sense/web/components/DocumentPane.tsx`
+- Test: `ledger_sense/web/e2e/accumulating_rule.spec.ts`
+- ~~Create: `ledger_sense/web/lib/useAcceptedBoxes.ts`~~
+- ~~Modify: `ledger_sense/web/app/review/[docId]/page.tsx`~~
+- ~~Test: `ledger_sense/web/lib/useAcceptedBoxes.test.ts`~~
+- ~~Test: `tests/e2e/test_accumulating_rule.spec.ts`~~
 
 **Interfaces:**
 - Consumes: `DocumentPane`'s `accepted` prop (Task 29); Task 28's accept/edit responses.

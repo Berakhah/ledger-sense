@@ -108,6 +108,21 @@ describe('useReviewKeys', () => {
     button.remove()
   })
 
+  it('leaves every key to an ARIA text-entry widget, native tag or not', () => {
+    // A role=textbox/combobox/searchbox is typed into like an <input>; the
+    // letters are its, exactly as they are an <input>'s.
+    const h = setup()
+    const widget = document.createElement('div')
+    widget.setAttribute('role', 'combobox')
+    widget.tabIndex = 0
+    document.body.appendChild(widget)
+    widget.focus()
+    press('j', widget); press('Enter', widget)
+    expect(h.onNext).not.toHaveBeenCalled()
+    expect(h.onAccept).not.toHaveBeenCalled()
+    widget.remove()
+  })
+
   it('still handles Enter when focus is on the queue itself', () => {
     const h = setup()
     const queue = document.createElement('div')

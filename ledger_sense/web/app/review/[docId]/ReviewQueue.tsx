@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { acceptedBoxesOf, type AcceptedBox } from '@/lib/acceptedBoxes'
+import { acceptedBoxesOf, type AcceptedBox, type ExceptionState } from '@/lib/acceptedBoxes'
 import type { BBox } from '@/lib/bbox'
 import { latestOnly } from '@/lib/latestOnly'
 import { useReviewKeys } from '@/lib/useReviewKeys'
@@ -30,8 +30,6 @@ const PAGE_WIDTH_PT = 792
 /** The pane never renders larger than this (F-63): 792pt x 1.5 is already
  *  ~1,188 CSS px tall, and a wider canvas buys nothing a reviewer can read. */
 const MAX_SCALE = 1.5
-
-type ExceptionState = 'open' | 'accepted' | 'edited' | 'rejected'
 
 /** Mirrors ledger_sense.api.review.ReviewException. `expected`/`actual` are
  *  Decimal-safe STRINGS and stay strings here — never parsed to Number
@@ -266,6 +264,14 @@ export function ReviewQueue({ docId }: { docId: string }) {
     commit()
     // Rules follow the server's list, not the merged one: a local close still
     // in flight is not verified yet, and its own success paints it.
+    //
+    // Can a read that was served BEFORE a write committed land here AFTER
+    // that write's success, and erase its rule? No, by construction: every
+    // resync is issued from a failure that parked itself in pendingFailures
+    // first, and only a committed resync clears that. So a success arriving
+    // while such a read is outstanding sees pendingFailures non-empty and
+    // issues a newer resync, which supersedes the stale one above
+    // (`!queue.latest`). Keep that ordering if you add another caller.
     setAccepted(acceptedBoxesOf(list))
     // Parked failures become markers only for items the server still has
     // open; every marker outlives its item only while the item is open.

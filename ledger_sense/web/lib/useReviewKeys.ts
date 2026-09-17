@@ -20,6 +20,8 @@ interface Handlers {
 }
 
 const EDITABLE = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
+// ARIA widgets that are typed into: the letters are theirs, like an <input>'s.
+const TEXT_ENTRY_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton'])
 
 /**
  * REVISED (F-64). This originally covered only INPUT/TEXTAREA/SELECT, so focus
@@ -33,7 +35,8 @@ const EDITABLE = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
   if (!el || !el.tagName) return false
-  return EDITABLE.has(el.tagName) || el.isContentEditable
+  if (EDITABLE.has(el.tagName) || el.isContentEditable) return true
+  return TEXT_ENTRY_ROLES.has(el.getAttribute('role') ?? '')
 }
 
 /** REVISED again: this used to gate every key, so a reviewer who tabbed onto

@@ -1,8 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { seedDocument } from './seed'
-
-// Same default as seed.ts: the API is its own origin.
-const API_URL = process.env.PLAYWRIGHT_API_URL ?? 'http://localhost:8000'
+import { API_URL, seedDocument } from './seed'
 
 // DoD 5: fifty exceptions cleared without a mouse. Every test seeds its own
 // document through POST /api/fixtures/seed (demo profile only — see seed.ts)

@@ -11,7 +11,8 @@ interface Props {
   pdfUrl: string
   page: number
   focusBox: BBox | null
-  /** Boxes already accepted this session. Their rule STAYS — see Task 31. */
+  /** Fields the server records as verified (accepted or edited). Their rule
+   *  STAYS — across keystrokes and across navigation (Task 31). */
   accepted: ReadonlyArray<AcceptedBox>
   scale?: number
 }
@@ -129,6 +130,7 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
       {accepted.filter((a) => a.page === page).map((a) => (
         <div
           key={a.id}
+          aria-hidden
           data-testid={`accepted-rule-${a.id}`}
           className="absolute border-b-2 border-accent pointer-events-none"
           style={toOverlayStyle(a.bbox, scale)}
