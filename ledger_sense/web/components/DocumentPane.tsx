@@ -2,15 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as pdfjs from 'pdfjs-dist'
+import type { AcceptedBox } from '@/lib/acceptedBoxes'
 import { toOverlayStyle, type BBox } from '@/lib/bbox'
 
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
-
-interface AcceptedBox {
-  id: string
-  page: number
-  bbox: BBox
-}
 
 interface Props {
   pdfUrl: string

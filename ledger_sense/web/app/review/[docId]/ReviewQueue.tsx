@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import { acceptedBoxesOf, type AcceptedBox } from '@/lib/acceptedBoxes'
 import type { BBox } from '@/lib/bbox'
 import { latestOnly } from '@/lib/latestOnly'
 import { useReviewKeys } from '@/lib/useReviewKeys'
@@ -52,12 +53,6 @@ interface Progress {
   total: number
   cleared: number
   remaining: number
-}
-
-interface AcceptedBox {
-  id: string
-  page: number
-  bbox: BBox
 }
 
 const STATE_LABEL: Record<ExceptionState, string> = {
@@ -193,6 +188,9 @@ export function ReviewQueue({ docId }: { docId: string }) {
         const first = list.findIndex((e) => e.state === 'open')
         model.current = { items: list, cursor: first === -1 ? Math.max(0, list.length - 1) : first }
         commit()
+        // The rules a reviewer left last time are the server's record of
+        // what is verified, so they are back the moment the list is.
+        setAccepted(acceptedBoxesOf(list))
         setProgress(prog)
         setLoading(false)
         focusQueue()
@@ -266,6 +264,9 @@ export function ReviewQueue({ docId }: { docId: string }) {
     })
     model.current = { items, cursor: Math.min(cursor, Math.max(0, items.length - 1)) }
     commit()
+    // Rules follow the server's list, not the merged one: a local close still
+    // in flight is not verified yet, and its own success paints it.
+    setAccepted(acceptedBoxesOf(list))
     // Parked failures become markers only for items the server still has
     // open; every marker outlives its item only while the item is open.
     const parked = new Map(pendingFailures.current)
@@ -342,7 +343,8 @@ export function ReviewQueue({ docId }: { docId: string }) {
         })
         if (state !== 'rejected' && item.page !== null && item.bbox !== null) {
           const box: AcceptedBox = { id: item.id, page: item.page, bbox: item.bbox }
-          setAccepted((prev) => [...prev, box])
+          // A resync that raced this write may already have painted it.
+          setAccepted((prev) => (prev.some((b) => b.id === box.id) ? prev : [...prev, box]))
         }
         // A parked failure whose resync itself failed is still unverified:
         // the next successful write is the next chance to resync, not just

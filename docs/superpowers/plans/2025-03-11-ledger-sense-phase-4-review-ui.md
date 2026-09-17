@@ -840,6 +840,18 @@ git commit -m "feat(web): keyboard-first review queue, fifty exceptions with no 
 
 **The feeling the product sells.** As each field is accepted, its box fills with a thin rule that **stays** — the document visibly becomes trustworthy as you work through it.
 
+**REVISED (2026-09-17), as built.** The `useAcceptedBoxes` + `localStorage` design below predates
+Task 28. `GET /api/review/documents/{id}/exceptions` returns every finding with its `state`, so the
+server already records which fields are verified — and it is the same record the audit trail was
+written from. A browser-side copy would be per-browser, go stale the moment another tab or reviewer
+accepts, and could disagree with the server. Built instead: a pure `lib/acceptedBoxes.ts`
+(`acceptedBoxesOf(items)` — `accepted`/`edited` with located geometry get a rule, `rejected`/`open`
+do not) that `ReviewQueue` applies to the server list on initial load and on every `resync`; the
+in-session append on a confirmed write stays, deduplicated. This also closes a Task 30 gap: `resync`
+replaced the item list without touching `accepted`, so a field the server had closed showed no rule.
+The Playwright spec lives at `ledger_sense/web/e2e/accumulating_rule.spec.ts` (the suite's real
+`testDir`) and adds a resync case to the three below. No `useAcceptedBoxes.ts` exists.
+
 **Files:**
 - Create: `ledger_sense/web/lib/useAcceptedBoxes.ts`
 - Modify: `ledger_sense/web/app/review/[docId]/page.tsx`
