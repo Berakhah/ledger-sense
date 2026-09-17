@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test'
 // The API is a separate origin from the app under test, so it is not
 // baseURL-relative and has to be named. Same default as playwright.config.ts's
 // webServer brings up.
-const API_URL = process.env.PLAYWRIGHT_API_URL ?? 'http://localhost:8000'
+export const API_URL = process.env.PLAYWRIGHT_API_URL ?? 'http://localhost:8000'
 
 /**
  * Mint a synthetic document and its exceptions, and leave the page logged in

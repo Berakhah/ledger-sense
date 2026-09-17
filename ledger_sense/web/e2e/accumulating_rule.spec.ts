@@ -1,7 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { seedDocument } from './seed'
-
-const API_URL = process.env.PLAYWRIGHT_API_URL ?? 'http://localhost:8000'
+import { API_URL, seedDocument } from './seed'
 
 // Task 31: the accumulating verification rule. Each accepted field leaves a
 // thin rule on the document that STAYS — across keystrokes, across
@@ -30,6 +28,24 @@ test('rules survive navigating away and back', async ({ page }) => {
   const docId = await seedDocument(page, docKey('rule-3'), 3)
   await page.goto(`/review/${docId}`)
   await expect(page.getByTestId('current-field')).toBeVisible()
+  await page.keyboard.press('Enter')
+  await expect(rules(page)).toHaveCount(1)
+
+  await page.goto('/baseline')
+  await page.goto(`/review/${docId}`)
+  await expect(page.getByTestId('current-field')).toBeVisible()
+  await expect(rules(page)).toHaveCount(1)
+})
+
+test('an edited field is verified too — its rule survives navigation', async ({ page }) => {
+  const docId = await seedDocument(page, docKey('rule-3'), 3)
+  await page.goto(`/review/${docId}`)
+  await expect(page.getByTestId('current-field')).toBeVisible()
+
+  await page.keyboard.press('e')
+  await expect(page.getByTestId('edit-input')).toBeFocused()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.type('1000.00')
   await page.keyboard.press('Enter')
   await expect(rules(page)).toHaveCount(1)
 
