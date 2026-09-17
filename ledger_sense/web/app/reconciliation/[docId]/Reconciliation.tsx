@@ -220,7 +220,14 @@ export function Reconciliation({ docId }: { docId: string }) {
           continuation sheet's own bottom border meets the summary pane's top
           border below 768px, and its left border above it. */}
       <div className="reconciliation-grid mt-4 grid grid-cols-[minmax(0,1fr)] gap-6 md:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]">
-        <section aria-label="Continuation sheet" className="max-w-full overflow-x-auto">
+        {/* F-63: keyboard reachability for an internally-scrolling region —
+            same fix as app/review/[docId]/ReviewQueue.tsx's document pane. */}
+        <section
+          role="region"
+          tabIndex={0}
+          aria-label="Continuation sheet"
+          className="max-w-full overflow-x-auto"
+        >
           <h2 className="text-sm font-semibold">Continuation sheet</h2>
           <table className="mt-2 w-full border-collapse text-sm">
             <thead>

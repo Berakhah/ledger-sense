@@ -84,10 +84,21 @@ def seed_from_corpus(doc_id: str, seed: int, error: ErrorClass, tenant_id: str) 
     _DOC_TENANTS[doc_id] = tenant_id
 
 
-def _arithmetic_for(rule_id: str, app: PayApplication, expected: Money, actual: Money) -> str:
+def _arithmetic_for(rule_id: str, field: str, app: PayApplication,
+                     expected: Money, actual: Money) -> str:
     if rule_id == "A1":
         terms = " + ".join(str(ln.total_completed_and_stored) for ln in app.lines)
         return f"{terms} = {expected}, sheet shows {actual}"
+    if rule_id == "A2":
+        # field is "line[<item_no>].total_completed_and_stored" (rules/arithmetic/
+        # lines.py's rule_a2) — find that one line to show previous + this
+        # period + stored, not every line's, since A2 is a per-line check.
+        item_no = field.removeprefix("line[").split("]", 1)[0]
+        line = next((ln for ln in app.lines if ln.item_no == item_no), None)
+        if line is None:
+            return f"expected {expected}, sheet shows {actual}"
+        return (f"{line.previous} + {line.this_period} + {line.stored} = "
+                f"{expected}, sheet shows {actual}")
     if rule_id == "A8":
         terms = " + ".join(str(ln.retainage) for ln in app.lines)
         return f"{terms} = {expected}, summary shows {actual}"
@@ -110,7 +121,7 @@ def reconcile(doc_id: str, session: CurrentSession) -> dict[str, object]:
             field=finding.field, rule_id=finding.rule_id,
             expected=str(finding.expected), actual=str(finding.actual),
             delta=str(money(abs(finding.actual - finding.expected))),
-            arithmetic=_arithmetic_for(finding.rule_id, app,
+            arithmetic=_arithmetic_for(finding.rule_id, finding.field, app,
                                        finding.expected, finding.actual))
         for rule in _reconciliation_rules()
         for finding in rule(app, contract)

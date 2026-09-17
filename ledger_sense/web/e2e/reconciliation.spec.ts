@@ -18,6 +18,25 @@ test('a discrepancy is highlighted at the exact cell with its arithmetic', async
   await expect(page.getByTestId('inline-arithmetic')).toContainText('=')
 })
 
+test('a per-line discrepancy is highlighted inside the line table, not the summary or fallback', async ({ page }) => {
+  // A2_line_sum mutates lines[0] (item_no "010") — the discrepant cell must
+  // land inside that line's row in the continuation-sheet table. (The same
+  // mutation also throws the summary footing off (A1), since the lines no
+  // longer sum to the unchanged summary total — that one lands in the
+  // Summary table, which this test leaves alone.)
+  const docId = await seedReconciliationDocument(page, docKey('doc-a2'), 'A2_line_sum')
+  await page.goto(`/reconciliation/${docId}`)
+
+  const row = page.getByLabel('Continuation sheet').locator('tbody tr', { hasText: '010' })
+  const cell = row.getByTestId('discrepant-cell')
+  await expect(cell).toHaveCount(1)
+  await expect(cell.getByTestId('inline-arithmetic')).toContainText('=')
+
+  // Not duplicated into the "Other discrepancies" fallback, which only ever
+  // holds a field with no dedicated cell on this screen.
+  await expect(page.getByLabel('Other discrepancies')).toHaveCount(0)
+})
+
 test('severity is never encoded in colour alone', async ({ page }) => {
   const docId = await seedReconciliationDocument(page, docKey('doc-a1'), 'A1_footing')
   await page.goto(`/reconciliation/${docId}`)

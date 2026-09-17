@@ -52,6 +52,25 @@ def test_a_footing_error_is_located_at_the_exact_field() -> None:
     assert discrepancies[0]["field"] == "total_completed_and_stored"
 
 
+def test_a_line_sum_error_is_located_at_the_exact_line_cell() -> None:
+    """A2 is a per-LINE check (rules/arithmetic/lines.py's rule_a2), unlike A1/A8/A9
+    which are summary-pane checks — the field must carry the line[<item_no>].<field>
+    key the Reconciliation.tsx client matches against a line-table cell, not the
+    bare summary key A1_footing's fixture happens to produce."""
+    tenant_id, cookies = _session()
+    seed_from_corpus("doc-a2", seed=1, error="A2_line_sum", tenant_id=tenant_id)
+    discrepancies = client.get("/api/reconciliation/doc-a2", cookies=cookies).json()["discrepancies"]
+    # The mutation also throws off the summary footing (A1: the lines no
+    # longer sum to the unchanged summary total) — A2 need not be the only
+    # rule that fires, just present and correctly located.
+    by_rule = {d["rule_id"]: d for d in discrepancies}
+    assert "A2" in by_rule
+    a2 = by_rule["A2"]
+    assert a2["field"] == "line[010].total_completed_and_stored"
+    assert "=" in a2["arithmetic"]
+    assert a2["expected"] in a2["arithmetic"]
+
+
 def test_every_discrepancy_shows_its_arithmetic() -> None:
     tenant_id, cookies = _session()
     seed_from_corpus("doc-a1", seed=1, error="A1_footing", tenant_id=tenant_id)

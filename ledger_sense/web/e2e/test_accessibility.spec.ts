@@ -59,9 +59,14 @@ for (const screen of SCREENS) {
     const url = await screen.seed(page)
     await page.goto(url)
     const results = await new AxeBuilder({ page })
-      .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
       .analyze()
     const found = blocking(results.violations)
+    // A negative assertion passes just as happily when axe evaluated nothing
+    // (see tests/api/test_route_registration.py::test_the_walk_is_not_empty
+    // for the house precedent on this shape of bug) — prove axe actually ran
+    // real checks against this page before trusting the zero-violations read.
+    expect(results.passes.length).toBeGreaterThan(0)
     expect(found, JSON.stringify(found, null, 2)).toEqual([])
   })
 
@@ -84,6 +89,8 @@ for (const screen of SCREENS) {
         density,
       )
       const results = await new AxeBuilder({ page }).analyze()
+      // Same non-vacuity guard as the axe test above.
+      expect(results.passes.length).toBeGreaterThan(0)
       expect(blocking(results.violations)).toEqual([])
     })
   }
@@ -96,17 +103,21 @@ test('EVERY focusable control has a visible focus ring', async ({ page }) => {
   const docId = await seedDocument(page, docKey('doc-a11y-focus'), 3)
   await page.goto(`/review/${docId}`)
   await expect(page.getByTestId('current-field')).toBeVisible()
-  const naked = await page.evaluate(() => {
+  const { total, offenders: naked } = await page.evaluate(() => {
     const selector = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
     const offenders: string[] = []
-    for (const el of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+    const elements = Array.from(document.querySelectorAll<HTMLElement>(selector))
+    for (const el of elements) {
       el.focus()
       const style = getComputedStyle(el)
       const ringed = style.outlineWidth !== '0px' || style.boxShadow !== 'none'
       if (!ringed) offenders.push(el.outerHTML.slice(0, 80))
     }
-    return offenders
+    return { total: elements.length, offenders }
   })
+  // Belt and braces (see test_the_walk_is_not_empty): the empty-array
+  // assertion below passes just as happily if the selector matched nothing.
+  expect(total).toBeGreaterThan(0)
   expect(naked, naked.join('\n')).toEqual([])
 })
 
