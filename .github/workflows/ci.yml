@@ -126,6 +126,20 @@ jobs:
       # gate too — the frontend's equivalent of `mypy --strict`.
       - run: npm run build
 
+  accessibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      # @axe-core/playwright is already a root devDependency — npm ci covers it.
+      - run: npx playwright install --with-deps chromium
+      # playwright.config.ts's webServer brings up the demo compose stack
+      # (`docker compose --profile demo up --build`) itself; ubuntu-latest
+      # ships Docker preinstalled, so no separate compose step is needed.
+      - run: npx playwright test ledger_sense/web/e2e/test_accessibility.spec.ts
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
