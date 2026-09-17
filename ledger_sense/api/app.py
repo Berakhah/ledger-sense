@@ -1,20 +1,24 @@
 """The application object.
 
-Three routes live outside the session boundary and only three, all of them
+Four routes live outside the session boundary and only four, all of them
 mounted by hand in build_app() below so the whole exception list is one
 function you can read top to bottom:
 
-  GET  /api/health        — a container orchestrator has to reach it before
-                            anyone can log in.
-  POST /api/auth/login    — how a session comes to exist.
-  POST /api/fixtures/seed — mounted ONLY when LEDGER_SENSE_PROFILE == "demo";
-                            absent, not merely guarded, under every other
-                            value including unset. See api/fixtures.py.
+  GET  /api/health              — a container orchestrator has to reach it
+                                  before anyone can log in.
+  POST /api/auth/login          — how a session comes to exist.
+  POST /api/fixtures/seed       — mounted ONLY when
+                                  LEDGER_SENSE_PROFILE == "demo"; absent, not
+                                  merely guarded, under every other value
+                                  including unset. See api/fixtures.py.
+  POST /api/reconciliation/seed — same demo-only discipline as the fixtures
+                                  seed route, for the reconciliation screen's
+                                  in-memory store. See api/reconciliation.py.
 
 Everything else is mounted through deps.register(), which applies
 require_session — see tests/api/test_auth.py::test_every_api_route_requires_a_session,
 which walks the route table and fails on anything mounted another way. The
-three above are mounted with add_api_route rather than include_router so they
+four above are mounted with add_api_route rather than include_router so they
 stay visible to that walk instead of hiding from the audit that exempts them.
 """
 
@@ -35,6 +39,9 @@ from ledger_sense.api.baseline import router as baseline_router
 from ledger_sense.api.deps import register
 from ledger_sense.api.fixtures import SEED_PATH, demo_profile_enabled, seed
 from ledger_sense.api.inbox import router as inbox_router
+from ledger_sense.api.reconciliation import RECONCILIATION_SEED_PATH
+from ledger_sense.api.reconciliation import router as reconciliation_router
+from ledger_sense.api.reconciliation import seed_demo as reconciliation_seed
 from ledger_sense.api.review import router as review_router
 from ledger_sense.auth.models import authenticate
 from ledger_sense.auth.session import SESSION_TTL, issue_session
@@ -50,13 +57,18 @@ WEB_ORIGIN = os.environ.get("LEDGER_SENSE_WEB_ORIGIN", "http://localhost:3000")
 LOGIN_LIMIT = 10
 LOGIN_WINDOW_SECONDS = 60.0
 
-# The three exceptions named in the module docstring, as data, because two
-# separate audit suites assert against them (tests/api/test_auth.py and
+# The exceptions named in the module docstring, as data, because two separate
+# audit suites assert against them (tests/api/test_auth.py and
 # tests/api/test_route_registration.py) and a third hand-written copy is how
 # F-55 happened. It lives here rather than in a test because it is this
-# module's claim about itself: adding a fourth entry is a change to the
-# session boundary and should read like one in the diff.
-UNGUARDED_PREFIXES = ("/api/health", "/api/auth", "/api/fixtures")
+# module's claim about itself: adding an entry is a change to the session
+# boundary and should read like one in the diff. /api/reconciliation/seed
+# joined /api/fixtures/seed here for exactly that reason (Task 32) — it mints
+# its own session the same way, and its GET sibling
+# (/api/reconciliation/{doc_id}) is NOT in this tuple: that one goes through
+# register() like every other real route.
+UNGUARDED_PREFIXES = ("/api/health", "/api/auth", "/api/fixtures",
+                      RECONCILIATION_SEED_PATH)
 
 # ponytail: in-process, per-worker. Two uvicorn workers means two counters and
 # an effective 20/minute; a shared counter (Redis, or a sessions-table row)
@@ -210,15 +222,19 @@ def build_app() -> FastAPI:
     if demo_profile_enabled():
         app.add_api_route(SEED_PATH, seed, methods=["POST"], status_code=201,
                           tags=["fixtures"])
+        app.add_api_route(RECONCILIATION_SEED_PATH, reconciliation_seed, methods=["POST"],
+                          status_code=201, tags=["fixtures"])
 
-    # /api/baseline, /api/inbox and /api/review are not among the three
-    # UNGUARDED_PREFIXES exceptions above (unlike /api/fixtures/seed) and
-    # follow the same profile discipline as any other normal route:
-    # register() applies require_session, and each is available whichever
-    # profile this process runs under.
+    # /api/baseline, /api/inbox, /api/review and /api/reconciliation's GET
+    # route are not among the UNGUARDED_PREFIXES exceptions above (unlike
+    # /api/fixtures/seed and /api/reconciliation/seed) and follow the same
+    # profile discipline as any other normal route: register() applies
+    # require_session, and each is available whichever profile this process
+    # runs under.
     register(app, baseline_router)
     register(app, inbox_router)
     register(app, review_router)
+    register(app, reconciliation_router)
 
     for router in stub_routers():
         register(app, router)

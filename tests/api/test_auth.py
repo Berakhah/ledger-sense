@@ -1,4 +1,5 @@
 # tests/api/test_auth.py
+import uuid
 from collections.abc import Callable
 from typing import cast
 
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from ledger_sense.api.app import UNGUARDED_PREFIXES, app
+from ledger_sense.api.reconciliation import seed_from_corpus
 from tests.api.conftest import TenantClient
 
 client = TestClient(app)
@@ -16,9 +18,10 @@ PROTECTED_PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
 
 # /api/inbox only answers POST at the bare prefix (no GET "/" index, unlike
 # every other stub) — everything else still has the stub's GET "/". /api/review
-# is real (Task 28) and was never given a bare "/" index either — its
-# narrowest GET is the exceptions list. Route matching (path + method) happens
-# before any dependency runs, so a probe against a path/method the route table
+# and /api/reconciliation are real (Tasks 28, 32) and were never given a bare
+# "/" index either — their narrowest GETs are the exceptions list and a
+# single document respectively. Route matching (path + method) happens before
+# any dependency runs, so a probe against a path/method the route table
 # doesn't actually serve either 405s without reaching require_session, or (a
 # mismatched trailing slash) 307s there first: Starlette's redirect_slashes
 # would make `POST /api/inbox/` read as a pass, via a hop this test never
@@ -27,6 +30,7 @@ PROTECTED_PREFIXES = ("/api/baseline", "/api/review", "/api/reconciliation",
 _PROBE = {
     "/api/inbox": ("post", "/api/inbox"),
     "/api/review": ("get", "/api/review/documents/probe/exceptions"),
+    "/api/reconciliation": ("get", "/api/reconciliation/probe-doc"),
 }
 
 
@@ -63,9 +67,16 @@ def test_an_anonymous_request_is_refused(prefix: str) -> None:
 def test_a_document_from_another_tenant_is_not_found_rather_than_forbidden(
     two_tenants: tuple[TenantClient, TenantClient],
 ) -> None:
-    """404, never 403. A 403 confirms the resource exists, which is the leak."""
+    """404, never 403. A 403 confirms the resource exists, which is the leak.
+
+    /api/reconciliation is real (Task 32) and keeps its own in-memory store,
+    not `stub_resources` — seeded here the same way
+    tests/api/test_reconciliation.py does, directly through
+    seed_from_corpus, bypassing the demo-only HTTP seed hatch.
+    """
     a, b = two_tenants
-    doc_id = a.create_document()
+    doc_id = f"auth-test-{uuid.uuid4().hex[:8]}"
+    seed_from_corpus(doc_id, seed=1, error="clean", tenant_id=a.tenant_id)
     assert b.get(f"/api/reconciliation/{doc_id}").status_code == 404
 
 
@@ -73,7 +84,9 @@ def test_the_owner_can_read_their_own_document(
     two_tenants: tuple[TenantClient, TenantClient],
 ) -> None:
     a, _b = two_tenants
-    assert a.get(f"/api/reconciliation/{a.create_document()}").status_code == 200
+    doc_id = f"auth-test-{uuid.uuid4().hex[:8]}"
+    seed_from_corpus(doc_id, seed=1, error="clean", tenant_id=a.tenant_id)
+    assert a.get(f"/api/reconciliation/{doc_id}").status_code == 200
 
 
 def test_a_review_action_cannot_be_taken_across_tenants(

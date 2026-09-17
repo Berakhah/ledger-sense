@@ -16,7 +16,9 @@ Documents and their real tables belong to the extraction and review-queue
 phases.
 
 **/api/review is real** — ledger_sense/api/review.py, registered in
-api/app.py — and is no longer among these prefixes.
+api/app.py — and is no longer among these prefixes. **/api/reconciliation is
+real too** (Task 32, ledger_sense/api/reconciliation.py) and was removed the
+same way.
 
 **Replace, do not add alongside**: when the next real router lands, delete
 this file's entry for it — and delete the file outright once the last prefix
@@ -25,13 +27,10 @@ never by a migration, so nothing in a client's database depends on it.
 """
 
 import uuid
-from typing import Annotated
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
-from ledger_sense.api.deps import owned, require_session
-from ledger_sense.auth.session import Session
 from ledger_sense.store.session import app_engine
 
 STUB_METADATA = sa.MetaData()
@@ -50,7 +49,7 @@ stub_resources = sa.Table(
     sa.Index("ix_stub_resources_tenant_id_id", "tenant_id", "id"),
 )
 
-PREFIXES = ("/api/baseline", "/api/reconciliation", "/api/vendors", "/api/metrics")
+PREFIXES = ("/api/baseline", "/api/vendors", "/api/metrics")
 
 
 def seed_resource(tenant_id: str) -> str:
@@ -61,32 +60,8 @@ def seed_resource(tenant_id: str) -> str:
     return resource_id
 
 
-def _row_of(resource_id: str) -> sa.Row[tuple[str, str | None]] | None:
-    with app_engine().connect() as conn:
-        return conn.execute(
-            sa.select(stub_resources.c.tenant_id, stub_resources.c.sensitivity)
-            .where(stub_resources.c.id == resource_id)
-        ).one_or_none()
-
-
-def _owner_of(resource_id: str) -> str | None:
-    row = _row_of(resource_id)
-    return None if row is None else str(row.tenant_id)
-
-
 def _index() -> dict[str, bool]:
     return {"stub": True}
-
-
-# register() already applies require_session to every route it mounts; asking
-# for it again here is free (FastAPI caches a dependency per request) and is
-# how the handler gets the tenant it must check ownership against.
-CurrentSession = Annotated[Session, Depends(require_session)]
-
-
-def _read_document(doc_id: str, session: CurrentSession) -> dict[str, str]:
-    owned(session, _owner_of(doc_id))
-    return {"id": doc_id}
 
 
 def stub_routers() -> list[APIRouter]:
@@ -94,7 +69,5 @@ def stub_routers() -> list[APIRouter]:
     for prefix in PREFIXES:
         router = APIRouter(prefix=prefix, tags=["stub"])
         router.add_api_route("/", _index, methods=["GET"])
-        if prefix == "/api/reconciliation":
-            router.add_api_route("/{doc_id}", _read_document, methods=["GET"])
         routers.append(router)
     return routers
