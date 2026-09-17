@@ -91,6 +91,23 @@ describe('useReviewKeys', () => {
     button.remove()
   })
 
+  it('still fires J/K/E/R when a button has focus — only Enter is the button\'s', () => {
+    // A reviewer who tabs onto "Accept" must not lose the whole keyboard
+    // model until they tab away again. Enter belongs to the button (F-64);
+    // the letters belong to the queue wherever focus is, short of a text
+    // field.
+    const h = setup()
+    const button = document.createElement('button')
+    document.body.appendChild(button)
+    button.focus()
+    press('j', button); press('k', button); press('e', button); press('r', button)
+    expect(h.onNext).toHaveBeenCalledOnce()
+    expect(h.onPrev).toHaveBeenCalledOnce()
+    expect(h.onEdit).toHaveBeenCalledOnce()
+    expect(h.onReject).toHaveBeenCalledOnce()
+    button.remove()
+  })
+
   it('still handles Enter when focus is on the queue itself', () => {
     const h = setup()
     const queue = document.createElement('div')

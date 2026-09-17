@@ -30,10 +30,19 @@ const EDITABLE = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
  * button has its accessible name, its role and its focus ring, and does nothing
  * when a keyboard user activates it.
  */
+function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el || !el.tagName) return false
+  return EDITABLE.has(el.tagName) || el.isContentEditable
+}
+
+/** REVISED again: this used to gate every key, so a reviewer who tabbed onto
+ *  "Accept" lost J/K/E/R until they tabbed away. Only Enter is the focused
+ *  control's to activate; the letters are the queue's wherever focus sits,
+ *  short of a text field. */
 function handlesItsOwnEnter(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
   if (!el || !el.tagName) return false
-  if (EDITABLE.has(el.tagName) || el.isContentEditable) return true
   if (el.tagName === 'BUTTON' || el.tagName === 'A') return true
   if (el.getAttribute('role') === 'button' || el.getAttribute('role') === 'link') {
     return true
@@ -52,13 +61,15 @@ export function useReviewKeys({
       // and a held Enter would accept a stream of exceptions nobody looked at.
       if (event.repeat) return
       if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (handlesItsOwnEnter(event.target)) return
+      if (isTyping(event.target)) return
 
       const actions: Record<string, (() => void) | undefined> = {
         j: onNext, k: onPrev, e: onEdit, r: onReject, enter: onAccept,
       }
-      const action = actions[event.key.toLowerCase()]
+      const key = event.key.toLowerCase()
+      const action = actions[key]
       if (!action) return
+      if (key === 'enter' && handlesItsOwnEnter(event.target)) return
 
       event.preventDefault()
       action()
