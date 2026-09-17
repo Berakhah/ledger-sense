@@ -99,3 +99,46 @@ body {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/* Task 32 — the reconciliation screen gets printed and forwarded to
+ * auditors. Folded in here rather than a separate stylesheet: no
+ * ledger_sense/web/styles/ directory precedent exists, and this keeps the
+ * single-stylesheet convention every other screen already follows.
+ *
+ * A discrepant cell's colour (--color-flag) and its background tint do not
+ * survive greyscale print; the outline and bold weight below are what still
+ * read once colour is gone — the glyph and text label already carry the
+ * meaning on screen (never colour alone), and print keeps that with shape
+ * and weight instead of colour. */
+@media print {
+  nav,
+  .no-print,
+  [data-testid="dim-layer"] {
+    display: none;
+  }
+
+  body {
+    background: white;
+    color: var(--color-ink);
+  }
+
+  .numeric,
+  td,
+  th {
+    font-variant-numeric: tabular-nums;
+  }
+
+  [data-testid="discrepant-cell"] {
+    outline: 2px solid black;
+    font-weight: 600;
+  }
+
+  .reconciliation-grid {
+    break-inside: avoid;
+  }
+
+  a[href]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+  }
+}
