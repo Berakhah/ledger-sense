@@ -477,3 +477,36 @@ def test_counts_are_per_tenant(two_tenants: tuple[TenantClient, TenantClient]) -
     assert a.get(f"/api/inbox/{mine}").json()["finding_count"] >= 1
     assert b.get(f"/api/inbox/{mine}").status_code == 404
     assert all(d["finding_count"] == 0 for d in b.get("/api/inbox").json()["items"])
+
+
+def test_the_pdf_bytes_read_back_for_the_owner_and_404_for_anyone_else(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    # DocumentPane's pdfUrl: the same bytes that went through the door, back
+    # out of the encrypted blob, served uncached — a pay application must not
+    # sit in a shared cache after the reviewer's session ends.
+    a, b = two_tenants
+    payload = _pdf(pages=2)
+    document_id = _upload(a, payload).json()["id"]
+
+    response = a.get(f"/api/inbox/{document_id}/pdf")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.content == payload
+
+    assert b.get(f"/api/inbox/{document_id}/pdf").status_code == 404
+    assert a.get("/api/inbox/nope/pdf").status_code == 404
+
+
+def test_the_pdf_route_is_a_404_not_a_500_when_the_blob_is_gone(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    # A retention purge nulls blob_id and leaves the row: the owner still
+    # gets "not found", not a traceback.
+    a, _ = two_tenants
+    document_id = _upload(a, _pdf()).json()["id"]
+    with store_session.app_engine().begin() as conn:
+        conn.execute(documents.update().where(documents.c.id == document_id)
+                     .values(blob_id=None))
+    assert a.get(f"/api/inbox/{document_id}/pdf").status_code == 404

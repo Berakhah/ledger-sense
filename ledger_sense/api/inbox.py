@@ -26,6 +26,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Response,
     UploadFile,
 )
 
@@ -37,7 +38,7 @@ from ledger_sense.ingest.intake import accept_document, intake
 from ledger_sense.ingest.limits import DEFAULT_LIMITS, RejectedDocument, Rejection
 from ledger_sense.run.document import run_in_background
 from ledger_sense.store.blobs import blob_store_from_environment
-from ledger_sense.store.documents import store_document
+from ledger_sense.store.documents import DocumentNotFound, load_document, store_document
 from ledger_sense.store.retention import DOCUMENT_STATUSES, claims, documents, findings
 from ledger_sense.store.session import app_engine
 
@@ -279,3 +280,22 @@ def read_document(document_id: str, session: CurrentSession) -> dict[str, Any]:
     owned(session, None if row is None else str(row.tenant_id))
     assert row is not None  # owned() raised otherwise; for the type checker
     return _row_of(row)
+
+
+@router.get("/{document_id}/pdf")
+def read_document_pdf(document_id: str, session: CurrentSession) -> Response:
+    # The bytes the review queue's DocumentPane renders: the payload as it
+    # went through the door, out of the encrypted blob. load_document is
+    # tenant-scoped by construction and every miss (wrong tenant, unknown id,
+    # purged blob) is one DocumentNotFound, so this is 404-not-403 without a
+    # separate owned() call. no-store: a pay application must not outlive
+    # the reviewer's session in a browser or proxy cache.
+    try:
+        with app_engine().connect() as conn:
+            doc = load_document(conn, tenant_id=session.tenant_id,
+                                document_id=document_id,
+                                blobs=blob_store_from_environment())
+    except DocumentNotFound:
+        raise HTTPException(status_code=404, detail="not found") from None
+    return Response(content=doc.payload, media_type="application/pdf",
+                    headers={"Cache-Control": "no-store"})
