@@ -48,6 +48,9 @@ export function useReviewKeys({
     if (!enabled) return
 
     function handle(event: KeyboardEvent) {
+      // One keystroke, one action. A held key auto-repeats at the OS rate,
+      // and a held Enter would accept a stream of exceptions nobody looked at.
+      if (event.repeat) return
       if (event.metaKey || event.ctrlKey || event.altKey) return
       if (handlesItsOwnEnter(event.target)) return
 

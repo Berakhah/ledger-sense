@@ -69,6 +69,15 @@
   --color-rule: oklch(0.32 0.006 250);
 }
 
+/* The review queue derives the document pane's scale from its container
+   width. With a classic (non-overlay) scrollbar, a taller canvas adds the
+   scrollbar, which narrows the container, which shrinks the canvas, which
+   removes the scrollbar, which widens the container — a feedback loop.
+   Reserving the gutter keeps the width stable either way. */
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   background: var(--color-paper);
   color: var(--color-ink);
