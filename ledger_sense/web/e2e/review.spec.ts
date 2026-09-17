@@ -1,6 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 import { seedDocument } from './seed'
 
+// Same default as seed.ts: the API is its own origin.
+const API_URL = process.env.PLAYWRIGHT_API_URL ?? 'http://localhost:8000'
+
 // DoD 5: fifty exceptions cleared without a mouse. Every test seeds its own
 // document through POST /api/fixtures/seed (demo profile only — see seed.ts)
 // and navigates to the id the seeder minted; page.request is not a mouse
@@ -83,6 +86,41 @@ test('R requires a reason before it clears the exception', async ({ page }) => {
 test('the queue advance is announced to assistive technology', async ({ page }) => {
   const docId = await seedDocument(page, docKey('doc-3'), 3)
   await page.goto(`/review/${docId}`)
+  // Enter is deliberately NOT type-ahead (R-A): pressed before the queue has
+  // loaded it does nothing, so wait for the first exception to be on screen.
+  await expect(page.getByTestId('current-field')).toBeVisible()
   await page.keyboard.press('Enter')
   await expect(page.getByRole('status')).toContainText('2 of 3')
+})
+
+test('Enter before the queue has loaded accepts nothing', async ({ page }) => {
+  const docId = await seedDocument(page, docKey('doc-3'), 3)
+  await page.goto(`/review/${docId}`)
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('current-field')).toBeVisible()
+  await expect(page.getByRole('status')).toContainText('1 of 3')
+  await expect(page.getByTestId('progress')).toHaveText('0 / 3')
+})
+
+test('a write the server has already applied resyncs instead of reopening', async ({ page }) => {
+  const key = docKey('doc-2')
+  const docId = await seedDocument(page, key, 2)
+  await page.goto(`/review/${docId}`)
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2')
+
+  // Close exception 0 behind the UI's back — same session, straight to the
+  // API — so the UI's Enter on it gets a 409 from review.py's compare-and-swap.
+  const closed = await page.request.post(
+    `${API_URL}/api/review/exceptions/${encodeURIComponent(`${key}:exc:0`)}/accept`)
+  expect(closed.status()).toBe(200)
+
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2')
+  await expect(page.getByTestId('item-failure')).toHaveCount(0)
+  await expect(page.getByTestId('failed-count')).toHaveCount(0)
+  await expect(page.getByRole('status')).toContainText('2 of 2')
+
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('progress')).toHaveText('2 / 2')
+  await expect(page.getByTestId('all-cleared')).toBeVisible()
 })
