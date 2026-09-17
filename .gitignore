@@ -10,6 +10,8 @@ node_modules/
 # Next.js build output.
 .next/
 next-env.d.ts
+# tsc --incremental's cache (tsconfig.json sets "incremental": true).
+ledger_sense/web/tsconfig.tsbuildinfo
 # Copied from the pinned pdfjs-dist by scripts/copy-pdf-worker.mjs on
 # predev/prebuild — a 1.2MB build artifact of a dependency, not source.
 ledger_sense/web/public/pdf.worker.min.mjs

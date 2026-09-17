@@ -28,7 +28,10 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
 
   useEffect(() => {
     let cancelled = false
-    const loadingTask = pdfjs.getDocument({ url: pdfUrl })
+    // withCredentials: the API is a separate origin and the bytes are behind
+    // the session cookie (GET /api/inbox/{id}/pdf); without it every fetch
+    // is anonymous and 401s.
+    const loadingTask = pdfjs.getDocument({ url: pdfUrl, withCredentials: true })
     setLoadError(null)
     void (async () => {
       try {
