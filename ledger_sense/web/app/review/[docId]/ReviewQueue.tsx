@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { BBox } from '@/lib/bbox'
+import { latestOnly } from '@/lib/latestOnly'
 import { useReviewKeys } from '@/lib/useReviewKeys'
 
 // Browser only. pdf.js renders to a canvas and has nothing to say on the
@@ -151,14 +152,19 @@ export function ReviewQueue({ docId }: { docId: string }) {
     queueRef.current?.focus()
   }, [])
 
-  // Never awaited by a keystroke. Responses can land out of order, so only
-  // the latest request issued is allowed to set the count.
-  const progressSeq = useRef(0)
+  // Server reads are never awaited by a keystroke, so their answers can land
+  // out of order; only the latest-issued read of each kind may commit. Two
+  // guards: one over everything that sets the count, one over everything
+  // that replaces the item list. A resync goes through both — its count is
+  // newer than any progress-only refetch issued before it, and a progress-
+  // only refetch must never supersede a resync's item list.
+  const latestProgress = useRef(latestOnly())
+  const latestResync = useRef(latestOnly())
+
   const refetchProgress = useCallback(() => {
-    const seq = ++progressSeq.current
-    void api<Progress>(`/api/review/documents/${docId}/progress`)
-      .then((prog) => {
-        if (seq === progressSeq.current) setProgress(prog)
+    void latestProgress.current(api<Progress>(`/api/review/documents/${docId}/progress`))
+      .then((result) => {
+        if (result.latest) setProgress(result.value)
       })
       .catch((err: unknown) => {
         setActionError(err instanceof Error ? err.message : 'Could not refresh progress')
@@ -233,11 +239,22 @@ export function ReviewQueue({ docId }: { docId: string }) {
   // Writes in flight, by exception id. A resync must not reopen an item whose
   // own request simply has not answered yet.
   const inFlight = useRef(new Set<string>())
+  // Failures waiting for the next committed resync to turn them into markers.
+  const pendingFailures = useRef(new Map<string, string>())
 
   /** Replace the local model with the server's. The cursor stays where it is
-   *  (clamped); Enter on a now-closed item advances, so nobody is stranded. */
-  const resync = useCallback(async () => {
-    const [list, prog] = await fetchQueue()
+   *  (clamped); Enter on a now-closed item advances, so nobody is stranded.
+   *  A resync superseded by a newer one commits nothing — not the list, not
+   *  the count, not a failure marker. */
+  const resync = useCallback(async (): Promise<void> => {
+    const read = fetchQueue()
+    const [queue, progressRead] = await Promise.all([
+      latestResync.current(read),
+      latestProgress.current(read.then(([, prog]) => prog)),
+    ])
+    if (progressRead.latest) setProgress(progressRead.value)
+    if (!queue.latest) return
+    const [list] = queue.value
     const { items: local, cursor } = model.current
     const items = list.map((server) => {
       const mine = local.find((e) => e.id === server.id)
@@ -246,10 +263,15 @@ export function ReviewQueue({ docId }: { docId: string }) {
     })
     model.current = { items, cursor: Math.min(cursor, Math.max(0, items.length - 1)) }
     commit()
-    setProgress(prog)
-    // A failure marker outlives its item only while the item is still open.
+    // Parked failures become markers only for items the server still has
+    // open; every marker outlives its item only while the item is open.
+    const parked = new Map(pendingFailures.current)
+    pendingFailures.current.clear()
     setFailures((prev) => {
       const next = { ...prev }
+      for (const [id, detail] of parked) {
+        if (items.some((e) => e.id === id && e.state === 'open')) next[id] = detail
+      }
       for (const e of items) if (e.state !== 'open') delete next[e.id]
       return next
     })
@@ -322,16 +344,14 @@ export function ReviewQueue({ docId }: { docId: string }) {
       })
       .catch(async (err: unknown) => {
         inFlight.current.delete(item.id)
-        const detail = err instanceof Error ? err.message : 'the write failed'
+        // Parked, not set: whichever resync commits (this one, or a newer
+        // one that superseded it) applies every parked failure against the
+        // server's list, so a superseded resync neither sets nor loses one.
+        pendingFailures.current.set(item.id, err instanceof Error ? err.message : 'the write failed')
         try {
           await resync()
         } catch (resyncErr: unknown) {
           setActionError(resyncErr instanceof Error ? resyncErr.message : 'Could not reload the queue')
-          return
-        }
-        const now = model.current.items.find((e) => e.id === item.id)
-        if (now?.state === 'open') {
-          setFailures((prev) => ({ ...prev, [item.id]: detail }))
         }
       })
   }, [commit, refetchProgress, refusal, resync, setItemState])
