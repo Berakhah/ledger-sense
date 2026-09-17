@@ -108,6 +108,10 @@ export function ReviewQueue({ docId }: { docId: string }) {
   const [reason, setReason] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  // Per-exception: the last write that failed and left it open on the
+  // server. Rendered with the item, cleared only when the item resolves.
+  const [failures, setFailures] = useState<Record<string, string>>({})
 
   // The queue's source of truth. A keystroke must see the previous one's
   // result immediately, before React has rendered it — a reviewer pressing
@@ -161,20 +165,30 @@ export function ReviewQueue({ docId }: { docId: string }) {
       })
   }, [docId])
 
+  /** The server's view of the queue and its count, in one go. Also what a
+   *  failed write falls back to: the local model is never guessed back into
+   *  shape, it is replaced by what the server says. */
+  const fetchQueue = useCallback(
+    () =>
+      Promise.all([
+        api<ReviewException[]>(`/api/review/documents/${docId}/exceptions`),
+        api<Progress>(`/api/review/documents/${docId}/progress`),
+      ]),
+    [docId],
+  )
+
   // Initial load.
   useEffect(() => {
     let cancelled = false
     void (async () => {
       try {
-        const [list, prog] = await Promise.all([
-          api<ReviewException[]>(`/api/review/documents/${docId}/exceptions`),
-          api<Progress>(`/api/review/documents/${docId}/progress`),
-        ])
+        const [list, prog] = await fetchQueue()
         if (cancelled) return
         const first = list.findIndex((e) => e.state === 'open')
         model.current = { items: list, cursor: first === -1 ? Math.max(0, list.length - 1) : first }
         commit()
         setProgress(prog)
+        setLoading(false)
         focusQueue()
         loaded.current = true
         for (const action of typedAhead.current.splice(0)) action()
@@ -185,7 +199,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
     return () => {
       cancelled = true
     }
-  }, [docId, commit, focusQueue])
+  }, [fetchQueue, commit, focusQueue])
 
   const current = items[cursor] ?? null
 
@@ -216,14 +230,53 @@ export function ReviewQueue({ docId }: { docId: string }) {
     model.current = { items: items.map((e) => (e.id === id ? { ...e, state } : e)), cursor }
   }, [])
 
-  /** Act on the open exception under the cursor, or say why not: Enter on an
-   *  item K brought back to is a no-op with a reason, not a 409 from the API.
+  // Writes in flight, by exception id. A resync must not reopen an item whose
+  // own request simply has not answered yet.
+  const inFlight = useRef(new Set<string>())
+
+  /** Replace the local model with the server's. The cursor stays where it is
+   *  (clamped); Enter on a now-closed item advances, so nobody is stranded. */
+  const resync = useCallback(async () => {
+    const [list, prog] = await fetchQueue()
+    const { items: local, cursor } = model.current
+    const items = list.map((server) => {
+      const mine = local.find((e) => e.id === server.id)
+      const pending = mine !== undefined && mine.state !== 'open' && inFlight.current.has(server.id)
+      return pending && server.state === 'open' ? mine : server
+    })
+    model.current = { items, cursor: Math.min(cursor, Math.max(0, items.length - 1)) }
+    commit()
+    setProgress(prog)
+    // A failure marker outlives its item only while the item is still open.
+    setFailures((prev) => {
+      const next = { ...prev }
+      for (const e of items) if (e.state !== 'open') delete next[e.id]
+      return next
+    })
+  }, [fetchQueue, commit])
+
+  /** Why the API would refuse this write with a 422, decided here without a
+   *  round trip: those refusals are permanent (review.py), so the item must
+   *  never be optimistically closed for them. */
+  const refusal = useCallback((item: ReviewException, state: ExceptionState): string | null => {
+    if (state === 'rejected') return null
+    if (item.bbox === null) {
+      return 'This field has no located geometry, so it cannot be accepted or edited yet — reject it, or leave it open.'
+    }
+    if (state === 'accepted' && item.actual === null) {
+      return 'Nothing to accept — no value was extracted. Use E to enter one.'
+    }
+    return null
+  }, [])
+
+  /** Act on the open exception under the cursor, or say why not.
    *
    *  Optimistic on purpose. The item closes and the cursor advances on the
    *  keystroke, not on the response: the keyboard model is the interface, and
-   *  a cursor that lags the network lags the reviewer. A failed write reopens
-   *  the item where it was — the next wrap of the queue finds it again — and
-   *  says so. */
+   *  a cursor that lags the network lags the reviewer. A failed write does
+   *  not guess — it resyncs from the server (a 409 means the server already
+   *  closed it; anything else leaves it open with a marker that stays until
+   *  the item resolves). */
   const actOnCurrent = useCallback((
     state: ExceptionState,
     request: (item: ReviewException) => Promise<unknown>,
@@ -232,7 +285,18 @@ export function ReviewQueue({ docId }: { docId: string }) {
     const item = items[cursor]
     if (!item) return
     if (item.state !== 'open') {
+      // Not stranded: say so, and move on to whatever is still open.
       setActionError(`This exception is already ${STATE_LABEL[item.state].toLowerCase()}.`)
+      const next = nextOpen(items, cursor)
+      if (next !== null) {
+        model.current = { items, cursor: next }
+        commit()
+      }
+      return
+    }
+    const refused = refusal(item, state)
+    if (refused !== null) {
+      setActionError(refused)
       return
     }
     setActionError(null)
@@ -240,21 +304,37 @@ export function ReviewQueue({ docId }: { docId: string }) {
     model.current = { ...model.current, cursor: nextOpen(model.current.items, cursor) ?? cursor }
     commit()
 
+    inFlight.current.add(item.id)
     void request(item)
       .then(() => {
+        inFlight.current.delete(item.id)
+        setFailures((prev) => {
+          if (!(item.id in prev)) return prev
+          const next = { ...prev }
+          delete next[item.id]
+          return next
+        })
         if (state !== 'rejected' && item.page !== null && item.bbox !== null) {
           const box: AcceptedBox = { id: item.id, page: item.page, bbox: item.bbox }
           setAccepted((prev) => [...prev, box])
         }
         refetchProgress()
       })
-      .catch((err: unknown) => {
-        setItemState(item.id, 'open')
-        commit()
+      .catch(async (err: unknown) => {
+        inFlight.current.delete(item.id)
         const detail = err instanceof Error ? err.message : 'the write failed'
-        setActionError(`${item.field} is still open: ${detail}`)
+        try {
+          await resync()
+        } catch (resyncErr: unknown) {
+          setActionError(resyncErr instanceof Error ? resyncErr.message : 'Could not reload the queue')
+          return
+        }
+        const now = model.current.items.find((e) => e.id === item.id)
+        if (now?.state === 'open') {
+          setFailures((prev) => ({ ...prev, [item.id]: detail }))
+        }
       })
-  }, [commit, refetchProgress, setItemState])
+  }, [commit, refetchProgress, refusal, resync, setItemState])
 
   const onAccept = useCallback(() => {
     actOnCurrent('accepted', (item) => postJson(`/api/review/exceptions/${item.id}/accept`, {}))
@@ -284,9 +364,12 @@ export function ReviewQueue({ docId }: { docId: string }) {
     reasonRef.current?.focus()
   }, [])
 
-  // Type-ahead. A reviewer who presses a key while the queue is still loading
-  // has said what they want; the keystroke waits for the data rather than
-  // being dropped on an empty page, and replays in the order it was typed.
+  // Type-ahead, for navigation and focus only. A reviewer who presses J or E
+  // while the queue is still loading has said where they want to be; the
+  // keystroke waits for the data rather than being dropped on an empty page.
+  // Enter is NOT buffered: accepting an exception nobody has seen is the
+  // false acceptance this screen exists to prevent, so before the queue has
+  // loaded it does nothing at all.
   const typeAhead = useCallback(
     (action: () => void) => () => {
       if (loaded.current) action()
@@ -294,15 +377,21 @@ export function ReviewQueue({ docId }: { docId: string }) {
     },
     [],
   )
+  const onlyOnceLoaded = useCallback(
+    (action: () => void) => () => {
+      if (loaded.current) action()
+    },
+    [],
+  )
   const keys = useMemo(
     () => ({
       onNext: typeAhead(onNext),
       onPrev: typeAhead(onPrev),
-      onAccept: typeAhead(onAccept),
+      onAccept: onlyOnceLoaded(onAccept),
       onEdit: typeAhead(onEdit),
       onReject: typeAhead(onReject),
     }),
-    [typeAhead, onNext, onPrev, onAccept, onEdit, onReject],
+    [typeAhead, onlyOnceLoaded, onNext, onPrev, onAccept, onEdit, onReject],
   )
   useReviewKeys({ ...keys, enabled: loadError === null })
 
@@ -314,6 +403,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
   const total = progress?.total ?? items.length
   const cleared = progress?.cleared ?? 0
   const allCleared = items.length > 0 && items.every((e) => e.state !== 'open')
+  const failedCount = Object.keys(failures).length
   const focusBox: BBox | null = current?.bbox ?? null
 
   return (
@@ -368,6 +458,20 @@ export function ReviewQueue({ docId }: { docId: string }) {
               {allCleared && (
                 <p data-testid="all-cleared" className="mt-3 border-l-2 border-accent pl-3 text-sm">
                   All {items.length} exceptions cleared. Nothing is left open on this document.
+                </p>
+              )}
+
+              {/* Stays with the item until the item resolves — unlike the
+                  action message below, which the next keystroke replaces. */}
+              {failures[current.id] !== undefined && (
+                <p data-testid="item-failure" className="mt-3 border-l-2 border-flag pl-3 text-sm text-flag">
+                  Still open — the last write failed: {failures[current.id]}
+                </p>
+              )}
+              {failedCount > 0 && failures[current.id] === undefined && (
+                <p data-testid="failed-count" className="mt-3 text-sm text-flag">
+                  {failedCount} {failedCount === 1 ? 'exception' : 'exceptions'} could not be written and{' '}
+                  {failedCount === 1 ? 'is' : 'are'} still open.
                 </p>
               )}
 
@@ -479,8 +583,14 @@ export function ReviewQueue({ docId }: { docId: string }) {
                 </button>
               </div>
             </>
+          ) : loading ? (
+            !loadError && (
+              <p data-testid="queue-loading" className="text-ink-muted">
+                Loading exceptions…
+              </p>
+            )
           ) : (
-            !loadError && <p className="text-ink-muted">No exceptions on this document.</p>
+            <p className="text-ink-muted">No exceptions on this document.</p>
           )}
         </section>
 
