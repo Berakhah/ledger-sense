@@ -214,8 +214,13 @@ class _RefreshTestTransport(httpx.BaseTransport):
         if self._crash_after_refresh:
             raise ConnectionError(
                 "connection dropped after refresh, before the retry completed")
+        # REAL shape (I-2, Task 37 review): QBO wraps this in a
+        # "Preferences" envelope. The original fixture returned the
+        # unwrapped body, which meant this test baked in the wrong
+        # assumption instead of exercising get_book_close_date's actual
+        # unwrap.
         return httpx.Response(
-            200, json={"AccountingInfoPrefs": {"BookCloseDate": None}})
+            200, json={"Preferences": {"AccountingInfoPrefs": {"BookCloseDate": None}}})
 
 
 def _transport_returning_401_then_200(token_store, realm_id, new_refresh="rt-2"):
@@ -294,3 +299,28 @@ def test_no_token_value_is_ever_logged(caplog, tmp_path):
                expires_at=datetime.now(UTC))
     store.load("r-1")
     assert "at-secret" not in caplog.text and "rt-secret" not in caplog.text
+
+
+def test_get_book_close_date_unwraps_the_real_preferences_envelope(tmp_path):
+    """I-2 (Task 37 review). QBO's real GET /preferences response is
+    {"Preferences": {"AccountingInfoPrefs": {...}}} — a "Preferences"
+    envelope get_book_close_date originally skipped, silently reading a real
+    close date back as None. A None-returning fixture cannot catch that
+    regression (None comes back whether or not the envelope is unwrapped),
+    so this asserts a NON-null date round-trips through the real nesting."""
+    from cryptography.fernet import Fernet
+
+    from ledger_sense.writeback.qbo import HttpQBOClient
+    from ledger_sense.writeback.tokens import TokenStore
+
+    store = TokenStore(str(tmp_path / "t.db"), fernet_key=Fernet.generate_key())
+    store.save("r-1", access="at-1", refresh="rt-1", expires_at=datetime.now(UTC))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "Preferences": {"AccountingInfoPrefs": {"BookCloseDate": "2026-06-30"}}})
+
+    client = HttpQBOClient(base_url="https://sandbox.example.test",
+                           realm_id="r-1", token_store=store,
+                           transport=httpx.MockTransport(handler))
+    assert client.get_book_close_date() == date(2026, 6, 30)

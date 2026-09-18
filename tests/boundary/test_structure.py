@@ -153,6 +153,42 @@ def test_no_module_outside_the_gateway_imports_a_provider_client() -> None:
     assert offenders == [], f"a provider client outside gateway.py: {offenders}"
 
 
+# Modules the writeback exemption above must never import. The exemption's
+# justification (writeback never touches a raw document, only
+# already-validated billing fields going to the client's own connected
+# accounting system) is a comment until something enforces it — this is
+# that enforcement. writeback is currently unwired into the pipeline
+# (nothing constructs a WriteRequest yet), so a stray `from
+# ledger_sense.extract import ...` dropped in six months would slip past
+# every other guard silently; this one exists specifically to catch it.
+WRITEBACK_FORBIDDEN_IMPORTS = ("ledger_sense.extract", "ledger_sense.ingest",
+                               "ledger_sense.gateway")
+
+
+def test_writeback_never_imports_the_document_pipeline_or_the_gateway() -> None:
+    """Task 37 review (recommended hardening). The provider-client exemption
+    for ledger_sense/writeback/ rests on writeback never seeing a raw
+    document — this converts that resting assumption into something a CI
+    failure would catch, not just something a docstring asserts."""
+    offenders = []
+    for path, tree in _sources():
+        if PACKAGE / "writeback" not in path.parents:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                continue
+            if any(name == forbidden or name.startswith(forbidden + ".")
+                   for name in names for forbidden in WRITEBACK_FORBIDDEN_IMPORTS):
+                offenders.append(f"{path}:{node.lineno}")
+    assert offenders == [], (
+        f"ledger_sense/writeback/ imported the document pipeline or the "
+        f"gateway, invalidating its provider-client exemption: {offenders}")
+
+
 def _dataclass_replace_calls(tree: ast.Module) -> list[int]:
     """Line numbers of calls to `dataclasses.replace` (or an alias of it).
 

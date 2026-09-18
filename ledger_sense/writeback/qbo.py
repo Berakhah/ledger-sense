@@ -339,7 +339,20 @@ class HttpQBOClient:
     def get_book_close_date(self) -> date | None:
         response = self._request("GET", self._company_path("/preferences"))
         response.raise_for_status()
-        raw = response.json().get("AccountingInfoPrefs", {}).get("BookCloseDate")
+        body = response.json()
+        # REVISED (I-2, Task 37 review). QBO wraps this response in a
+        # "Preferences" envelope — {"Preferences": {"AccountingInfoPrefs":
+        # {...}}} — that every sibling method in this class unwraps its own
+        # equivalent of (post_bill: "Bill", delete_bill: "Bill", _query:
+        # "QueryResponse") but this one alone did not. The failure was
+        # silent: a real book-close date would read back as None here, and
+        # Never-rule #4's closed-period refusal becomes a no-op that never
+        # fires. `.get("Preferences", body)` stays tolerant of an unwrapped
+        # shape too (as every sibling unwrap does), rather than assuming one
+        # envelope shape is the only one ever seen.
+        prefs = body.get("Preferences", body)
+        info_prefs = prefs.get("AccountingInfoPrefs", {}) if isinstance(prefs, dict) else {}
+        raw = info_prefs.get("BookCloseDate") if isinstance(info_prefs, dict) else None
         return date.fromisoformat(raw) if raw else None
 
     def delete_bill(self, remote_id: str) -> None:
