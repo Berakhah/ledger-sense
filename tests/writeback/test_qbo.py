@@ -24,6 +24,7 @@ from ledger_sense.writeback.idempotency import IdempotencyLedger
 from ledger_sense.writeback.interface import (
     ClosedPeriodError,
     LineItem,
+    WritebackPort,
     WriteRequest,
     build_idempotency_key,
 )
@@ -98,6 +99,16 @@ def test_a_bill_is_created_unpaid_and_marked_awaiting_review(ledger):
     assert AWAITING_REVIEW in client.bills[result.remote_id]["PrivateNote"]
 
 
+def test_qbo_adapter_satisfies_the_writeback_port(ledger):
+    """I-2. The brief requires QBOAdapter to satisfy WritebackPort; only
+    FakeAdapter (test_interface.py) was ever checked against the protocol.
+    WritebackPort is @runtime_checkable, so this is a real isinstance check,
+    not just a type-checker-only assertion (see the TYPE_CHECKING-guarded
+    static check in qbo.py for the mypy-time counterpart)."""
+    adapter = QBOAdapter(FakeQBOClient(), ledger, realm_id="r-1")
+    assert isinstance(adapter, WritebackPort)
+
+
 def test_no_bill_payment_is_ever_created(ledger):
     """v1 never posts an approved transaction, no matter what the client asks."""
     client = FakeQBOClient()
@@ -106,14 +117,44 @@ def test_no_bill_payment_is_ever_created(ledger):
 
 
 def test_no_code_path_calls_post_bill_payment():
-    """AST guard. The absence of a call today is not a guarantee tomorrow."""
+    """AST guard. The absence of a call today is not a guarantee tomorrow.
+
+    Resolved from __file__ (I-3.2), not cwd, so the scan is not silently
+    empty when pytest is invoked from a different working directory. Catches
+    both `obj.post_bill_payment(...)` (ast.Attribute) and a bare
+    `post_bill_payment(...)` (ast.Name) call, plus flags any
+    "post_bill_payment" string literal anywhere under ledger_sense/ as a
+    belt-and-braces check against a `getattr(obj, "post_bill_payment")(...)`
+    evasion (F-32 warns this project's own audit history against exactly
+    this class of stringly-typed dodge). A file that fails to parse (I-3.3,
+    e.g. a stray BOM) fails with a readable message naming the file instead
+    of turning this policy test into an opaque SyntaxError.
+    """
+    ledger_sense_root = pathlib.Path(__file__).resolve().parents[2] / "ledger_sense"
+    assert ledger_sense_root.is_dir(), f"expected package root at {ledger_sense_root}"
+
+    scanned = list(ledger_sense_root.rglob("*.py"))
+    assert len(scanned) >= 10, (
+        f"only found {len(scanned)} files under {ledger_sense_root} — the scan "
+        f"looks empty or truncated, which would make this guard pass vacuously")
+
     offenders = []
-    for path in pathlib.Path("ledger_sense").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path in scanned:
+        source = path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            raise AssertionError(
+                f"could not parse {path} for the post_bill_payment AST guard: "
+                f"{exc}") from exc
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and getattr(
-                    node.func, "attr", "") == "post_bill_payment":
+            if isinstance(node, ast.Call) and (
+                    getattr(node.func, "attr", "") == "post_bill_payment"
+                    or getattr(node.func, "id", "") == "post_bill_payment"):
                 offenders.append(f"{path}:{node.lineno}")
+            if (isinstance(node, ast.Constant) and node.value == "post_bill_payment"):
+                offenders.append(
+                    f"{path}:{node.lineno} (string literal — possible getattr evasion)")
     assert offenders == [], f"BillPayment created at: {offenders}"
 
 
@@ -203,6 +244,42 @@ def test_the_bounded_scan_does_not_match_a_different_vendors_bill_same_day(ledge
     result = adapter.create_unapproved_bill(request)
     assert len(client.bills) == 2
     assert result.remote_id != next(iter(client.bills))
+
+
+def test_multiple_same_vendor_same_date_bills_match_by_key_not_position(ledger):
+    """I-1. The realistic construction-billing case this guard exists for:
+    two different applications for the SAME subcontractor, both dated
+    month-end (e.g. two contracts, or two applications posted the same day).
+    `find_bills_by_date_and_vendor` legitimately returns more than one
+    candidate here, so matching cannot stop at the first result — it must
+    compare the embedded key. A mutant that replaced the key comparison with
+    an unconditional `return candidate` passed every other test in this file
+    but fails this one: it would silently adopt request_a's bill as though
+    it were request_b's, never call post_bill for request_b, and commit
+    request_b's idempotency key against request_a's remote_id."""
+    client = FakeQBOClient()
+    adapter = QBOAdapter(client, ledger, realm_id="r-1")
+
+    request_a = _request(application_no=1, vendor_invoice_number="INV-1001")
+    request_b = _request(application_no=2, vendor_invoice_number="INV-1002")
+    assert request_a.vendor_ref == request_b.vendor_ref
+    assert request_a.txn_date == request_b.txn_date
+    assert request_a.idempotency_key != request_b.idempotency_key
+
+    first = adapter.create_unapproved_bill(request_a)
+    # At this point find_bills_by_date_and_vendor(date, vendor) for request_b
+    # returns exactly one candidate: request_a's bill, keyed under a
+    # DIFFERENT idempotency key. The match must reject it as a false replay
+    # and go on to create a genuinely new bill.
+    second = adapter.create_unapproved_bill(request_b)
+
+    assert second.was_replay is False, (
+        "matched a same-vendor/same-date bill belonging to a DIFFERENT "
+        "idempotency key as though it were a replay")
+    assert second.remote_id != first.remote_id
+    assert len(client.bills) == 2
+    assert ledger.lookup(request_a.idempotency_key).remote_id == first.remote_id
+    assert ledger.lookup(request_b.idempotency_key).remote_id == second.remote_id
 
 
 # ---------------------------------------------------------------------------
@@ -357,3 +434,21 @@ def test_extract_key_from_private_note_is_robust_to_surrounding_text():
 
 def test_extract_key_from_private_note_returns_none_when_absent():
     assert extract_key_from_private_note("no key here") is None
+
+
+def test_extract_key_from_private_note_does_not_match_a_word_containing_key(ledger):
+    """M-1. `extract_key_from_private_note("turnkey=YES job")` used to return
+    "YES" because the pattern matched `key=` as a substring of `turnkey=`.
+    Anchored on whitespace/string boundaries now. Exercised both directly
+    and through a memo that legitimately contains a `key=`-like substring —
+    the REAL key, embedded before the memo by _build_payload, must still be
+    the one recovered."""
+    assert extract_key_from_private_note("turnkey=YES job") is None
+
+    client = FakeQBOClient()
+    request = _request(vendor_invoice_number="INV-4471")
+    request = request.model_copy(update={"memo": "Master turnkey=YES delivery"})
+    result = QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(request)
+    bill = client.bills[result.remote_id]
+    assert "turnkey=YES" in bill["PrivateNote"]
+    assert extract_key_from_private_note(bill["PrivateNote"]) == request.idempotency_key
