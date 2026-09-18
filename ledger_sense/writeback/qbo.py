@@ -34,7 +34,7 @@ after a crash differs by path:
 
 import re
 from datetime import UTC, date, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ledger_sense.writeback.idempotency import IdempotencyLedger
 from ledger_sense.writeback.interface import (
@@ -44,15 +44,20 @@ from ledger_sense.writeback.interface import (
     WriteResult,
 )
 
+if TYPE_CHECKING:
+    from ledger_sense.writeback.interface import WritebackPort
+
 AWAITING_REVIEW = (
     "AWAITING REVIEW — Ledger Sense. Approve by paying this bill in QuickBooks."
 )
 
 # The delimiter embedded in PrivateNote so the idempotency key can be found
-# and parsed back out reliably. `key=` followed by a run of non-whitespace
-# (the key itself is alphanumeric, see interface.build_idempotency_key) is
-# unambiguous against the rest of the free-text note.
-_KEY_PATTERN = re.compile(r"key=(\S+)")
+# and parsed back out reliably. Anchored on both sides (start-of-string-or-
+# whitespace before, whitespace-or-end after) so it matches the `key=`
+# TOKEN, not `key=` as a substring of some other word in the free-text memo
+# (e.g. "turnkey=YES" must not be mistaken for a key marker). The key itself
+# is alphanumeric (see interface.build_idempotency_key).
+_KEY_PATTERN = re.compile(r"(?:^|\s)key=([A-Za-z0-9]+)(?=\s|$)")
 
 
 def extract_key_from_private_note(private_note: str) -> str | None:
@@ -191,3 +196,14 @@ class QBOAdapter:
         self._ledger.mark_reversed(idempotency_key, adapter=self.name)
         return ReversalResult(remote_id=remote_id,
                               reversed_at=datetime.now(UTC), method="deleted")
+
+
+if TYPE_CHECKING:
+    # Static conformance check (I-2): the brief requires QBOAdapter to satisfy
+    # WritebackPort. This assignment costs nothing at runtime (it never
+    # executes; TYPE_CHECKING is False) but mypy --strict will fail this
+    # module the moment QBOAdapter's shape drifts from the protocol. The
+    # dynamic counterpart — isinstance(adapter, WritebackPort) — lives in
+    # tests/writeback/test_qbo.py.
+    def _qbo_adapter_satisfies_writebackport(adapter: QBOAdapter) -> None:
+        _conforms: WritebackPort = adapter
