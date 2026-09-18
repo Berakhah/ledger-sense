@@ -65,12 +65,34 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS audit_by_remote ON audit (tenant_id, remote_id);
 """
 
-# Column order used by every INSERT/SELECT touching the chain fields, so the
-# canonical payload and the row layout can never silently drift apart.
+# The fields that make up a hash-chained entry's canonical payload. This
+# tuple is not just documentation: `_canonical_payload`, the INSERT in
+# `_append`, and the SELECT in `verify_chain` are all built FROM it (see
+# `_CHAIN_FIELDS`, `_ALL_COLUMNS`, `_INSERT_SQL`, `_VERIFY_COLUMNS` below), so
+# adding, removing, or reordering a field here changes all three together —
+# they cannot drift apart the way a comment merely asserting the same thing
+# could.
 _PAYLOAD_FIELDS = (
     "id", "tenant_id", "doc_id", "adapter", "action", "remote_id",
     "idempotency_key", "approved_by", "occurred_at", "detail",
 )
+
+# The two chain columns, stored alongside the payload fields but excluded
+# from the hash itself (a row's own hash cannot include its own hash).
+_CHAIN_FIELDS = ("prev_hash", "entry_hash")
+
+_ALL_COLUMNS = _PAYLOAD_FIELDS + _CHAIN_FIELDS
+
+_INSERT_SQL = (
+    f"INSERT INTO audit ({', '.join(_ALL_COLUMNS)}) VALUES "
+    f"({', '.join(f':{column}' for column in _ALL_COLUMNS)})"
+)
+
+# rowid first (SQLite's true insertion order, used by verify_chain), then
+# every payload field, then the two chain columns — same source tuple as the
+# INSERT above, so the SELECT can never silently stop covering a column the
+# hash actually depends on.
+_VERIFY_COLUMNS = ("rowid", *_PAYLOAD_FIELDS, *_CHAIN_FIELDS)
 
 
 class AuditEntry(BaseModel):
@@ -85,23 +107,20 @@ class AuditEntry(BaseModel):
     detail: str
 
 
-def _canonical_payload(*, id: str, tenant_id: str, doc_id: str, adapter: str,
-                       action: str, remote_id: str,
-                       idempotency_key: str | None, approved_by: str,
-                       occurred_at: str, detail: str) -> str:
+def _canonical_payload(**fields: str | None) -> str:
     """A deterministic serialization of one entry's fields.
+
+    Only the names in `_PAYLOAD_FIELDS` are included (extras in `fields` are
+    ignored, e.g. a caller passing `prev_hash`/`entry_hash` alongside the rest
+    of a row) — this is what ties the hash to that single source-of-truth
+    tuple rather than to whatever happens to be in scope at each call site.
 
     `json.dumps(..., sort_keys=True)` over a plain dict of strings sidesteps
     Python's dict-iteration-order ambiguity (not a real risk in 3.7+, but the
     explicit sort makes the format self-documenting and immune to a future
     field reordering silently changing every hash already on disk).
     """
-    payload = {
-        "id": id, "tenant_id": tenant_id, "doc_id": doc_id, "adapter": adapter,
-        "action": action, "remote_id": remote_id,
-        "idempotency_key": idempotency_key, "approved_by": approved_by,
-        "occurred_at": occurred_at, "detail": detail,
-    }
+    payload = {name: fields[name] for name in _PAYLOAD_FIELDS}
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
@@ -118,6 +137,30 @@ class AuditLog:
     db path, not a connection, and is safe to use from FastAPI's sync-handler
     threadpool. Enforced by
     `tests/test_platform_skeleton.py::test_no_module_opens_a_database_connection_directly`.
+
+    CONCURRENCY (fixed after review, I-1): `_append` reads the chain tip and
+    inserts the new entry inside one `BEGIN IMMEDIATE` transaction. Without
+    that, "read the tip, then insert" is two separate implicit transactions —
+    WAL mode's single-writer guarantee serializes each COMMIT, but says
+    nothing about two writers interleaving between a SELECT and the INSERT
+    that follows it, so two concurrent honest appends could read the same
+    tip and both chain from it, corrupting the chain and making
+    `verify_chain` report a FALSE tamper accusation against an entry nobody
+    touched. A Python `threading.Lock` cannot fix this either, because
+    `store/sqlite.py::connect()` hands each THREAD (and each process) its own
+    connection to the same file — the race is between separate SQLite
+    connections, so only SQLite's own transaction locking (which `BEGIN
+    IMMEDIATE` acquires eagerly, before the read) can serialize it.
+
+    WHAT `verify_chain()` DOES NOT PROVE (I-2, documented not fixed): the
+    chain has no anchor outside the `audit` table itself. Deleting the most
+    recent row, or forging its contents, before any further entry is
+    appended leaves `verify_chain() == []` — there is nothing after that row
+    to notice its hash no longer chains forward correctly. Only edits to an
+    entry that already has a successor are caught. Closing this gap needs an
+    external anchor (e.g. persisting the tip hash + row count somewhere
+    outside this table, or an append-only remote log) and is a candidate
+    follow-up task, not attempted here.
     """
 
     def __init__(self, db_path: str, tenant_id: str = DEFAULT_TENANT_ID) -> None:
@@ -126,8 +169,12 @@ class AuditLog:
         connect(db_path).executescript(_SCHEMA)
         connect(db_path).commit()
 
-    def _last_hash(self) -> str:
-        row = connect(self._path).execute(
+    def _last_hash(self, conn: sqlite3.Connection) -> str:
+        """Must be called from inside the same `BEGIN IMMEDIATE` transaction
+        that will perform the following INSERT (see `_append`) — reading the
+        tip on its own connection/transaction is exactly the race I-1 fixed.
+        """
+        row = conn.execute(
             "SELECT entry_hash FROM audit WHERE tenant_id = ? "
             "ORDER BY rowid DESC LIMIT 1", (self._tenant_id,)).fetchone()
         return cast(str, row[0]) if row else _GENESIS_HASH
@@ -135,29 +182,31 @@ class AuditLog:
     def _append(self, entry: AuditEntry) -> None:
         conn = connect(self._path)
         occurred_at = entry.occurred_at.isoformat()
-        prev_hash = self._last_hash()
-        payload = _canonical_payload(
-            id=entry.id, tenant_id=self._tenant_id, doc_id=entry.doc_id,
-            adapter=entry.adapter, action=entry.action,
-            remote_id=entry.remote_id, idempotency_key=entry.idempotency_key,
-            approved_by=entry.approved_by, occurred_at=occurred_at,
-            detail=entry.detail)
-        entry_hash = _compute_entry_hash(prev_hash, payload)
-        conn.execute(
-            "INSERT INTO audit (id, tenant_id, doc_id, adapter, action, "
-            "remote_id, idempotency_key, approved_by, occurred_at, detail, "
-            "prev_hash, entry_hash) VALUES "
-            "(:id, :tenant_id, :doc_id, :adapter, :action, :remote_id, "
-            ":idempotency_key, :approved_by, :occurred_at, :detail, "
-            ":prev_hash, :entry_hash)",
-            {"id": entry.id, "tenant_id": self._tenant_id, "doc_id": entry.doc_id,
-             "adapter": entry.adapter, "action": entry.action,
-             "remote_id": entry.remote_id,
-             "idempotency_key": entry.idempotency_key,
-             "approved_by": entry.approved_by, "occurred_at": occurred_at,
-             "detail": entry.detail, "prev_hash": prev_hash,
-             "entry_hash": entry_hash})
-        conn.commit()
+        # I-1: BEGIN IMMEDIATE acquires SQLite's write lock up front, before
+        # the tip is even read, so no other connection (other thread, other
+        # process) can insert between our read of the tip and our own
+        # insert. See the class docstring for why a Python-level lock cannot
+        # substitute for this.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            prev_hash = self._last_hash(conn)
+            row: dict[str, str | None] = {
+                "id": entry.id, "tenant_id": self._tenant_id,
+                "doc_id": entry.doc_id, "adapter": entry.adapter,
+                "action": entry.action, "remote_id": entry.remote_id,
+                "idempotency_key": entry.idempotency_key,
+                "approved_by": entry.approved_by, "occurred_at": occurred_at,
+                "detail": entry.detail,
+            }
+            payload = _canonical_payload(**row)
+            row["prev_hash"] = prev_hash
+            row["entry_hash"] = _compute_entry_hash(prev_hash, payload)
+            conn.execute(_INSERT_SQL, row)
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
 
     def record_write(self, doc_id: str, adapter: str, result: WriteResult,
                      approved_by: str) -> None:
@@ -212,30 +261,39 @@ class AuditLog:
         does not match, naming its remote_id and rowid so a human (or a test)
         can identify exactly what was tampered with. An unmodified chain
         returns an empty list.
+
+        LIMITATION (I-2): this only catches tampering with an entry that
+        already has a successor in the chain. Deleting, or rewriting the
+        contents of, the single most recent row — before anything else is
+        appended — leaves this method reporting a clean chain, because
+        nothing downstream exists yet to disagree with it. Treat
+        `verify_chain() == []` as "no tampering was detected among entries
+        that have since been chained over", not as an unconditional "nothing
+        was ever touched". Closing that gap needs an anchor outside this
+        table (see the class docstring) and is a candidate follow-up, not
+        implemented here.
         """
-        rows = self._conn.execute(
-            "SELECT rowid, id, tenant_id, doc_id, adapter, action, remote_id, "
-            "idempotency_key, approved_by, occurred_at, detail, prev_hash, "
-            "entry_hash FROM audit WHERE tenant_id = ? ORDER BY rowid",
-            (self._tenant_id,)).fetchall()
+        query = (f"SELECT {', '.join(_VERIFY_COLUMNS)} FROM audit "
+                 f"WHERE tenant_id = ? ORDER BY rowid")
+        rows = self._conn.execute(query, (self._tenant_id,)).fetchall()
         broken: list[str] = []
         expected_prev = _GENESIS_HASH
-        for row in rows:
-            (rowid, id_, tenant_id, doc_id, adapter, action, remote_id,
-             idempotency_key, approved_by, occurred_at, detail, prev_hash,
-             stored_hash) = row
-            payload = _canonical_payload(
-                id=id_, tenant_id=tenant_id, doc_id=doc_id, adapter=adapter,
-                action=action, remote_id=remote_id,
-                idempotency_key=idempotency_key, approved_by=approved_by,
-                occurred_at=occurred_at, detail=detail)
+        for raw_row in rows:
+            rowid = cast(int, raw_row[0])
+            values = dict(zip(_VERIFY_COLUMNS[1:], raw_row[1:], strict=True))
+            prev_hash = cast(str, values["prev_hash"])
+            stored_hash = cast(str, values["entry_hash"])
+            payload_fields = {
+                name: cast(str | None, values[name]) for name in _PAYLOAD_FIELDS}
+            payload = _canonical_payload(**payload_fields)
             expected_hash = _compute_entry_hash(expected_prev, payload)
             if prev_hash != expected_prev or stored_hash != expected_hash:
                 broken.append(
-                    f"audit entry rowid={rowid} id={id_} remote_id={remote_id!r} "
-                    f"action={action!r}: stored hash does not match its "
-                    f"recomputed payload/predecessor — the row was modified "
-                    f"after it was written")
+                    f"audit entry rowid={rowid} id={values['id']} "
+                    f"remote_id={values['remote_id']!r} "
+                    f"action={values['action']!r}: stored hash does not match "
+                    f"its recomputed payload/predecessor — the row was "
+                    f"modified after it was written")
             # Chain forward from the STORED hash, not the expected one, so a
             # single tampered entry is named once rather than cascading into
             # a false positive for every entry after it.

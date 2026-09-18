@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -8,6 +8,7 @@ from ledger_sense.writeback.idempotency import IdempotencyLedger
 from ledger_sense.writeback.interface import (
     LineItem,
     WriteRequest,
+    WriteResult,
     build_idempotency_key,
 )
 from ledger_sense.writeback.qbo import QBOAdapter
@@ -112,6 +113,31 @@ def test_an_edited_entry_is_detected_and_named(audited, tmp_path):
     assert result.remote_id in str(broken)
 
 
+def test_an_edited_approved_by_is_detected_and_named(audited, tmp_path):
+    """I-3. The only prior tamper test edits `detail`, so a hash function
+    that (by bug) only ever covered `detail` would still pass the whole
+    suite. `approved_by` is literally "the named human on the record" that
+    `create_unapproved_bill` refuses to proceed without — forging it after
+    the fact (a bookkeeper's name swapped onto a write they never approved)
+    is exactly the tamper this chain exists to catch, and needs its own
+    explicit regression guard rather than incidental coverage via the
+    payload's field list.
+    """
+    adapter, audit, _client = audited
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "audit.db"))
+    # Forged directly via raw SQL, NOT by recomputing the hash — a real
+    # tamper never gets to update entry_hash to match.
+    conn.execute("UPDATE audit SET approved_by = 'Someone Else'")
+    conn.commit()
+    conn.close()
+    broken = audit.verify_chain()
+    assert broken, "an entry with a forged approved_by verified clean"
+    assert result.remote_id in str(broken)
+
+
 def test_a_reversal_after_a_restart_still_names_the_document(tmp_path):
     """F-42. `_doc_by_remote` was an in-memory dict, so a reversal after a
     process restart audited doc_id='unknown' — and a reversal is exactly the
@@ -197,3 +223,42 @@ def test_document_for_remote_finds_the_write_entry(audited):
     request = _request()
     result = adapter.create_unapproved_bill(request)
     assert audit.document_for_remote(result.remote_id) == "doc-1"
+
+
+def test_concurrent_appends_do_not_fork_the_chain(tmp_path):
+    """I-1. `_last_hash` (a SELECT) and the following INSERT used to be two
+    separate implicit transactions, so two threads could both read the same
+    chain tip and append from it — corrupting the chain and making
+    `verify_chain` report a FALSE tamper accusation against an entry nobody
+    touched. Several threads hammering one `AuditLog` concurrently, with the
+    chain verifying clean afterward, is the regression guard: the previous
+    (single-threaded) suite could not see this class of bug at all.
+    """
+    import threading
+
+    audit = AuditLog(str(tmp_path / "audit.db"))
+    threads_n, appends_per_thread = 4, 25
+    errors: list[BaseException] = []
+
+    def _hammer(worker: int) -> None:
+        try:
+            for i in range(appends_per_thread):
+                result = WriteResult(
+                    remote_id=f"w{worker}-{i}", idempotency_key=f"key-{worker}-{i}",
+                    adapter="qbo", created_at=datetime.now(UTC), was_replay=False)
+                audit.record_write(f"doc-{worker}-{i}", "qbo", result,
+                                   approved_by="A. Bookkeeper")
+        except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_hammer, args=(w,)) for w in range(threads_n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"a writer thread raised: {errors}"
+    rows = audit._conn.execute("SELECT COUNT(*) FROM audit").fetchone()
+    assert rows[0] == threads_n * appends_per_thread
+    assert audit.verify_chain() == []
+    audit.close()
