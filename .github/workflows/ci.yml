@@ -1,6 +1,14 @@
 # .github/workflows/ci.yml
 name: ci
-on: [push, pull_request]
+on:
+  push: {}
+  pull_request: {}
+  schedule:
+    # Nightly QBO sandbox smoke (qbo-live-smoke below): live credentials
+    # drift out from under a recorded cassette without anyone touching this
+    # repo, so this is the only job in this file allowed to fail without
+    # blocking a PR — see `continue-on-error` there.
+    - cron: "17 6 * * *"
 jobs:
   licence:
     runs-on: ubuntu-latest
@@ -157,3 +165,41 @@ jobs:
       - run: uv run cyclonedx-py environment -o sbom.json
       - uses: actions/upload-artifact@v4
         with: { name: sbom, path: sbom.json }
+
+  qbo-live-smoke:
+    # Proves the recorded cassettes (tests/writeback/cassettes/) still match
+    # the real sandbox. Runs only on the nightly schedule (never on a push
+    # or PR — no cassette exists to record against yet, and no other job
+    # should ever block on live QBO reachability), and is allowed to fail
+    # without failing the workflow: upstream drift here is a signal to
+    # re-record, not a defect in this branch's code.
+    if: github.event_name == 'schedule'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      # NOTE: no --vcr-record flag. This test file drives vcrpy directly
+      # (@qbo_vcr.use_cassette(...), record_mode="once" — see
+      # tests/writeback/test_qbo_sandbox.py), not the pytest-recording/
+      # pytest-vcr plugin, so that CLI flag does not exist here; passing it
+      # would fail pytest's argument parsing on every run, live-drift or
+      # not. Once cassettes exist and are committed, record_mode="once"
+      # already replays them without hitting the network.
+      - run: uv run pytest tests/writeback/test_qbo_sandbox.py -v
+        env:
+          QBO_CLIENT_ID: ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REALM_ID: ${{ secrets.QBO_REALM_ID }}
+          QBO_REFRESH_TOKEN: ${{ secrets.QBO_REFRESH_TOKEN }}
+      - if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: 'QBO sandbox smoke test failed',
+              body: 'Recorded cassettes may no longer match the live API. Re-record.',
+              labels: ['writeback', 'upstream-drift'],
+            })

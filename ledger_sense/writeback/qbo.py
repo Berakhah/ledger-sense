@@ -32,9 +32,12 @@ after a crash differs by path:
     PrivateNote client-side.
 """
 
+import os
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
+
+import httpx
 
 from ledger_sense.writeback.idempotency import IdempotencyLedger
 from ledger_sense.writeback.interface import (
@@ -46,6 +49,12 @@ from ledger_sense.writeback.interface import (
 
 if TYPE_CHECKING:
     from ledger_sense.writeback.interface import WritebackPort
+    from ledger_sense.writeback.tokens import TokenStore
+
+# Intuit's OAuth token endpoint. Fixed, not client-configurable: it is the
+# same host for every realm, sandbox or production (the realm id in the
+# COMPANY API path is what selects sandbox vs. production data).
+_TOKEN_ENDPOINT = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
 AWAITING_REVIEW = (
     "AWAITING REVIEW — Ledger Sense. Approve by paying this bill in QuickBooks."
@@ -198,6 +207,156 @@ class QBOAdapter:
                               reversed_at=datetime.now(UTC), method="deleted")
 
 
+class HttpQBOClient:
+    """`QBOClient` against the real (sandbox) QuickBooks Online API, via httpx.
+
+    PLATFORM: base URL is `https://sandbox-quickbooks.api.intuit.com` in
+    weeks 5-12 (this project ships sandbox-only, per the brief). Every
+    company-scoped call goes to `/v3/company/{realm_id}/...`.
+
+    TOKENS: the access token comes from `TokenStore` (Task 36) and is
+    refreshed exactly once per call on a 401. Intuit's refresh token
+    ROTATES on every use and expires after ~100 days of disuse — the
+    refreshed pair is persisted to `TokenStore` BEFORE the retry is ever
+    attempted (`_refresh`), so a crash between "refreshed" and "retried"
+    leaves a usable, already-rotated token behind rather than stranding the
+    integration on a refresh token QBO has already invalidated.
+
+    NEVER LOG A TOKEN. No access or refresh token value is ever passed to a
+    logging call, an exception message, or `repr()` anywhere in this class.
+
+    `transport` is an injection seam for tests (an `httpx.BaseTransport`); it
+    is `None` in real use, which makes `httpx.Client` open real sockets.
+    """
+
+    def __init__(self, base_url: str, realm_id: str, token_store: "TokenStore",
+                 transport: httpx.BaseTransport | None = None,
+                 client_id: str | None = None, client_secret: str | None = None,
+                 timeout: int = 30) -> None:
+        # int seconds, not float: ledger_sense/writeback is a no-float
+        # guarded package (scripts/check_no_float.py MAIN_ROOTS) — the
+        # scanner flags any float literal in-tree, not only ones on the
+        # money path, and an HTTP timeout has no need of sub-second
+        # precision here anyway.
+        self._realm_id = realm_id
+        self._token_store = token_store
+        # Real refreshes need Intuit app credentials; unit tests exercising
+        # the retry-on-401 path inject a fake transport that never checks
+        # them, so an empty string is a harmless default rather than a
+        # required constructor argument every test would otherwise supply.
+        self._client_id = client_id or os.environ.get("QBO_CLIENT_ID", "")
+        self._client_secret = client_secret or os.environ.get("QBO_CLIENT_SECRET", "")
+        self._client = httpx.Client(base_url=base_url, transport=transport,
+                                    timeout=timeout)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _company_path(self, suffix: str) -> str:
+        return f"/v3/company/{self._realm_id}{suffix}"
+
+    def _access_token(self) -> str:
+        tokens = self._token_store.load(self._realm_id)
+        if tokens is None:
+            raise RuntimeError(
+                f"no OAuth tokens stored for realm {self._realm_id!r}; connect "
+                f"the QBO sandbox account before writing.")
+        return tokens.access
+
+    def _refresh(self) -> None:
+        """Exchange the current refresh token for a new access/refresh pair
+        and PERSIST it before returning — see the class docstring on why the
+        ordering matters."""
+        tokens = self._token_store.load(self._realm_id)
+        if tokens is None:
+            raise RuntimeError(
+                f"no OAuth tokens stored for realm {self._realm_id!r}; cannot "
+                f"refresh a token that was never connected.")
+        response = self._client.post(
+            _TOKEN_ENDPOINT,
+            data={"grant_type": "refresh_token", "refresh_token": tokens.refresh},
+            auth=(self._client_id, self._client_secret),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        expires_at = datetime.now(UTC) + timedelta(
+            seconds=int(payload.get("expires_in", 3600)))
+        self._token_store.rotate(
+            self._realm_id,
+            access=payload["access_token"],
+            refresh=payload.get("refresh_token", tokens.refresh),
+            expires_at=expires_at,
+        )
+
+    def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+        """One call, refreshed and retried exactly once on a 401. The retry
+        only ever happens after `_refresh` has already persisted the new
+        token, so if the retry itself crashes the rotated token is not lost
+        (see `_refresh` and the class docstring)."""
+        response = self._client.request(
+            method, path, headers={"Authorization": f"Bearer {self._access_token()}"},
+            **kwargs)  # type: ignore[arg-type]
+        if response.status_code == 401:
+            self._refresh()
+            response = self._client.request(
+                method, path,
+                headers={"Authorization": f"Bearer {self._access_token()}"},
+                **kwargs)  # type: ignore[arg-type]
+        return response
+
+    def post_bill(self, payload: dict[str, object]) -> dict[str, object]:
+        response = self._request("POST", self._company_path("/bill"), json=payload)
+        if 400 <= response.status_code < 500:
+            # A 4xx here is QBO refusing the write outright (e.g. an unknown
+            # VendorRef) — it did not land and never will without a
+            # correction (F-44), so it fails cleanly rather than retrying.
+            raise QBORejected(
+                f"QBO rejected the bill: {response.status_code} {response.text}")
+        response.raise_for_status()
+        body = response.json()
+        result = body.get("Bill", body)
+        return dict(result) if isinstance(result, dict) else {}
+
+    def _query(self, query: str) -> list[dict[str, object]]:
+        response = self._request(
+            "GET", self._company_path("/query"), params={"query": query})
+        response.raise_for_status()
+        bills = response.json().get("QueryResponse", {}).get("Bill", [])
+        return list(bills) if isinstance(bills, list) else []
+
+    def find_bill_by_docnumber(self, doc_number: str) -> dict[str, object] | None:
+        escaped = doc_number.replace("'", "\\'")
+        results = self._query(f"SELECT * FROM Bill WHERE DocNumber = '{escaped}'")
+        return results[0] if results else None
+
+    def find_bills_by_date_and_vendor(
+            self, txn_date: date, vendor_ref: str) -> list[dict[str, object]]:
+        escaped_vendor = vendor_ref.replace("'", "\\'")
+        return self._query(
+            f"SELECT * FROM Bill WHERE TxnDate = '{txn_date.isoformat()}' "
+            f"AND VendorRef = '{escaped_vendor}'")
+
+    def get_book_close_date(self) -> date | None:
+        response = self._request("GET", self._company_path("/preferences"))
+        response.raise_for_status()
+        raw = response.json().get("AccountingInfoPrefs", {}).get("BookCloseDate")
+        return date.fromisoformat(raw) if raw else None
+
+    def delete_bill(self, remote_id: str) -> None:
+        # QBO's delete operation requires the current SyncToken (optimistic
+        # concurrency), which the QBOClient protocol's delete_bill(remote_id)
+        # signature does not carry — fetch the bill first to get it.
+        current = self._request("GET", self._company_path(f"/bill/{remote_id}"))
+        current.raise_for_status()
+        current_body = current.json()
+        bill = current_body.get("Bill", current_body)
+        sync_token = bill.get("SyncToken", "0") if isinstance(bill, dict) else "0"
+        response = self._request(
+            "POST", self._company_path("/bill"), params={"operation": "delete"},
+            json={"Id": remote_id, "SyncToken": sync_token})
+        response.raise_for_status()
+
+
 if TYPE_CHECKING:
     # Static conformance check (I-2): the brief requires QBOAdapter to satisfy
     # WritebackPort. This assignment costs nothing at runtime (it never
@@ -207,3 +366,9 @@ if TYPE_CHECKING:
     # tests/writeback/test_qbo.py.
     def _qbo_adapter_satisfies_writebackport(adapter: QBOAdapter) -> None:
         _conforms: WritebackPort = adapter
+
+    # Same check for HttpQBOClient against QBOClient. QBOClient is a plain
+    # (not @runtime_checkable) Protocol, so there is no dynamic isinstance
+    # counterpart here — this static assignment is the only enforcement.
+    def _http_qbo_client_satisfies_qboclient(client: HttpQBOClient) -> None:
+        _conforms_qbo: QBOClient = client

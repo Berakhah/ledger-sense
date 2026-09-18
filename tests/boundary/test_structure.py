@@ -128,6 +128,18 @@ def test_no_module_outside_the_gateway_imports_a_provider_client() -> None:
     for path, tree in _sources():
         if path == PACKAGE / "gateway.py":
             continue
+        # ledger_sense/writeback/ (Task 37's HttpQBOClient) is exempt. This
+        # guard exists to enforce Never-rule #1 — no CLIENT_CONFIDENTIAL
+        # document byte reaches an inference/OCR provider outside the door
+        # gateway.py controls. Writeback is a different boundary entirely:
+        # it never touches a raw document, only already-extracted,
+        # already-validated billing fields a human has approved, sent to
+        # the CLIENT'S OWN explicitly-connected QuickBooks account — not a
+        # model/inference provider, free-tier or otherwise. Routing it
+        # through the document gateway would not add a safety check; it
+        # would just be the wrong door.
+        if PACKAGE / "writeback" in path.parents:
+            continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 names = [node.module or ""]
