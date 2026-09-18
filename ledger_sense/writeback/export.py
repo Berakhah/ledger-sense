@@ -49,7 +49,14 @@ STATUS = "AWAITING REVIEW"
 # The IIF writer is worse. "\t".join(...) with a tab or newline inside a
 # description corrupts the record and can inject an ADDITIONAL transaction line
 # into a file destined for QuickBooks Desktop.
-_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+#
+# CR is handled separately, not by this tuple: `_CONTROL` strips it (and every
+# other C0 control character except tab and newline) from the text BEFORE the
+# `startswith` check below ever runs, so a leading CR can never reach this
+# branch. It is not listed here because doing so would be dead code, not
+# because a leading CR is safe left alone — it still isn't, which is why
+# stripping it happens unconditionally rather than only when it leads.
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t")
 _CONTROL = {ord(c): None for c in map(chr, list(range(9)) + list(range(11, 32)))}
 
 
