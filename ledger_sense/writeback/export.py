@@ -138,15 +138,33 @@ class ExportAdapter:
                            idempotency_key=request.idempotency_key,
                            created_at=datetime.now(UTC), was_replay=False)
 
-    def reverse(self, remote_id: str, idempotency_key: str | None = None
-                ) -> ReversalResult:
+    def reverse(self, remote_id: str, idempotency_key: str) -> ReversalResult:
         """Remove every row carrying this key, preserving the header.
 
         REVISED (F-45). `remote_id not in ln` is a substring match over the whole
         line, so it also removed any row whose DESCRIPTION happened to contain the
         key. Compare the field.
+
+        REVISED (M-A, final whole-branch review). `idempotency_key` used to
+        default to `None` with a `key = idempotency_key or remote_id`
+        fallback — a divergence from `WritebackPort` and every other
+        adapter's required `idempotency_key: str`. For `ExportAdapter` the
+        remote id genuinely IS the idempotency key today (see
+        `create_unapproved_bill`), but the signature now matches the
+        protocol exactly rather than masking an omitted argument with a
+        silent fallback.
+
+        REVISED (M-B). A bare `FileNotFoundError` from `read_text` — if
+        nothing has ever been exported yet — is not an explanation. Matches
+        the style `AuditedAdapter.reverse` uses for its own "nothing to
+        reverse" case: refuse with a clear, catchable error.
         """
-        key = idempotency_key or remote_id
+        key = idempotency_key
+        if not self._path.exists():
+            raise ValueError(
+                f"no {self._fmt} export exists yet at {self._path}; refusing "
+                f"to reverse remote id {remote_id!r} against a file that was "
+                f"never written")
         text = self._path.read_text(encoding="utf-8")
         if self._fmt == "csv":
             rows = list(csv.reader(io.StringIO(text)))

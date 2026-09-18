@@ -13,15 +13,19 @@ def ledger(tmp_path):
 
 
 def test_a_fresh_key_begins_pending(ledger):
-    assert ledger.begin(KEY, adapter="qbo").state == "pending"
+    result = ledger.begin(KEY, adapter="qbo")
+    assert result.record.state == "pending"
+    assert result.created is True
 
 
 def test_begin_is_idempotent_and_returns_the_existing_record(ledger):
-    ledger.begin(KEY, adapter="qbo")
+    first = ledger.begin(KEY, adapter="qbo")
+    assert first.created is True
     ledger.commit(KEY, remote_id="145")
     replayed = ledger.begin(KEY, adapter="qbo")
-    assert replayed.state == "committed"
-    assert replayed.remote_id == "145"
+    assert replayed.record.state == "committed"
+    assert replayed.record.remote_id == "145"
+    assert replayed.created is False
 
 
 def test_committing_records_the_remote_id(ledger):
@@ -45,7 +49,7 @@ def test_a_failed_write_records_its_reason_and_can_be_retried(ledger):
     ledger.begin(KEY, adapter="qbo")
     ledger.fail(KEY, reason="502 from upstream")
     assert ledger.lookup(KEY).state == "failed"
-    assert ledger.begin(KEY, adapter="qbo").state == "failed"
+    assert ledger.begin(KEY, adapter="qbo").record.state == "failed"
 
 
 def test_committing_an_unknown_key_raises_rather_than_inventing_a_record(ledger):
@@ -56,7 +60,7 @@ def test_committing_an_unknown_key_raises_rather_than_inventing_a_record(ledger)
 def test_two_adapters_do_not_share_a_key_namespace(ledger):
     ledger.begin(KEY, adapter="qbo")
     ledger.commit(KEY, remote_id="145")
-    assert ledger.begin(KEY, adapter="export").state == "pending"
+    assert ledger.begin(KEY, adapter="export").record.state == "pending"
 
 
 def test_a_reversed_write_reopens_pending_on_the_next_begin(ledger):
@@ -69,8 +73,9 @@ def test_a_reversed_write_reopens_pending_on_the_next_begin(ledger):
     assert ledger.lookup(KEY).state == "reversed"
 
     reopened = ledger.begin(KEY, adapter="qbo")
-    assert reopened.state == "pending"
-    assert reopened.remote_id is None
+    assert reopened.record.state == "pending"
+    assert reopened.record.remote_id is None
+    assert reopened.created is True
 
 
 def test_marking_an_unknown_key_reversed_raises(ledger):
