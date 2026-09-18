@@ -75,6 +75,41 @@ def test_reversal_removes_the_exported_rows(tmp_path):
     assert len(rows) == 1          # header only
 
 
+def test_iif_reversal_removes_the_whole_transaction_block(tmp_path):
+    """The IIF `reverse()` branch deletes a whole TRNS/SPL.../ENDTRNS block by
+    key — this is a nontrivial rewrite (block deletion, not line deletion) with
+    no direct coverage until now. Header rows must survive; every TRNS, SPL and
+    ENDTRNS line belonging to the reversed bill must not."""
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="iif")
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, request.idempotency_key)
+    lines = (tmp_path / "bills.iif").read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("!TRNS")
+    assert lines[1].startswith("!SPL")
+    assert len(lines) == 2          # header only; the block is gone entirely
+    assert not any(ln.startswith(("TRNS\t", "SPL\t")) or ln == "ENDTRNS"
+                   for ln in lines)
+
+
+def test_iif_reversal_leaves_a_different_bills_block_untouched(tmp_path):
+    """F-45 for the block-deletion rewrite: reversing one bill's key must not
+    touch another bill's TRNS/SPL/ENDTRNS block, byte for byte."""
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="iif")
+    keep = _request(application_no=3)
+    adapter.create_unapproved_bill(keep)
+    expected_keep_only = (tmp_path / "bills.iif").read_text(encoding="utf-8")
+
+    doomed = _request()
+    adapter.create_unapproved_bill(doomed)
+    adapter.reverse(doomed.idempotency_key, doomed.idempotency_key)
+
+    after = (tmp_path / "bills.iif").read_text(encoding="utf-8")
+    assert after == expected_keep_only
+    assert keep.idempotency_key in after
+    assert doomed.idempotency_key not in after
+
+
 def test_reversal_does_not_remove_a_row_that_merely_mentions_the_key(tmp_path):
     """F-45. `remote_id not in ln` was a substring match over the whole line."""
     adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
