@@ -55,6 +55,42 @@ understates the margin and makes the interval look tighter than it is.
 
 To be completed in a later phase.
 
+## Writeback
+
+### DocNumber / PrivateNote (F-40)
+
+QuickBooks Online's `DocNumber` field on a Bill is the **vendor's own
+invoice number** — the value a bookkeeper reconciles against the paper
+invoice, and the field QBO's own duplicate-document-number warning keys
+on. Ledger Sense's idempotency key never overwrites it:
+
+- When a vendor invoice number was extracted from the document,
+  `DocNumber` keeps that invoice number unchanged, and the Ledger Sense
+  idempotency key is embedded in `PrivateNote` instead (recoverable after
+  a crash by `ledger_sense.writeback.qbo.extract_key_from_private_note`).
+- Only when no vendor invoice number was extracted does `DocNumber` fall
+  back to holding the idempotency key, as the original design did — and
+  when that fallback happens, `PrivateNote` records in plain language that
+  it happened, so a human reading the books later understands why
+  `DocNumber` looks like a key rather than an invoice number, rather than
+  being left to guess.
+
+The reasoning: overwriting `DocNumber` with our own key would silently
+disable a duplicate-invoice control the client already has, in a product
+whose pitch is catching duplicates. Never depriving the client of a
+control they already had, in order to add a control of our own, governs
+this decision.
+
+### Platform reality (client-facing)
+
+QuickBooks Online Bills have no draft state. Ledger Sense therefore
+creates every Bill **unpaid**, stamped `AWAITING REVIEW`, and never
+creates a `BillPayment`. Said plainly, for a client or reviewer reading
+this document rather than the source: **we create the bill; you approve
+it by paying it; we never move money.** A human approves by paying the
+bill inside QuickBooks — that is the actual mechanism, and a truer
+sentence than a claim about a draft state the platform does not have.
+
 ## Calibration
 
 To be completed in a later phase.

@@ -28,7 +28,12 @@ from ledger_sense.writeback.interface import (
     WriteRequest,
     build_idempotency_key,
 )
-from ledger_sense.writeback.qbo import AWAITING_REVIEW, QBOAdapter, extract_key_from_private_note
+from ledger_sense.writeback.qbo import (
+    AWAITING_REVIEW,
+    ConcurrentWriteInProgressError,
+    QBOAdapter,
+    extract_key_from_private_note,
+)
 
 
 class FakeQBOClient:
@@ -425,6 +430,74 @@ def test_a_rejected_write_records_its_reason_rather_than_sitting_pending(ledger)
     record = ledger.lookup(request.idempotency_key)
     assert record.state == "failed"
     assert "VendorRef" in record.reason
+
+
+# ---------------------------------------------------------------------------
+# Concurrent writers, same idempotency key — C-1
+# ---------------------------------------------------------------------------
+
+def test_concurrent_writers_with_the_same_key_create_only_one_bill(ledger):
+    """C-1, the critical finding from the final whole-branch review.
+
+    `IdempotencyLedger.begin()`'s read-then-insert used to be two separate
+    implicit SQLite transactions: two concurrent callers with the SAME
+    idempotency key could both find no existing record, both open/find a
+    `pending` row, both reach `create_unapproved_bill`'s
+    reconcile-then-POST branch, both find nothing posted yet, and both
+    POST — creating two bills in the client's real books under one key.
+
+    `post_bill` sleeps briefly to stand in for a real HTTP round trip to
+    QBO (the near-instant in-memory fake hides the race entirely, because
+    without I/O the GIL rarely yields mid-write) — this is what actually
+    reproduced the duplicate deterministically before the fix, and mirrors
+    the concurrency test pattern in
+    `tests/writeback/test_audit.py::test_concurrent_appends_do_not_fork_the_chain`
+    (Task 38).
+
+    After the fix (`BEGIN IMMEDIATE` in `begin()`, plus the in-process
+    `ConcurrentWriteInProgressError` guard in `create_unapproved_bill`),
+    exactly one caller wins and posts; every other concurrent caller is
+    refused outright rather than allowed to race the winner's own
+    reconcile-then-POST.
+    """
+    import threading
+    import time
+
+    class SlowFakeQBOClient(FakeQBOClient):
+        def post_bill(self, payload):
+            time.sleep(0.01)
+            return super().post_bill(payload)
+
+    client = SlowFakeQBOClient()
+    request = _request(vendor_invoice_number="INV-4471")
+    threads_n = 8
+    results: list[object] = []
+    errors: list[BaseException] = []
+    results_lock = threading.Lock()
+
+    def _writer() -> None:
+        try:
+            result = QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(request)
+            with results_lock:
+                results.append(result)
+        except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+            with results_lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_writer) for _ in range(threads_n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(client.bills) == 1, (
+        f"expected exactly one bill, found {len(client.bills)}: {client.bills}")
+    # Every thread either won (posted the one bill) or was refused outright —
+    # nothing silently no-ops or raises some other, unexpected error.
+    assert len(results) + len(errors) == threads_n
+    assert all(isinstance(exc, ConcurrentWriteInProgressError) for exc in errors), (
+        f"unexpected error types: {[type(exc).__name__ for exc in errors]}")
+    assert len(results) >= 1, "no caller ever succeeded in writing the bill"
 
 
 def test_extract_key_from_private_note_is_robust_to_surrounding_text():

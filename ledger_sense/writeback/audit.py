@@ -24,7 +24,7 @@ import json
 import sqlite3
 import uuid
 from datetime import date, datetime
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel
 
@@ -218,10 +218,14 @@ class AuditLog:
                    else "unapproved bill created, awaiting review"))
 
     def record_reversal(self, doc_id: str, adapter: str, result: ReversalResult,
-                        approved_by: str) -> None:
+                        approved_by: str, idempotency_key: str) -> None:
+        """M-C (final whole-branch review): `idempotency_key` used to be
+        hardcoded `None` here, even though `AuditedAdapter.reverse` already
+        has the key on hand — dropping it from the reversal's own audit row
+        is an unnecessary omission in a phase about reversal<->key linkage."""
         self._append(AuditEntry(
             id=str(uuid.uuid4()), doc_id=doc_id, adapter=adapter, action="reversal",
-            remote_id=result.remote_id, idempotency_key=None,
+            remote_id=result.remote_id, idempotency_key=idempotency_key,
             approved_by=approved_by, occurred_at=result.reversed_at,
             detail=f"reversed by {result.method}"))
 
@@ -347,5 +351,21 @@ class AuditedAdapter:
                 f"no audited write for remote id {remote_id!r}; refusing to "
                 f"reverse an object this system has no record of creating")
         result = self._inner.reverse(remote_id, idempotency_key)
-        self._audit.record_reversal(doc_id, self.name, result, self._approved_by)
+        self._audit.record_reversal(doc_id, self.name, result, self._approved_by,
+                                    idempotency_key=idempotency_key)
         return result
+
+
+if TYPE_CHECKING:
+    # Static conformance check (I-1, final whole-branch review), matching
+    # the pattern QBOAdapter and ExportAdapter already establish: this
+    # assignment never executes (TYPE_CHECKING is False at runtime) but
+    # mypy --strict fails this module the moment AuditedAdapter's shape
+    # drifts from the protocol. AuditedAdapter is the composition root
+    # production code would actually inject, so it is the one adapter this
+    # check matters most for — its absence here (while both wrapped
+    # adapters had it) was the gap this fixes. The dynamic counterpart —
+    # isinstance(adapter, WritebackPort) — lives in
+    # tests/writeback/test_audit.py.
+    def _audited_adapter_satisfies_writebackport(adapter: AuditedAdapter) -> None:
+        _conforms: WritebackPort = adapter

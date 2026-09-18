@@ -34,6 +34,7 @@ after a crash differs by path:
 
 import os
 import re
+import threading
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
@@ -81,6 +82,37 @@ class QBORejected(Exception):
     Distinct from a transport failure: the write did NOT land, and never
     will without a correction, so it fails cleanly rather than sitting
     `pending` forever (F-44)."""
+
+
+class ConcurrentWriteInProgressError(Exception):
+    """Another write with this idempotency key is already being processed
+    (or was interrupted) elsewhere in this running process (C-1).
+
+    `IdempotencyLedger.begin()`'s `BEGIN IMMEDIATE` transaction closes the
+    race in the LEDGER TABLE itself, but two concurrent callers can still
+    both observe a `pending` record and both reach the reconcile-then-POST
+    branch below — proven by a concurrency test using a realistic
+    (non-instant) fake `post_bill`, matching a real HTTP round trip to QBO.
+    Proceeding here would race that sibling call's own reconcile-then-POST
+    and could create a second bill under the same key. Retry after a short
+    delay instead of writing immediately: refusing outright and letting the
+    caller retry is the correct trade for money-path code — silently
+    risking a duplicate bill is worse than a write that has to be retried.
+    """
+
+
+# In-process guard for C-1: closes the window BEGIN IMMEDIATE cannot, because
+# that window is AFTER begin() returns (see IdempotencyLedger's module
+# docstring). Keyed on (ledger path, adapter name, idempotency key) so it
+# identifies the actual resource being written, not a particular
+# IdempotencyLedger/QBOAdapter Python object. Deliberately an in-memory,
+# per-process set — NOT persisted, NOT a heartbeat/staleness system: a
+# caller retrying after ITS OWN prior crash starts a new process (or at
+# least a marker-free one) and is never blocked by it, while a genuinely
+# concurrent sibling call, still holding the marker in this same process,
+# is refused outright rather than allowed to race.
+_IN_FLIGHT_LOCK = threading.Lock()
+_IN_FLIGHT: set[tuple[str, str, str]] = set()
 
 
 class QBOClient(Protocol):
@@ -160,41 +192,63 @@ class QBOAdapter:
                 f"client to reopen the period or re-date the bill — Ledger Sense "
                 f"will not write into a closed period.")
 
-        record = self._ledger.begin(request.idempotency_key, adapter=self.name)
-
-        if record.state == "committed":
-            return WriteResult(
-                remote_id=record.remote_id or "", adapter=self.name,
-                idempotency_key=request.idempotency_key,
-                created_at=record.committed_at or record.attempted_at,
-                was_replay=True)
-
-        # `pending` means a prior attempt may or may not have landed. Go and look.
-        existing = self._find_existing_bill(request)
-        if existing is not None:
-            existing_id = str(existing["Id"])
-            self._ledger.commit(request.idempotency_key, remote_id=existing_id,
-                                adapter=self.name)
-            return WriteResult(remote_id=existing_id, adapter=self.name,
-                               idempotency_key=request.idempotency_key,
-                               created_at=datetime.now(UTC), was_replay=True)
-
-        payload = _build_payload(request)
+        # C-1: claim the in-process marker for this (ledger, adapter, key)
+        # BEFORE touching the ledger at all, and hold it for the whole call.
+        # A genuinely concurrent sibling call in this same process sees the
+        # marker already held and is refused outright; a sequential retry
+        # (including the crash-recovery case) never sees it held, because it
+        # is released in `finally` as soon as the prior call returns or
+        # raises. See `ConcurrentWriteInProgressError` and the module-level
+        # `_IN_FLIGHT` comment for why this closes the window
+        # `IdempotencyLedger.begin()`'s `BEGIN IMMEDIATE` transaction cannot.
+        marker = (self._ledger.path, self.name, request.idempotency_key)
+        with _IN_FLIGHT_LOCK:
+            if marker in _IN_FLIGHT:
+                raise ConcurrentWriteInProgressError(
+                    f"a write with idempotency key {request.idempotency_key!r} "
+                    f"on adapter {self.name!r} is already in progress (or was "
+                    f"interrupted) elsewhere in this process; retry after a "
+                    f"short delay rather than writing immediately.")
+            _IN_FLIGHT.add(marker)
         try:
-            response = self._client.post_bill(payload)
-        except QBORejected as exc:
-            # F-44: `fail()` was dead code with a passing test. A QBO 400 was
-            # indistinguishable from a crash, so a permanently-rejected write sat
-            # `pending` forever with no reason recorded.
-            self._ledger.fail(request.idempotency_key, reason=str(exc),
-                              adapter=self.name)
-            raise
-        response_id = str(response["Id"])
-        self._ledger.commit(request.idempotency_key, remote_id=response_id,
-                            adapter=self.name)
-        return WriteResult(remote_id=response_id, adapter=self.name,
-                           idempotency_key=request.idempotency_key,
-                           created_at=datetime.now(UTC), was_replay=False)
+            record = self._ledger.begin(request.idempotency_key, adapter=self.name).record
+
+            if record.state == "committed":
+                return WriteResult(
+                    remote_id=record.remote_id or "", adapter=self.name,
+                    idempotency_key=request.idempotency_key,
+                    created_at=record.committed_at or record.attempted_at,
+                    was_replay=True)
+
+            # `pending` means a prior attempt may or may not have landed. Go and look.
+            existing = self._find_existing_bill(request)
+            if existing is not None:
+                existing_id = str(existing["Id"])
+                self._ledger.commit(request.idempotency_key, remote_id=existing_id,
+                                    adapter=self.name)
+                return WriteResult(remote_id=existing_id, adapter=self.name,
+                                   idempotency_key=request.idempotency_key,
+                                   created_at=datetime.now(UTC), was_replay=True)
+
+            payload = _build_payload(request)
+            try:
+                response = self._client.post_bill(payload)
+            except QBORejected as exc:
+                # F-44: `fail()` was dead code with a passing test. A QBO 400 was
+                # indistinguishable from a crash, so a permanently-rejected write sat
+                # `pending` forever with no reason recorded.
+                self._ledger.fail(request.idempotency_key, reason=str(exc),
+                                  adapter=self.name)
+                raise
+            response_id = str(response["Id"])
+            self._ledger.commit(request.idempotency_key, remote_id=response_id,
+                                adapter=self.name)
+            return WriteResult(remote_id=response_id, adapter=self.name,
+                               idempotency_key=request.idempotency_key,
+                               created_at=datetime.now(UTC), was_replay=False)
+        finally:
+            with _IN_FLIGHT_LOCK:
+                _IN_FLIGHT.discard(marker)
 
     def reverse(self, remote_id: str, idempotency_key: str) -> ReversalResult:
         """REVISED (F-39). Takes the key, not just the remote id, and transitions

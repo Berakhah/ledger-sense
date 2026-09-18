@@ -4,9 +4,11 @@ import pytest
 
 from ledger_sense.domain.money import money
 from ledger_sense.writeback.audit import AuditedAdapter, AuditLog
+from ledger_sense.writeback.export import ExportAdapter
 from ledger_sense.writeback.idempotency import IdempotencyLedger
 from ledger_sense.writeback.interface import (
     LineItem,
+    WritebackPort,
     WriteRequest,
     WriteResult,
     build_idempotency_key,
@@ -260,5 +262,82 @@ def test_concurrent_appends_do_not_fork_the_chain(tmp_path):
     assert not errors, f"a writer thread raised: {errors}"
     rows = audit._conn.execute("SELECT COUNT(*) FROM audit").fetchone()
     assert rows[0] == threads_n * appends_per_thread
+    assert audit.verify_chain() == []
+    audit.close()
+
+
+# ---------------------------------------------------------------------------
+# Final whole-branch review findings
+# ---------------------------------------------------------------------------
+
+def test_audited_adapter_satisfies_the_writeback_port(audited):
+    """I-1. QBOAdapter and ExportAdapter both had this isinstance check
+    (plus a mypy-time static counterpart in their own modules); AuditedAdapter
+    — the composition root production code would actually inject — had
+    neither. WritebackPort is @runtime_checkable, so this is a real
+    isinstance check, not just a type-checker-only assertion (see the
+    TYPE_CHECKING-guarded static check in audit.py for the mypy-time
+    counterpart)."""
+    adapter, _audit, _client = audited
+    assert isinstance(adapter, WritebackPort)
+
+
+def test_reversal_audit_entry_records_the_actual_idempotency_key(audited):
+    """M-C. `record_reversal` used to hardcode `idempotency_key=None` even
+    though `AuditedAdapter.reverse` already has the key on hand — dropping
+    it from the reversal's own audit row is an unnecessary omission in a
+    phase about reversal<->key linkage."""
+    adapter, audit, _client = audited
+    request = _request()
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, request.idempotency_key)
+    reversal_entry = audit.for_document("doc-1")[1]
+    assert reversal_entry.action == "reversal"
+    assert reversal_entry.idempotency_key == request.idempotency_key
+
+
+def test_write_reverse_write_through_audited_qbo_adapter_produces_a_new_bill(tmp_path):
+    """I-2. The reviewer manually verified this path (AuditedAdapter wrapping
+    QBOAdapter) outside the test suite; it had zero committed coverage
+    despite being the exact composition production code would inject.
+    Write -> reverse -> write must produce a NEW bill (not a dead replay),
+    with a clean 3-entry audit trail."""
+    ledger = IdempotencyLedger(str(tmp_path / "writes.db"))
+    audit = AuditLog(str(tmp_path / "audit.db"))
+    client = FakeQBOClient()
+    adapter = AuditedAdapter(QBOAdapter(client, ledger, realm_id="r-1"),
+                             audit=audit, approved_by="A. Bookkeeper")
+    request = _request()
+
+    first = adapter.create_unapproved_bill(request)
+    adapter.reverse(first.remote_id, request.idempotency_key)
+    second = adapter.create_unapproved_bill(request)
+
+    assert second.remote_id != first.remote_id, "the second write replayed the dead bill"
+    assert second.was_replay is False
+
+    entries = audit.for_document("doc-1")
+    assert [e.action for e in entries] == ["write", "reversal", "write"]
+    assert audit.verify_chain() == []
+    ledger.close()
+    audit.close()
+
+
+def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(tmp_path):
+    """I-2, the ExportAdapter composition. Not the QBO adapter — the export
+    peer adapter, which reuses the idempotency key itself as the remote id."""
+    audit = AuditLog(str(tmp_path / "audit.db"))
+    adapter = AuditedAdapter(ExportAdapter(out_dir=str(tmp_path / "export")),
+                             audit=audit, approved_by="A. Bookkeeper")
+    request = _request()
+
+    first = adapter.create_unapproved_bill(request)
+    adapter.reverse(first.remote_id, request.idempotency_key)
+    second = adapter.create_unapproved_bill(request)
+
+    assert second.was_replay is False, "the second write replayed instead of writing fresh"
+
+    entries = audit.for_document("doc-1")
+    assert [e.action for e in entries] == ["write", "reversal", "write"]
     assert audit.verify_chain() == []
     audit.close()
