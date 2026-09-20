@@ -15,6 +15,7 @@ rather than from IdempotencyLedger, which ExportAdapter never touches.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 import sqlalchemy as sa
@@ -38,7 +39,7 @@ from ledger_sense.writeback.audit import (
     audit_log_from_environment,
 )
 from ledger_sense.writeback.export import export_adapter_from_environment
-from ledger_sense.writeback.idempotency import ledger_from_environment
+from ledger_sense.writeback.idempotency import IdempotencyLedger, ledger_from_environment
 from ledger_sense.writeback.interface import ClosedPeriodError, WritebackPort, WriteResult
 from ledger_sense.writeback.qbo import (
     ConcurrentWriteInProgressError,
@@ -139,9 +140,16 @@ def _approved_by(conn: sa.Connection, session: Session) -> str:
     return str(row.email)
 
 
-def _inner_adapter(name: AdapterName, ledger: Any) -> WritebackPort:
+def _inner_adapter(name: AdapterName, ledger_factory: Callable[[], IdempotencyLedger]) -> WritebackPort:
+    """`ledger_factory` is called only on the `"qbo"` branch (M-3): the
+    export path never touches `IdempotencyLedger` (ExportAdapter's own
+    CSV/IIF key-scan is its state — see the module docstring), so it should
+    not require `LEDGER_SENSE_WRITEBACK_DIR` to be a valid, writable ledger
+    location at all. A callable rather than an already-built ledger keeps
+    the type concrete (`IdempotencyLedger`, not `Any` — M-8) while still
+    deferring construction to the branch that actually needs it."""
     if name == "qbo":
-        return qbo_adapter_from_environment(ledger)
+        return qbo_adapter_from_environment(ledger_factory())
     return export_adapter_from_environment()
 
 
@@ -168,8 +176,7 @@ def post(doc_id: str, body: PostBody, session: CurrentSession) -> PostResponse:
             "already posted with different vendor_ref/vendor_invoice_number; "
             "reverse and re-post to change vendor"))
 
-    ledger = ledger_from_environment()
-    adapter = AuditedAdapter(_inner_adapter(body.adapter, ledger), audit, approved_by)
+    adapter = AuditedAdapter(_inner_adapter(body.adapter, ledger_from_environment), audit, approved_by)
     try:
         result: WriteResult = adapter.create_unapproved_bill(request)
     except ConcurrentWriteInProgressError as exc:
@@ -203,10 +210,26 @@ def reverse(doc_id: str, body: ReverseBody, session: CurrentSession) -> ReverseR
         approved_by = _approved_by(conn, session)
 
     audit = audit_log_from_environment()
-    ledger = ledger_from_environment()
-    adapter = AuditedAdapter(_inner_adapter(body.adapter, ledger), audit, approved_by)
+    # I-1: `doc_id` (the path parameter) is tenancy-checked above, but
+    # `body.remote_id` — which actually drives the reversal — was not tied
+    # to that document at all. Any caller who owns SOME document could
+    # reverse any remote_id in the audit log, including one belonging to a
+    # different document (same tenant or a different one). Refuse unless
+    # the remote_id's own audited write actually names this document.
+    if audit.document_for_remote(body.remote_id) != doc_id:
+        raise HTTPException(status_code=404, detail="not found")
+
+    adapter = AuditedAdapter(_inner_adapter(body.adapter, ledger_from_environment), audit, approved_by)
     try:
         result = adapter.reverse(body.remote_id, body.idempotency_key)
+    except ConcurrentWriteInProgressError as exc:
+        raise HTTPException(status_code=409, detail=str(exc),
+                            headers={"Retry-After": "2"}) from exc
+    except ClosedPeriodError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QBORejected as exc:
+        raise HTTPException(status_code=502,
+                            detail="the accounting system rejected the write") from exc
     except ValueError as exc:
         # AuditedAdapter.reverse's own refusal: no audited write for this
         # remote id — nothing to reverse a record of.

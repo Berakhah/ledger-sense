@@ -141,3 +141,22 @@ silently reopen the duplicate-bill race `IdempotencyLedger`'s
 requires first replacing that in-process guard with a cross-process lock in
 the idempotency ledger itself — deferred until the deployment topology
 actually needs more than one process.
+
+## Single-tenant idempotency key (I-3, final whole-branch review)
+
+The idempotency key (`build_idempotency_key(content_sha256, contract_id,
+application_no)`) carries no tenant identifier, and both stores it backs —
+`IdempotencyLedger` and `ExportAdapter`'s own CSV key-scan — are keyed on
+that value alone. Two tenants posting byte-identical documents (a shared
+synthetic corpus makes this a real, not hypothetical, collision) would
+compute the same key: the second tenant's post would find the first
+tenant's `pending`/`committed` row already there and silently return the
+first tenant's `remote_id` instead of creating its own bill. This is
+inherited from how the writeback stores were built — `IdempotencyLedger`
+and `AuditLog` both predate any multi-tenant plumbing reaching into the
+writeback module (see `writeback/audit.py`'s module docstring) — not
+something this pass fixes. Closing it requires qualifying
+`build_idempotency_key`'s payload with `tenant_id`, at the cost of
+invalidating every idempotency key already on disk (a client's already-
+posted documents would need one-time reconciliation against the old,
+tenant-less keys before the new scheme could safely replace them).
