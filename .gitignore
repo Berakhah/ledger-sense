@@ -21,3 +21,9 @@ ledger_sense/web/public/pdf.worker.min.mjs
 # Playwright
 test-results/
 playwright-report/
+
+# Claude Code session-local state: worktrees and scheduler lock files are
+# runtime artefacts, never source. .claude/settings.json (project-level
+# config) is intentionally tracked and stays outside this ignore.
+.claude/worktrees/
+.claude/scheduled_tasks.lock
