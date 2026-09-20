@@ -39,8 +39,12 @@ from ledger_sense.writeback.audit import (
 )
 from ledger_sense.writeback.export import export_adapter_from_environment
 from ledger_sense.writeback.idempotency import ledger_from_environment
-from ledger_sense.writeback.interface import WritebackPort, WriteResult
-from ledger_sense.writeback.qbo import qbo_adapter_from_environment
+from ledger_sense.writeback.interface import ClosedPeriodError, WritebackPort, WriteResult
+from ledger_sense.writeback.qbo import (
+    ConcurrentWriteInProgressError,
+    QBORejected,
+    qbo_adapter_from_environment,
+)
 
 router = APIRouter(prefix="/api/writeback")
 
@@ -157,8 +161,25 @@ def post(doc_id: str, body: PostBody, session: CurrentSession) -> PostResponse:
                 detail=f"cannot post: no claim for {exc.field!r}") from exc
 
     audit = audit_log_from_environment()
+    live = _live_write_entries(audit, doc_id).get(body.adapter)
+    if live is not None and (live.vendor_ref != body.vendor_ref
+                             or live.vendor_invoice_number != body.vendor_invoice_number):
+        raise HTTPException(status_code=409, detail=(
+            "already posted with different vendor_ref/vendor_invoice_number; "
+            "reverse and re-post to change vendor"))
+
     ledger = ledger_from_environment()
     adapter = AuditedAdapter(_inner_adapter(body.adapter, ledger), audit, approved_by)
-    result: WriteResult = adapter.create_unapproved_bill(request)
+    try:
+        result: WriteResult = adapter.create_unapproved_bill(request)
+    except ConcurrentWriteInProgressError as exc:
+        raise HTTPException(status_code=409, detail=str(exc),
+                            headers={"Retry-After": "2"}) from exc
+    except ClosedPeriodError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QBORejected as exc:
+        raise HTTPException(status_code=502,
+                            detail="the accounting system rejected the write") from exc
+
     return PostResponse(remote_id=result.remote_id, idempotency_key=result.idempotency_key,
                         adapter=result.adapter, was_replay=result.was_replay)
