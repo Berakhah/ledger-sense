@@ -1150,7 +1150,10 @@ exceptions, matching what the review queue looks like once cleared."""
 from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
 
+from ledger_sense.store import session as store_session
+from ledger_sense.store.retention import findings
 from tests.api.conftest import TenantClient
 
 
@@ -1370,7 +1373,14 @@ def test_post_twice_with_the_same_vendor_replays(two_tenants: tuple[TenantClient
 
 def test_post_refuses_a_document_with_an_open_exception(two_tenants: tuple[TenantClient, TenantClient]) -> None:
     alice, _bob = two_tenants
-    doc_id = alice.seed_exception()  # ships with an OPEN finding by default
+    # seed_exception() returns the finding's own id (it's built for
+    # /api/review, which addresses findings directly) — the document it
+    # attaches to still ships with the OPEN finding this test needs.
+    exc_id = alice.seed_exception()
+    with store_session.app_engine().connect() as conn:
+        doc_id = conn.execute(
+            sa.select(findings.c.document_id).where(findings.c.id == exc_id)
+        ).scalar_one()
     response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
                                {"adapter": "export", "vendor_ref": "V-9"})
     assert response.status_code == 422, response.text
