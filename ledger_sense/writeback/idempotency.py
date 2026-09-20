@@ -32,6 +32,7 @@ in-process `ConcurrentWriteInProgressError` guard (qbo.py), which closes the
 window `begin()` structurally cannot.
 """
 
+import os
 import sqlite3
 from datetime import UTC, datetime
 from typing import Literal, cast
@@ -217,3 +218,24 @@ class IdempotencyLedger:
     def close(self) -> None:
         """No-op: connections are owned and cached by the shared factory
         (per-thread, keyed by path), not by this instance."""
+
+
+_WRITEBACK_DIR_ENV = "LEDGER_SENSE_WRITEBACK_DIR"
+
+
+def ledger_from_environment() -> IdempotencyLedger:
+    """The deployment's idempotency ledger, at
+    `<LEDGER_SENSE_WRITEBACK_DIR>/writes.db`.
+
+    Built where writeback is wired (the writeback API routes), not as a
+    module singleton — matching store/blobs.py::blob_store_from_environment.
+    Raises if the directory is unset: a ledger written to a guessed path is
+    a ledger nothing backs up.
+    """
+    root = os.environ.get(_WRITEBACK_DIR_ENV)
+    if not root:
+        raise RuntimeError(
+            f"{_WRITEBACK_DIR_ENV} is unset: refusing to guess where the "
+            f"writeback idempotency ledger lives.")
+    os.makedirs(root, exist_ok=True)
+    return IdempotencyLedger(os.path.join(root, "writes.db"))

@@ -227,6 +227,12 @@ def assemble_pay_application(
                 source_path, cell.page, cell.bbox, values[field],
                 match_quality=match_quality(label_exact=True, value_unique=True,
                                             column_unambiguous=True, profile_hit=False))
+        if "description" in row:
+            desc_cell = row["description"]
+            provenance[f"line[{item_no}].description"] = _claim(
+                source_path, desc_cell.page, desc_cell.bbox, desc_cell.text,
+                match_quality=match_quality(label_exact=True, value_unique=True,
+                                            column_unambiguous=True, profile_hit=False))
         lines.append(ContinuationLine(
             item_no=item_no,
             description=row["description"].text if "description" in row else "",
