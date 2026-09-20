@@ -182,13 +182,24 @@ def test_reverse_clears_the_posted_status(two_tenants: tuple[TenantClient, Tenan
     assert status_response.json()["state"] == "not_posted"
 
 
-def test_reverse_an_unknown_remote_id_is_422(two_tenants: tuple[TenantClient, TenantClient]) -> None:
+def test_reverse_an_unknown_remote_id_is_404(two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """Final whole-branch review, I-1: a remote_id with no audited write at
+    all now fails the same tenancy/ownership check that a remote_id
+    belonging to a DIFFERENT document fails — `document_for_remote` returns
+    None either way, and None can never equal a real `doc_id`. This
+    supersedes the route's own 422 (used to be reached via
+    AuditedAdapter.reverse's ValueError) for this specific case: the check
+    now runs first, so an unposted remote_id never gets far enough to hit
+    that branch — the route's `except ValueError` is retained as a defensive
+    fallback (AuditedAdapter.reverse is also called directly in
+    tests/writeback/test_audit.py) but is no longer reachable through this
+    endpoint."""
     alice, _bob = two_tenants
     doc_id = alice.seed_postable_document()
     response = alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
                                {"adapter": "export", "remote_id": "never-posted",
                                 "idempotency_key": "LSbogus"})
-    assert response.status_code == 422, response.text
+    assert response.status_code == 404, response.text
 
 
 def test_reverse_on_a_cross_tenant_document_is_404(two_tenants: tuple[TenantClient, TenantClient]) -> None:
@@ -219,6 +230,80 @@ def test_post_after_reversal_with_a_new_vendor_is_not_a_conflict(
     response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
                                {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
     assert response.status_code == 200, response.text
+
+
+def test_reverse_a_remote_id_belonging_to_another_tenants_document_is_404(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """Final whole-branch review, I-1. Bob posts and owns his own document;
+    the fix must not let Alice reverse Bob's remote_id just because she
+    passes it alongside a document id (her own) that IS hers — before the
+    fix, `reverse()` only checked that the PATH doc_id belonged to the
+    caller, never that `body.remote_id` actually named that document."""
+    alice, bob = two_tenants
+    alice_doc = alice.seed_postable_document()
+    bob_doc = bob.seed_postable_document()
+    bob_posted = bob.post_json(f"/api/writeback/documents/{bob_doc}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"}).json()
+    response = alice.post_json(f"/api/writeback/documents/{alice_doc}/reverse",
+                               {"adapter": "export", "remote_id": bob_posted["remote_id"],
+                                "idempotency_key": bob_posted["idempotency_key"]})
+    assert response.status_code == 404, response.text
+
+
+def test_reverse_a_remote_id_belonging_to_a_different_document_same_tenant_is_404(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """Final whole-branch review, I-1 (same-tenant variant). Two documents
+    owned by the SAME tenant: reversing document B's remote_id via document
+    A's `{doc_id}` path parameter must still be refused — tenancy alone
+    (both documents belong to alice) is not enough; the remote_id must
+    belong to the document named in the path."""
+    alice, _bob = two_tenants
+    doc_a = alice.seed_postable_document()
+    doc_b = alice.seed_postable_document()
+    posted_b = alice.post_json(f"/api/writeback/documents/{doc_b}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"}).json()
+    response = alice.post_json(f"/api/writeback/documents/{doc_a}/reverse",
+                               {"adapter": "export", "remote_id": posted_b["remote_id"],
+                                "idempotency_key": posted_b["idempotency_key"]})
+    assert response.status_code == 404, response.text
+
+
+def test_reverse_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
+        two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Final whole-branch review, I-2. `reverse()` used to catch only
+    ValueError, so a QBORejected raised by `adapter.reverse(...)` would
+    surface as an uncaught 500 instead of the same 502 mapping `post()`
+    already has for the identical provider-rejection case."""
+    import ledger_sense.api.writeback as writeback_mod
+    from ledger_sense.writeback.qbo import QBORejected
+
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    # Posted via the real "export" adapter (no external config needed) — the
+    # tenancy/ownership check (`document_for_remote`) does not filter on
+    # which adapter originally posted, only which document did, so the
+    # remote_id is valid for a *reverse* call against a different adapter
+    # name, which is monkeypatched below to avoid needing real QBO config.
+    posted = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                             {"adapter": "export", "vendor_ref": "V-9"}).json()
+
+    def _raise(name: object, ledger_factory: object) -> object:
+        class _Raiser:
+            name = "qbo"
+            def create_unapproved_bill(self, request: object) -> object:
+                raise NotImplementedError
+            def is_period_closed(self, txn_date: object) -> bool:
+                return False
+            def reverse(self, remote_id: object, idempotency_key: object) -> object:
+                raise QBORejected("QBO rejected: 400 {'bank_account': '...CLIENT_CONFIDENTIAL...'}")
+        return _Raiser()
+
+    monkeypatch.setattr(writeback_mod, "_inner_adapter", _raise)
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
+                               {"adapter": "qbo", "remote_id": posted["remote_id"],
+                                "idempotency_key": posted["idempotency_key"]})
+    assert response.status_code == 502, response.text
+    assert "CLIENT_CONFIDENTIAL" not in response.text
 
 
 def test_post_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
