@@ -32,7 +32,7 @@ from ledger_sense.api.app import _login_hits, app
 from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.store import session as store_session
-from ledger_sense.store.retention import documents, findings
+from ledger_sense.store.retention import claims, documents, findings
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
@@ -119,6 +119,58 @@ class TenantClient:
                 x0=0.0, top=0.0, x1=10.0, bottom=10.0,
                 state="open", created_at=datetime.now(UTC)))
         return exc_id
+
+    def seed_postable_document(self) -> str:
+        """A document with a complete claim set (ready to post) and no open
+        exceptions — findings all 'accepted', matching what the review queue
+        looks like once a reviewer clears it."""
+        import ledger_sense.writeback.assemble as _assemble_mod  # local import to avoid a conftest-wide dependency
+        document_id = uuid.uuid4().hex
+        with store_session.app_engine().begin() as conn:
+            conn.execute(documents.insert().values(
+                id=document_id, tenant_id=self.tenant_id, blob_id=None,
+                received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
+                origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
+                filename="fixture.pdf", content_sha256="abc123"))
+            conn.execute(findings.insert().values(
+                id=uuid.uuid4().hex, tenant_id=self.tenant_id, document_id=document_id,
+                rule_id="A2", field="line[000].total_completed_and_stored",
+                message="cleared", expected=None, actual=None, page=None,
+                x0=None, top=None, x1=None, bottom=None,
+                state="accepted", created_at=datetime.now(UTC)))
+            rows = [
+                ("contract_id", "C-1", "str"), ("application_no", "2", "int"),
+                ("period_to", "2026-08-31", "date"),
+                ("total_completed_and_stored", "1000.00", "money"),
+                ("retainage_total", "50.00", "money"),
+                ("previous_payments", "0.00", "money"),
+                ("change_orders_net", "0.00", "money"),
+                ("line[000].description", "Sitework", "str"),
+                ("line[000].this_period", "500.00", "money"),
+            ]
+            conn.execute(claims.insert(), [{
+                "id": uuid.uuid4().hex, "tenant_id": self.tenant_id,
+                "document_id": document_id, "field": field, "value": value,
+                "value_type": value_type, "method": "deterministic",
+                "confidence": None, "match_quality": 1.0, "page": 0,
+                "x0": 0.0, "top": 0.0, "x1": 1.0, "bottom": 1.0,
+                "caveat": None, "observed_at": datetime.now(UTC),
+            } for field, value, value_type in rows])
+        return document_id
+
+    def seed_unrun_document(self) -> str:
+        """A real documents row with no findings and no claims — the
+        'never run' case _require_cleared (Task 9) must refuse with 422,
+        distinct from create_document()'s stub-table row, which owned()
+        can't even see."""
+        document_id = uuid.uuid4().hex
+        with store_session.app_engine().begin() as conn:
+            conn.execute(documents.insert().values(
+                id=document_id, tenant_id=self.tenant_id, blob_id=None,
+                received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
+                origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
+                filename="fixture.pdf", content_sha256=None))
+        return document_id
 
 
 @pytest.fixture
