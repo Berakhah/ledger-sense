@@ -81,3 +81,18 @@ def test_a_reversed_write_reopens_pending_on_the_next_begin(ledger):
 def test_marking_an_unknown_key_reversed_raises(ledger):
     with pytest.raises(KeyError):
         ledger.mark_reversed("LSnever-seen-this-key", adapter="qbo")
+
+
+def test_ledger_from_environment_builds_a_ledger_under_the_configured_dir(tmp_path, monkeypatch) -> None:
+    from ledger_sense.writeback.idempotency import ledger_from_environment
+    monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
+    ledger = ledger_from_environment()
+    ledger.begin("key-1", adapter="qbo")
+    assert (tmp_path / "writes.db").exists()
+
+
+def test_ledger_from_environment_raises_when_unset(monkeypatch) -> None:
+    from ledger_sense.writeback.idempotency import ledger_from_environment
+    monkeypatch.delenv("LEDGER_SENSE_WRITEBACK_DIR", raising=False)
+    with pytest.raises(RuntimeError, match="LEDGER_SENSE_WRITEBACK_DIR"):
+        ledger_from_environment()
