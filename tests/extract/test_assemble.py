@@ -111,7 +111,7 @@ def test_every_line_description_carries_a_claim_too() -> None:
     the same asymmetry test_a_found_header_field_carries_a_claim_too already
     caught for the document-header fields. Without this, build_write_request
     can never resolve a bill line's description with provenance."""
-    _c, app, pdf = generate(seed=1, error="clean")
+    _c, _app, pdf = generate(seed=1, error="clean")
     built = assemble_pay_application(pdf, "corpus://seed-1")
     assert built.lines, "fixture produced no lines"
     for line in built.lines:

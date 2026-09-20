@@ -17,7 +17,7 @@ from ledger_sense.writeback.assemble import (
     build_write_request,
     derive_idempotency_key,
 )
-from ledger_sense.writeback.interface import LineItem, WriteRequest, build_idempotency_key
+from ledger_sense.writeback.interface import build_idempotency_key
 
 # tests/writeback/conftest.py's `_database` fixture is deliberately not
 # autouse (it would tax every other file in this directory with a real
