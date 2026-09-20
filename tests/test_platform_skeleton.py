@@ -87,3 +87,13 @@ def test_the_licence_is_apache_2_0() -> None:
 
 def test_the_readme_carries_the_notice_from_the_single_source() -> None:
     assert NON_AFFILIATION_NOTICE in (ROOT / "README.md").read_text(encoding="utf-8")
+
+
+def test_ledger_sense_runs_as_a_single_process() -> None:
+    """Phase 6 Ruling 3: writeback/qbo.py's in-process ConcurrentWriteInProgressError
+    guard (an in-memory, per-process set) only closes the concurrent-write
+    race within one process. Pinning WORKERS as a source-level constant means
+    raising it later is a deliberate, reviewed change — not silent drift from
+    an unenforced comment."""
+    from ledger_sense.__main__ import WORKERS
+    assert WORKERS == 1
