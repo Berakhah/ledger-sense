@@ -249,7 +249,7 @@ def test_concurrent_appends_do_not_fork_the_chain(tmp_path):
                     remote_id=f"w{worker}-{i}", idempotency_key=f"key-{worker}-{i}",
                     adapter="qbo", created_at=datetime.now(UTC), was_replay=False)
                 audit.record_write(f"doc-{worker}-{i}", "qbo", result,
-                                   approved_by="A. Bookkeeper")
+                                   approved_by="A. Bookkeeper", vendor_ref="V-1")
         except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
             errors.append(exc)
 

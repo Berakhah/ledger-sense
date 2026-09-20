@@ -217,7 +217,7 @@ class AuditLog:
             conn.commit()
 
     def record_write(self, doc_id: str, adapter: str, result: WriteResult,
-                     approved_by: str, *, vendor_ref: str | None = None,
+                     approved_by: str, *, vendor_ref: str,
                      vendor_invoice_number: str | None = None) -> None:
         self._append(AuditEntry(
             id=str(uuid.uuid4()), doc_id=doc_id, adapter=adapter, action="write",
