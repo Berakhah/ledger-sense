@@ -41,7 +41,10 @@ the caller names.
    (`build_idempotency_key(document_hash, contract_id, application_no)`, already built in
    `writeback/interface.py`), so re-posting the same document always derives the same key. "Has
    this been posted" is answered by looking that key up in the `IdempotencyLedger` — no new
-   `documents` columns, no migration.
+   `documents` columns, no migration. The key deliberately excludes vendor identity, so the ledger
+   entry itself must carry the `vendor_ref`/`vendor_invoice_number` the first post used (already
+   captured in the stored `WriteRequest`/`WriteResult`) — the route compares against these on every
+   later call to distinguish a true replay from a vendor conflict (§4, §5).
 
 ## 1. Claims → WriteRequest assembly
 
@@ -105,7 +108,7 @@ Mounted through `register()` like every other router (session-guarded, tenant-ow
 
 | Route | Body | Behavior |
 |---|---|---|
-| `POST /api/writeback/documents/{doc_id}/post` | `{adapter, vendor_ref, vendor_invoice_number?}` | Gate (§3) → assemble (§1) → `create_unapproved_bill` → `WriteResult`. Idempotent: a second call with the same document and vendor fields returns the original `WriteResult` with `was_replay=True`. |
+| `POST /api/writeback/documents/{doc_id}/post` | `{adapter, vendor_ref, vendor_invoice_number?}` | Gate (§3) → assemble (§1) → `create_unapproved_bill` → `WriteResult`. Idempotent: a second call for the same document whose `vendor_ref`/`vendor_invoice_number` match the ones recorded on the original post returns that `WriteResult` with `was_replay=True`. A second call with *different* vendor fields is a conflict, not a replay (§5) — the idempotency key doesn't cover vendor identity, so silently honoring the first call's data while a caller believes they corrected it would bury a real divergence. |
 | `POST /api/writeback/documents/{doc_id}/reverse` | `{adapter, remote_id, idempotency_key}` | `reverse(remote_id, idempotency_key)` → `ReversalResult`. |
 | `GET /api/writeback/documents/{doc_id}/status` | — | Calls `derive_idempotency_key` (§1, no gate, no vendor fields needed) and looks it up in the ledger; `{"state": "not_posted"}` if absent. |
 
@@ -117,6 +120,7 @@ cross-tenant id) before touching writeback state.
 | Exception | HTTP | Detail |
 |---|---|---|
 | `ConcurrentWriteInProgressError` | 409 | fixed `Retry-After: 2` header (a same-process in-flight race, not a rate limit — a short fixed hint is correct, not a computed backoff) |
+| vendor-field mismatch on an already-posted document | 409 | `"already posted with different vendor_ref/vendor_invoice_number; reverse and re-post to change vendor"` — no `Retry-After` (retrying with the same mismatched body will never resolve it) |
 | `ClosedPeriodError` | 422 | the refusal message verbatim (already client-safe text) |
 | `MissingClaimError` | 422 | `"cannot post: no claim for <field>"` |
 | review-queue gate failure | 422 | `"N exceptions still open"` |
@@ -128,10 +132,15 @@ should surface as an uncaught 500.
 
 ## 6. Single-process constraint (Ruling 3)
 
-A module-level assertion in `ledger_sense/__main__.py` (or a startup check in `api/app.py`) that
-fails fast if invoked with a worker/process count other than 1, plus a line in
-`docs/methodology.md` stating the constraint and what upgrading it requires (a cross-process lock
-in the idempotency ledger, deferred). A regression test pins the assertion.
+`ledger_sense/__main__.py` calls `uvicorn.run(...)` with a hardcoded worker count today (no CLI
+flag, no env var reads it). The assertion is pinned to that call site, not to runtime process
+inspection: a module-level constant `WORKERS = 1` passed as `uvicorn.run(..., workers=WORKERS)`,
+with an `assert WORKERS == 1, "..."` immediately above it explaining that raising this requires the
+cross-process idempotency lock described below. This makes the constraint a source-level fact a
+regression test can import and assert on (`from ledger_sense.__main__ import WORKERS; assert
+WORKERS == 1`) rather than something that has to be inferred from how the process was launched. A
+line in `docs/methodology.md` states the constraint and what upgrading it requires (a cross-process
+lock in the idempotency ledger, deferred).
 
 ## Testing bar
 
@@ -139,7 +148,8 @@ in the idempotency ledger, deferred). A regression test pins the assertion.
   extraction claim then a later HUMAN claim for the same field, assert the human value wins),
   missing-field refusal, idempotency-key stability across two assembly calls for the same document.
 - Route tests per endpoint: gate refusal (open exceptions), successful post, replay-returns-same-
-  result, reversal, each row of the §5 error-mapping table, cross-tenant 404.
+  result, replay-with-different-vendor-fields-returns-409, reversal, each row of the §5
+  error-mapping table, cross-tenant 404.
 - Extend the existing writeback import-boundary guard test to also assert
   `ledger_sense.api.writeback` does not import `ledger_sense.extract`/`ledger_sense.ingest`
   directly (it goes through `assemble.py`, which reads persisted claims, not the pipeline).
