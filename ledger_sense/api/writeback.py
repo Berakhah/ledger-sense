@@ -183,3 +183,32 @@ def post(doc_id: str, body: PostBody, session: CurrentSession) -> PostResponse:
 
     return PostResponse(remote_id=result.remote_id, idempotency_key=result.idempotency_key,
                         adapter=result.adapter, was_replay=result.was_replay)
+
+
+class ReverseBody(BaseModel):
+    adapter: AdapterName
+    remote_id: StrictStr
+    idempotency_key: StrictStr
+
+
+class ReverseResponse(BaseModel):
+    remote_id: str
+    method: str
+
+
+@router.post("/documents/{doc_id}/reverse")
+def reverse(doc_id: str, body: ReverseBody, session: CurrentSession) -> ReverseResponse:
+    with app_engine().connect() as conn:
+        _get_document(doc_id, session, conn)
+        approved_by = _approved_by(conn, session)
+
+    audit = audit_log_from_environment()
+    ledger = ledger_from_environment()
+    adapter = AuditedAdapter(_inner_adapter(body.adapter, ledger), audit, approved_by)
+    try:
+        result = adapter.reverse(body.remote_id, body.idempotency_key)
+    except ValueError as exc:
+        # AuditedAdapter.reverse's own refusal: no audited write for this
+        # remote id — nothing to reverse a record of.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ReverseResponse(remote_id=result.remote_id, method=result.method)

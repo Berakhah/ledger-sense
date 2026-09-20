@@ -167,6 +167,60 @@ def test_post_maps_closed_period_to_422(
     assert "books closed" in response.json()["detail"]
 
 
+def test_reverse_clears_the_posted_status(two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    posted = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                             {"adapter": "export", "vendor_ref": "V-9"}).json()
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
+                               {"adapter": "export", "remote_id": posted["remote_id"],
+                                "idempotency_key": posted["idempotency_key"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["method"] == "deleted"
+
+    status_response = alice.get(f"/api/writeback/documents/{doc_id}/status")
+    assert status_response.json()["state"] == "not_posted"
+
+
+def test_reverse_an_unknown_remote_id_is_422(two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
+                               {"adapter": "export", "remote_id": "never-posted",
+                                "idempotency_key": "LSbogus"})
+    assert response.status_code == 422, response.text
+
+
+def test_reverse_on_a_cross_tenant_document_is_404(two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    posted = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                             {"adapter": "export", "vendor_ref": "V-9"}).json()
+    response = bob.post_json(f"/api/writeback/documents/{doc_id}/reverse",
+                             {"adapter": "export", "remote_id": posted["remote_id"],
+                              "idempotency_key": posted["idempotency_key"]})
+    assert response.status_code == 404, response.text
+
+
+def test_post_after_reversal_with_a_new_vendor_is_not_a_conflict(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """A reversal clears the way for a genuinely new post — including a
+    changed vendor — the same way IdempotencyLedger.begin() already treats a
+    `reversed` record as absent (F-39). Relocated here from Task 10 (a plan
+    defect: this test needs `/reverse`, which does not exist until this
+    task)."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    first = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                            {"adapter": "export", "vendor_ref": "V-9"}).json()
+    alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
+                    {"adapter": "export", "remote_id": first["remote_id"],
+                     "idempotency_key": first["idempotency_key"]})
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
+    assert response.status_code == 200, response.text
+
+
 def test_post_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
         two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch) -> None:
     import ledger_sense.api.writeback as writeback_mod
