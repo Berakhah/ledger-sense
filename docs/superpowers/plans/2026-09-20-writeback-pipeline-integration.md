@@ -921,6 +921,9 @@ def test_build_write_request_refuses_a_missing_summary_field(tenant_id: str, mon
                       value="2", value_type="int")
         _insert_claim(conn, tenant_id, document_id, field="period_to",
                       value="2026-08-31", value_type="date")
+        for field in ("total_completed_and_stored", "previous_payments", "change_orders_net"):
+            _insert_claim(conn, tenant_id, document_id, field=field,
+                          value="1000.00", value_type="money")
         _insert_claim(conn, tenant_id, document_id,
                       field="line[000].description", value="Sitework")
         _insert_claim(conn, tenant_id, document_id,
@@ -1118,7 +1121,23 @@ Create `tests/api/test_writeback.py`. It needs a tenant client that owns a real 
         return document_id
 ```
 
-Add `claims` to `conftest.py`'s `from ledger_sense.store.retention import documents, findings` import.
+Add `claims` to `conftest.py`'s `from ledger_sense.store.retention import documents, findings` import, and add a second small helper alongside `seed_postable_document` for the "never run" case Task 9 needs — `create_document()` (the existing stub-table helper) does not create a real `documents` row, so `_get_document`'s `owned()` check would 404 rather than let the gate's 422 fire:
+
+```python
+    def seed_unrun_document(self) -> str:
+        """A real documents row with no findings and no claims — the
+        'never run' case _require_cleared (Task 9) must refuse with 422,
+        distinct from create_document()'s stub-table row, which owned()
+        can't even see."""
+        document_id = uuid.uuid4().hex
+        with store_session.app_engine().begin() as conn:
+            conn.execute(documents.insert().values(
+                id=document_id, tenant_id=self.tenant_id, blob_id=None,
+                received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
+                origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
+                filename="fixture.pdf", content_sha256=None))
+        return document_id
+```
 
 Then create `tests/api/test_writeback.py`:
 
@@ -1339,7 +1358,7 @@ def test_post_refuses_a_document_with_an_open_exception(two_tenants: tuple[Tenan
 
 def test_post_refuses_a_document_never_run(two_tenants: tuple[TenantClient, TenantClient]) -> None:
     alice, _bob = two_tenants
-    doc_id = alice.create_document()  # a stub row: no findings at all
+    doc_id = alice.seed_unrun_document()  # a real documents row, no findings at all
     response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
                                {"adapter": "export", "vendor_ref": "V-9"})
     assert response.status_code == 422, response.text
