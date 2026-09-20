@@ -1171,7 +1171,7 @@ def test_status_reports_not_posted_before_any_post(two_tenants: tuple[TenantClie
 
 def test_status_on_a_document_with_no_content_hash_is_422(two_tenants: tuple[TenantClient, TenantClient]) -> None:
     alice, _bob = two_tenants
-    doc_id = alice.seed_exception()  # no content_sha256, no claims
+    doc_id = alice.seed_unrun_document()  # a real documents row, no content_sha256, no claims
     response = alice.get(f"/api/writeback/documents/{doc_id}/status")
     assert response.status_code == 422, response.text
 
