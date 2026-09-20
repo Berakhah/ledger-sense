@@ -14,6 +14,12 @@ from ledger_sense.store.retention import claims, documents
 from ledger_sense.writeback.assemble import MissingClaimError, derive_idempotency_key
 from ledger_sense.writeback.interface import build_idempotency_key
 
+# tests/writeback/conftest.py's `_database` fixture is deliberately not
+# autouse (it would tax every other file in this directory with a real
+# alembic migration run) — this module is the one place that needs it, so
+# it opts in explicitly, once, for every test below.
+pytestmark = pytest.mark.usefixtures("_database")
+
 
 @pytest.fixture()
 def tenant_id() -> str:
