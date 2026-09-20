@@ -1541,24 +1541,19 @@ def test_post_with_a_different_vendor_ref_after_posting_is_409(
                                {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
     assert response.status_code == 409, response.text
     assert "vendor" in response.json()["detail"]
-
-
-def test_post_after_reversal_with_a_new_vendor_is_not_a_conflict(
-        two_tenants: tuple[TenantClient, TenantClient]) -> None:
-    """A reversal clears the way for a genuinely new post — including a
-    changed vendor — the same way IdempotencyLedger.begin() already treats a
-    `reversed` record as absent (F-39)."""
-    alice, _bob = two_tenants
-    doc_id = alice.seed_postable_document()
-    first = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
-                            {"adapter": "export", "vendor_ref": "V-9"}).json()
-    alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
-                    {"adapter": "export", "remote_id": first["remote_id"],
-                     "idempotency_key": first["idempotency_key"]})
-    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
-                               {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
-    assert response.status_code == 200, response.text
 ```
+
+`test_post_after_reversal_with_a_new_vendor_is_not_a_conflict` — a fifth plan
+defect found during Task 10 execution: this test posts, calls
+`POST .../reverse`, then re-posts under a new vendor expecting 200. But
+`/reverse` does not exist until Task 11 — in Task 10 that call 404s (no
+route), no reversal is recorded in the audit log, and the re-post then
+correctly hits the vendor-conflict 409 just wired in this task, not the 200
+the test expects. The test is real and belongs with the feature it actually
+exercises (the reversed-record-is-absent rule, F-39) — moved to Task 11's
+test list, after `reverse` exists to make it true. Task 10 only tests the
+conflict itself, via `test_post_with_a_different_vendor_ref_after_posting_is_409`
+above.
 
 The `ConcurrentWriteInProgressError`/`ClosedPeriodError`/`QBORejected` mapping rows are exercised at the unit level in `tests/api/test_writeback.py` via a monkeypatched adapter factory (an end-to-end sandbox call is out of scope here — the sandbox cassettes are the separate, credential-gated task the spec already carves out):
 
@@ -1640,8 +1635,10 @@ def test_post_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/api/test_writeback.py -k "conflict or reversal or maps_" -v`
-Expected: FAIL — the vendor-conflict tests get 200 instead of 409 (no check yet); the error-mapping tests raise an unhandled exception (500) instead of the mapped status.
+Run: `uv run pytest tests/api/test_writeback.py -k "vendor_ref_after_posting or maps_" -v`
+Expected: FAIL — the vendor-conflict test gets 200 instead of 409 (no check yet); the error-mapping tests raise an unhandled exception (500) instead of the mapped status.
+
+(Note: `-k` here selects `test_post_with_a_different_vendor_ref_after_posting_is_409` plus the three `maps_` tests — the original `"conflict or reversal or maps_"` selector only worked by accident, because the now-relocated reversal test's name happened to contain both "conflict" and "reversal"; the one test left in this task's scope contains neither substring.)
 
 - [ ] **Step 3: Write the minimal implementation**
 
@@ -1748,6 +1745,25 @@ def test_reverse_on_a_cross_tenant_document_is_404(two_tenants: tuple[TenantClie
                              {"adapter": "export", "remote_id": posted["remote_id"],
                               "idempotency_key": posted["idempotency_key"]})
     assert response.status_code == 404, response.text
+
+
+def test_post_after_reversal_with_a_new_vendor_is_not_a_conflict(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """A reversal clears the way for a genuinely new post — including a
+    changed vendor — the same way IdempotencyLedger.begin() already treats a
+    `reversed` record as absent (F-39). Relocated here from Task 10 (a plan
+    defect: this test needs `/reverse`, which does not exist until this
+    task)."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    first = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                            {"adapter": "export", "vendor_ref": "V-9"}).json()
+    alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
+                    {"adapter": "export", "remote_id": first["remote_id"],
+                     "idempotency_key": first["idempotency_key"]})
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
+    assert response.status_code == 200, response.text
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
