@@ -1087,7 +1087,6 @@ Create `tests/api/test_writeback.py`. It needs a tenant client that owns a real 
         """A document with a complete claim set (ready to post) and no open
         exceptions — findings all 'accepted', matching what the review queue
         looks like once a reviewer clears it."""
-        import ledger_sense.writeback.assemble as _assemble_mod  # local import to avoid a conftest-wide dependency
         document_id = uuid.uuid4().hex
         with store_session.app_engine().begin() as conn:
             conn.execute(documents.insert().values(
@@ -1148,7 +1147,7 @@ draft bill. tests/api/conftest.py's TenantClient.seed_postable_document()
 gives every test here a document with a complete claim set and no open
 exceptions, matching what the review queue looks like once cleared."""
 
-import os
+from pathlib import Path
 
 import pytest
 
@@ -1156,7 +1155,7 @@ from tests.api.conftest import TenantClient
 
 
 @pytest.fixture(autouse=True)
-def _writeback_env(tmp_path, monkeypatch):
+def _writeback_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path / "writeback"))
     monkeypatch.setenv("LEDGER_SENSE_DEFAULT_ACCOUNT_REF", "54")
 
