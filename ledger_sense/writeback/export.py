@@ -8,6 +8,7 @@ port knows the difference.
 
 import csv
 import io
+import os
 import pathlib
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -194,6 +195,21 @@ class ExportAdapter:
             self._path.write_text("".join(kept_lines), encoding="utf-8")
         return ReversalResult(remote_id=remote_id,
                               reversed_at=datetime.now(UTC), method="deleted")
+
+
+_WRITEBACK_DIR_ENV = "LEDGER_SENSE_WRITEBACK_DIR"
+
+
+def export_adapter_from_environment() -> ExportAdapter:
+    """The deployment's CSV export adapter, writing to
+    `<LEDGER_SENSE_WRITEBACK_DIR>/export/`. Mirrors store/blobs.py's factory
+    pattern."""
+    root = os.environ.get(_WRITEBACK_DIR_ENV)
+    if not root:
+        raise RuntimeError(
+            f"{_WRITEBACK_DIR_ENV} is unset: refusing to guess where "
+            f"exported bills should be written.")
+    return ExportAdapter(os.path.join(root, "export"))
 
 
 if TYPE_CHECKING:

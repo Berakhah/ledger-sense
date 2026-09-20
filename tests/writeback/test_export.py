@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from ledger_sense.domain.money import money
-from ledger_sense.writeback.export import ExportAdapter
+from ledger_sense.writeback.export import ExportAdapter, export_adapter_from_environment
 from ledger_sense.writeback.interface import (
     LineItem,
     WritebackPort,
@@ -172,3 +172,20 @@ def test_the_amount_column_is_never_reformatted_by_neutralisation(tmp_path):
     adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
     adapter.create_unapproved_bill(_request())
     assert ",2500.50," in (tmp_path / "bills.csv").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Environment factory
+# ---------------------------------------------------------------------------
+
+def test_export_adapter_from_environment_builds_a_real_adapter(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
+    adapter = export_adapter_from_environment()
+    assert isinstance(adapter, ExportAdapter)
+    assert adapter.name == "export"
+
+
+def test_export_adapter_from_environment_raises_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("LEDGER_SENSE_WRITEBACK_DIR", raising=False)
+    with pytest.raises(RuntimeError, match="LEDGER_SENSE_WRITEBACK_DIR"):
+        export_adapter_from_environment()
