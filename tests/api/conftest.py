@@ -124,7 +124,6 @@ class TenantClient:
         """A document with a complete claim set (ready to post) and no open
         exceptions — findings all 'accepted', matching what the review queue
         looks like once a reviewer clears it."""
-        import ledger_sense.writeback.assemble as _assemble_mod  # local import to avoid a conftest-wide dependency
         document_id = uuid.uuid4().hex
         with store_session.app_engine().begin() as conn:
             conn.execute(documents.insert().values(
