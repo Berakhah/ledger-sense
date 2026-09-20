@@ -18,6 +18,7 @@ import pathlib
 from datetime import date
 
 import pytest
+from cryptography.fernet import Fernet
 
 from ledger_sense.domain.money import money
 from ledger_sense.writeback.idempotency import IdempotencyLedger
@@ -33,6 +34,7 @@ from ledger_sense.writeback.qbo import (
     ConcurrentWriteInProgressError,
     QBOAdapter,
     extract_key_from_private_note,
+    qbo_adapter_from_environment,
 )
 
 
@@ -498,6 +500,27 @@ def test_concurrent_writers_with_the_same_key_create_only_one_bill(ledger):
     assert all(isinstance(exc, ConcurrentWriteInProgressError) for exc in errors), (
         f"unexpected error types: {[type(exc).__name__ for exc in errors]}")
     assert len(results) >= 1, "no caller ever succeeded in writing the bill"
+
+
+# ---------------------------------------------------------------------------
+# Environment factory
+# ---------------------------------------------------------------------------
+
+def test_qbo_adapter_from_environment_builds_a_real_adapter(tmp_path, monkeypatch, ledger) -> None:
+    monkeypatch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
+    monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
+    monkeypatch.setenv("QBO_REALM_ID", "realm-1")
+    adapter = qbo_adapter_from_environment(ledger)
+    assert isinstance(adapter, QBOAdapter)
+    assert adapter.name == "qbo"
+
+
+def test_qbo_adapter_from_environment_raises_when_realm_unset(tmp_path, monkeypatch, ledger) -> None:
+    monkeypatch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
+    monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
+    monkeypatch.delenv("QBO_REALM_ID", raising=False)
+    with pytest.raises(RuntimeError, match="QBO_REALM_ID"):
+        qbo_adapter_from_environment(ledger)
 
 
 def test_extract_key_from_private_note_is_robust_to_surrounding_text():

@@ -127,3 +127,36 @@ then, every field routes to review regardless of this score.
   per-invoice cost figures whose provenance we could not verify.
 
 For the product's non-affiliation notice, see the README.
+
+## Single-process constraint
+
+`ledger_sense/__main__.py` runs uvicorn with a single worker (`WORKERS = 1`),
+asserted at that call site. The writeback path's in-process
+`ConcurrentWriteInProgressError` guard (`ledger_sense/writeback/qbo.py`) is
+an in-memory, per-process set — it closes the concurrent-write race
+described in `writeback/idempotency.py`'s module docstring only within one
+process. Running more than one worker (or more than one container) would
+silently reopen the duplicate-bill race `IdempotencyLedger`'s
+`BEGIN IMMEDIATE` transaction alone cannot close. Raising the worker count
+requires first replacing that in-process guard with a cross-process lock in
+the idempotency ledger itself — deferred until the deployment topology
+actually needs more than one process.
+
+## Single-tenant idempotency key (I-3, final whole-branch review)
+
+The idempotency key (`build_idempotency_key(content_sha256, contract_id,
+application_no)`) carries no tenant identifier, and both stores it backs —
+`IdempotencyLedger` and `ExportAdapter`'s own CSV key-scan — are keyed on
+that value alone. Two tenants posting byte-identical documents (a shared
+synthetic corpus makes this a real, not hypothetical, collision) would
+compute the same key: the second tenant's post would find the first
+tenant's `pending`/`committed` row already there and silently return the
+first tenant's `remote_id` instead of creating its own bill. This is
+inherited from how the writeback stores were built — `IdempotencyLedger`
+and `AuditLog` both predate any multi-tenant plumbing reaching into the
+writeback module (see `writeback/audit.py`'s module docstring) — not
+something this pass fixes. Closing it requires qualifying
+`build_idempotency_key`'s payload with `tenant_id`, at the cost of
+invalidating every idempotency key already on disk (a client's already-
+posted documents would need one-time reconciliation against the old,
+tenant-less keys before the new scheme could safely replace them).

@@ -166,13 +166,16 @@ WRITEBACK_FORBIDDEN_IMPORTS = ("ledger_sense.extract", "ledger_sense.ingest",
 
 
 def test_writeback_never_imports_the_document_pipeline_or_the_gateway() -> None:
-    """Task 37 review (recommended hardening). The provider-client exemption
-    for ledger_sense/writeback/ rests on writeback never seeing a raw
-    document — this converts that resting assumption into something a CI
-    failure would catch, not just something a docstring asserts."""
+    """Task 37 review (recommended hardening), extended for Phase 6:
+    ledger_sense/writeback/'s provider-client exemption rests on writeback
+    never seeing a raw document. ledger_sense/api/writeback.py inherits that
+    same assumption — it reconstructs a WriteRequest from persisted claims
+    (writeback/assemble.py), never from the pipeline directly — so it is
+    checked by the same guard rather than a second, easily-forgotten copy."""
     offenders = []
     for path, tree in _sources():
-        if PACKAGE / "writeback" not in path.parents:
+        if not (PACKAGE / "writeback" in path.parents
+                or path == PACKAGE / "api" / "writeback.py"):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -185,8 +188,8 @@ def test_writeback_never_imports_the_document_pipeline_or_the_gateway() -> None:
                    for name in names for forbidden in WRITEBACK_FORBIDDEN_IMPORTS):
                 offenders.append(f"{path}:{node.lineno}")
     assert offenders == [], (
-        f"ledger_sense/writeback/ imported the document pipeline or the "
-        f"gateway, invalidating its provider-client exemption: {offenders}")
+        f"writeback (or its API router) imported the document pipeline or "
+        f"the gateway, invalidating its provider-client exemption: {offenders}")
 
 
 def _dataclass_replace_calls(tree: ast.Module) -> list[int]:

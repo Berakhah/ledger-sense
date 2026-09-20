@@ -921,6 +921,9 @@ def test_build_write_request_refuses_a_missing_summary_field(tenant_id: str, mon
                       value="2", value_type="int")
         _insert_claim(conn, tenant_id, document_id, field="period_to",
                       value="2026-08-31", value_type="date")
+        for field in ("total_completed_and_stored", "previous_payments", "change_orders_net"):
+            _insert_claim(conn, tenant_id, document_id, field=field,
+                          value="1000.00", value_type="money")
         _insert_claim(conn, tenant_id, document_id,
                       field="line[000].description", value="Sitework")
         _insert_claim(conn, tenant_id, document_id,
@@ -1068,11 +1071,12 @@ The simplest route first: no vendor fields, no gate, no adapter dispatch — jus
 
 **Files:**
 - Create: `ledger_sense/api/writeback.py`
+- Modify: `ledger_sense/api/app.py` (register the router — see below; not deferred to Task 12)
 - Test: `tests/api/test_writeback.py`
 
 **Interfaces:**
-- Consumes: `ledger_sense.api.deps.{owned, require_session}`, `ledger_sense.store.retention.documents`, `ledger_sense.store.session.app_engine`, `ledger_sense.writeback.assemble.{MissingClaimError, derive_idempotency_key}`, `ledger_sense.writeback.audit.{AuditEntry, AuditLog, audit_log_from_environment}`.
-- Produces: `router = APIRouter(prefix="/api/writeback")` with one route so far, `GET /api/writeback/documents/{doc_id}/status`; `_get_document(document_id, session, conn) -> sa.Row[Any]`; `_live_write_entries(audit: AuditLog, doc_id: str) -> dict[str, AuditEntry]`. Task 9-11 add to the same router and reuse both helpers.
+- Consumes: `ledger_sense.api.deps.{owned, require_session, register}`, `ledger_sense.store.retention.documents`, `ledger_sense.store.session.app_engine`, `ledger_sense.writeback.assemble.{MissingClaimError, derive_idempotency_key}`, `ledger_sense.writeback.audit.{AuditEntry, AuditLog, audit_log_from_environment}`.
+- Produces: `router = APIRouter(prefix="/api/writeback")`, registered on `app` in this same task, with one route so far, `GET /api/writeback/documents/{doc_id}/status`; `_get_document(document_id, session, conn) -> sa.Row[Any]`; `_live_write_entries(audit: AuditLog, doc_id: str) -> dict[str, AuditEntry]`. Task 9-11 add more routes to the same already-registered router and reuse both helpers.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1083,7 +1087,6 @@ Create `tests/api/test_writeback.py`. It needs a tenant client that owns a real 
         """A document with a complete claim set (ready to post) and no open
         exceptions — findings all 'accepted', matching what the review queue
         looks like once a reviewer clears it."""
-        import ledger_sense.writeback.assemble as _assemble_mod  # local import to avoid a conftest-wide dependency
         document_id = uuid.uuid4().hex
         with store_session.app_engine().begin() as conn:
             conn.execute(documents.insert().values(
@@ -1118,7 +1121,23 @@ Create `tests/api/test_writeback.py`. It needs a tenant client that owns a real 
         return document_id
 ```
 
-Add `claims` to `conftest.py`'s `from ledger_sense.store.retention import documents, findings` import.
+Add `claims` to `conftest.py`'s `from ledger_sense.store.retention import documents, findings` import, and add a second small helper alongside `seed_postable_document` for the "never run" case Task 9 needs — `create_document()` (the existing stub-table helper) does not create a real `documents` row, so `_get_document`'s `owned()` check would 404 rather than let the gate's 422 fire:
+
+```python
+    def seed_unrun_document(self) -> str:
+        """A real documents row with no findings and no claims — the
+        'never run' case _require_cleared (Task 9) must refuse with 422,
+        distinct from create_document()'s stub-table row, which owned()
+        can't even see."""
+        document_id = uuid.uuid4().hex
+        with store_session.app_engine().begin() as conn:
+            conn.execute(documents.insert().values(
+                id=document_id, tenant_id=self.tenant_id, blob_id=None,
+                received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
+                origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
+                filename="fixture.pdf", content_sha256=None))
+        return document_id
+```
 
 Then create `tests/api/test_writeback.py`:
 
@@ -1128,15 +1147,18 @@ draft bill. tests/api/conftest.py's TenantClient.seed_postable_document()
 gives every test here a document with a complete claim set and no open
 exceptions, matching what the review queue looks like once cleared."""
 
-import os
+from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
 
+from ledger_sense.store import session as store_session
+from ledger_sense.store.retention import findings
 from tests.api.conftest import TenantClient
 
 
 @pytest.fixture(autouse=True)
-def _writeback_env(tmp_path, monkeypatch):
+def _writeback_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path / "writeback"))
     monkeypatch.setenv("LEDGER_SENSE_DEFAULT_ACCOUNT_REF", "54")
 
@@ -1151,7 +1173,7 @@ def test_status_reports_not_posted_before_any_post(two_tenants: tuple[TenantClie
 
 def test_status_on_a_document_with_no_content_hash_is_422(two_tenants: tuple[TenantClient, TenantClient]) -> None:
     alice, _bob = two_tenants
-    doc_id = alice.seed_exception()  # no content_sha256, no claims
+    doc_id = alice.seed_unrun_document()  # a real documents row, no content_sha256, no claims
     response = alice.get(f"/api/writeback/documents/{doc_id}/status")
     assert response.status_code == 422, response.text
 
@@ -1166,7 +1188,7 @@ def test_status_on_a_cross_tenant_document_is_404(two_tenants: tuple[TenantClien
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/api/test_writeback.py -v`
-Expected: FAIL — 404 (route does not exist yet) rather than the asserted status codes.
+Expected: FAIL — 404, because `ledger_sense/api/writeback.py` doesn't exist yet AND `app.py` doesn't register it yet. (Both are fixed together in Step 3 below — see the registration note after the module code, which explains why this task, not Task 12, must wire it into `app.py`.)
 
 - [ ] **Step 3: Write the minimal implementation**
 
@@ -1269,10 +1291,31 @@ def status(doc_id: str, session: CurrentSession) -> StatusResponse:
 
 (The `from fastapi import HTTPException` local import inside `status` is temporary scaffolding for this task only — Task 9 hoists it to a top-level import alongside the other exception-mapping routes it adds; leaving it local here keeps this task's diff minimal and self-contained.)
 
+**Register the router now, not in Task 12.** `tests/api/conftest.py`'s `TenantClient` reaches every route through the one shared `TestClient(app)` built from `ledger_sense.api.app`'s module-level `app = build_app()`. If `register(app, writeback_router)` isn't called until Task 12, `/api/writeback/...` returns 404 "not found" for every test in Tasks 8-11 regardless of whether the route itself is correct — an unregistered path 404s identically to a route that doesn't exist, so Step 2's RED and Step 4's (attempted) GREEN would be indistinguishable failures. Because Python re-imports the whole module tree fresh for every pytest process, registering the (currently single-route) router now is safe: each later task (9, 10, 11) adds more `@router.post`/`@router.get` decorators to the same `ledger_sense/api/writeback.py` module, and since those decorators run at import time — before `register()` ever walks `router.routes` — every route defined in the file by that later commit is picked up automatically. No re-registration step is needed in any later task.
+
+In `ledger_sense/api/app.py`, add the import alongside the other routers and register it in `build_app()`:
+
+```python
+from ledger_sense.api.writeback import router as writeback_router
+```
+
+```python
+    register(app, baseline_router)
+    register(app, inbox_router)
+    register(app, review_router)
+    register(app, reconciliation_router)
+    register(app, writeback_router)
+```
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/api/test_writeback.py -v`
-Expected: PASS.
+Expected: PASS — now that the router is actually mounted on `app`.
+
+- [ ] **Step 4b: Confirm no regression in the route-registration audit**
+
+Run: `uv run pytest tests/api/test_route_registration.py tests/api/test_auth.py -v`
+Expected: PASS — the new route must show up in the walkable route table with `require_session` in its dependencies, same as every other router `register()` mounts.
 
 - [ ] **Step 5: Run mypy/ruff and commit**
 
@@ -1330,7 +1373,14 @@ def test_post_twice_with_the_same_vendor_replays(two_tenants: tuple[TenantClient
 
 def test_post_refuses_a_document_with_an_open_exception(two_tenants: tuple[TenantClient, TenantClient]) -> None:
     alice, _bob = two_tenants
-    doc_id = alice.seed_exception()  # ships with an OPEN finding by default
+    # seed_exception() returns the finding's own id (it's built for
+    # /api/review, which addresses findings directly) — the document it
+    # attaches to still ships with the OPEN finding this test needs.
+    exc_id = alice.seed_exception()
+    with store_session.app_engine().connect() as conn:
+        doc_id = conn.execute(
+            sa.select(findings.c.document_id).where(findings.c.id == exc_id)
+        ).scalar_one()
     response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
                                {"adapter": "export", "vendor_ref": "V-9"})
     assert response.status_code == 422, response.text
@@ -1339,7 +1389,7 @@ def test_post_refuses_a_document_with_an_open_exception(two_tenants: tuple[Tenan
 
 def test_post_refuses_a_document_never_run(two_tenants: tuple[TenantClient, TenantClient]) -> None:
     alice, _bob = two_tenants
-    doc_id = alice.create_document()  # a stub row: no findings at all
+    doc_id = alice.seed_unrun_document()  # a real documents row, no findings at all
     response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
                                {"adapter": "export", "vendor_ref": "V-9"})
     assert response.status_code == 422, response.text
@@ -1491,24 +1541,19 @@ def test_post_with_a_different_vendor_ref_after_posting_is_409(
                                {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
     assert response.status_code == 409, response.text
     assert "vendor" in response.json()["detail"]
-
-
-def test_post_after_reversal_with_a_new_vendor_is_not_a_conflict(
-        two_tenants: tuple[TenantClient, TenantClient]) -> None:
-    """A reversal clears the way for a genuinely new post — including a
-    changed vendor — the same way IdempotencyLedger.begin() already treats a
-    `reversed` record as absent (F-39)."""
-    alice, _bob = two_tenants
-    doc_id = alice.seed_postable_document()
-    first = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
-                            {"adapter": "export", "vendor_ref": "V-9"}).json()
-    alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
-                    {"adapter": "export", "remote_id": first["remote_id"],
-                     "idempotency_key": first["idempotency_key"]})
-    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
-                               {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
-    assert response.status_code == 200, response.text
 ```
+
+`test_post_after_reversal_with_a_new_vendor_is_not_a_conflict` — a fifth plan
+defect found during Task 10 execution: this test posts, calls
+`POST .../reverse`, then re-posts under a new vendor expecting 200. But
+`/reverse` does not exist until Task 11 — in Task 10 that call 404s (no
+route), no reversal is recorded in the audit log, and the re-post then
+correctly hits the vendor-conflict 409 just wired in this task, not the 200
+the test expects. The test is real and belongs with the feature it actually
+exercises (the reversed-record-is-absent rule, F-39) — moved to Task 11's
+test list, after `reverse` exists to make it true. Task 10 only tests the
+conflict itself, via `test_post_with_a_different_vendor_ref_after_posting_is_409`
+above.
 
 The `ConcurrentWriteInProgressError`/`ClosedPeriodError`/`QBORejected` mapping rows are exercised at the unit level in `tests/api/test_writeback.py` via a monkeypatched adapter factory (an end-to-end sandbox call is out of scope here — the sandbox cassettes are the separate, credential-gated task the spec already carves out):
 
@@ -1590,8 +1635,10 @@ def test_post_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/api/test_writeback.py -k "conflict or reversal or maps_" -v`
-Expected: FAIL — the vendor-conflict tests get 200 instead of 409 (no check yet); the error-mapping tests raise an unhandled exception (500) instead of the mapped status.
+Run: `uv run pytest tests/api/test_writeback.py -k "vendor_ref_after_posting or maps_" -v`
+Expected: FAIL — the vendor-conflict test gets 200 instead of 409 (no check yet); the error-mapping tests raise an unhandled exception (500) instead of the mapped status.
+
+(Note: `-k` here selects `test_post_with_a_different_vendor_ref_after_posting_is_409` plus the three `maps_` tests — the original `"conflict or reversal or maps_"` selector only worked by accident, because the now-relocated reversal test's name happened to contain both "conflict" and "reversal"; the one test left in this task's scope contains neither substring.)
 
 - [ ] **Step 3: Write the minimal implementation**
 
@@ -1698,6 +1745,25 @@ def test_reverse_on_a_cross_tenant_document_is_404(two_tenants: tuple[TenantClie
                              {"adapter": "export", "remote_id": posted["remote_id"],
                               "idempotency_key": posted["idempotency_key"]})
     assert response.status_code == 404, response.text
+
+
+def test_post_after_reversal_with_a_new_vendor_is_not_a_conflict(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """A reversal clears the way for a genuinely new post — including a
+    changed vendor — the same way IdempotencyLedger.begin() already treats a
+    `reversed` record as absent (F-39). Relocated here from Task 10 (a plan
+    defect: this test needs `/reverse`, which does not exist until this
+    task)."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    first = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                            {"adapter": "export", "vendor_ref": "V-9"}).json()
+    alice.post_json(f"/api/writeback/documents/{doc_id}/reverse",
+                    {"adapter": "export", "remote_id": first["remote_id"],
+                     "idempotency_key": first["idempotency_key"]})
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-DIFFERENT"})
+    assert response.status_code == 200, response.text
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1758,15 +1824,14 @@ writeback surface the Phase 6 spec defines."
 
 ---
 
-## Task 12: Register the router; single-process constraint; methodology doc
+## Task 12: Single-process constraint; methodology doc
 
-Wires the finished router into the app and closes the second open Phase 5 exit item (Ruling 3): the single-process assumption the in-process `ConcurrentWriteInProgressError` guard depends on, pinned as a source-level fact rather than left as a comment.
+Closes the second open Phase 5 exit item (Ruling 3): the single-process assumption the in-process `ConcurrentWriteInProgressError` guard depends on, pinned as a source-level fact rather than left as a comment. (The router registration originally planned for this task was moved forward into Task 8 — see that task's "Register the router now, not in Task 12" note. `ledger_sense/api/app.py` already registers `writeback_router`; this task does not touch it again.)
 
 **Files:**
-- Modify: `ledger_sense/api/app.py` (register the router)
 - Modify: `ledger_sense/__main__.py` (`WORKERS` constant + assertion)
 - Modify: `docs/methodology.md` (document the constraint)
-- Test: `tests/api/test_route_registration.py` (implicitly covered — no new test needed there since `register()` already satisfies the walk), `tests/test_platform_skeleton.py` (new regression test for `WORKERS`)
+- Test: `tests/test_platform_skeleton.py` (new regression test for `WORKERS`)
 
 **Interfaces:** None new — this task wires together interfaces already produced by Tasks 8-11.
 
@@ -1791,20 +1856,6 @@ Run: `uv run pytest tests/test_platform_skeleton.py::test_ledger_sense_runs_as_a
 Expected: FAIL — `ImportError: cannot import name 'WORKERS'`.
 
 - [ ] **Step 3: Write the minimal implementation**
-
-In `ledger_sense/api/app.py`, add the import alongside the other routers and register it in `build_app()`:
-
-```python
-from ledger_sense.api.writeback import router as writeback_router
-```
-
-```python
-    register(app, baseline_router)
-    register(app, inbox_router)
-    register(app, review_router)
-    register(app, reconciliation_router)
-    register(app, writeback_router)
-```
 
 In `ledger_sense/__main__.py`, add above `main()`:
 
@@ -1852,14 +1903,15 @@ Expected: PASS — including `tests/api/test_route_registration.py::test_the_aud
 
 - [ ] **Step 5: Run mypy/ruff and commit**
 
-Run: `uv run mypy --strict ledger_sense/api/app.py ledger_sense/__main__.py && uv run ruff check ledger_sense/api/app.py ledger_sense/__main__.py`
+Run: `uv run mypy --strict ledger_sense/__main__.py && uv run ruff check ledger_sense/__main__.py`
 
 ```bash
-git add ledger_sense/api/app.py ledger_sense/__main__.py docs/methodology.md tests/test_platform_skeleton.py
-git commit -m "feat: register the writeback router; pin the single-process constraint
+git add ledger_sense/__main__.py docs/methodology.md tests/test_platform_skeleton.py
+git commit -m "feat: pin the single-process constraint
 
 WORKERS = 1 in __main__.py, asserted at the uvicorn.run call site and
-documented in docs/methodology.md — closing Phase 5's second open exit item."
+documented in docs/methodology.md — closing Phase 5's second open exit item.
+(The writeback router itself was registered in Task 8, not here.)"
 ```
 
 ---
