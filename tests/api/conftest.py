@@ -99,6 +99,9 @@ class TenantClient:
     def post(self, path: str) -> Response:
         return cast(Response, client.post(path, cookies={"session": self.token}))
 
+    def post_json(self, path: str, body: dict[str, object]) -> Response:
+        return cast(Response, client.post(path, json=body, cookies={"session": self.token}))
+
     def create_document(self) -> str:
         return seed_resource(self.tenant_id)
 
