@@ -21,6 +21,7 @@ the hash chain are both real today; wiring an actual tenant identifier through
 
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from datetime import date, datetime
@@ -383,3 +384,18 @@ if TYPE_CHECKING:
     # tests/writeback/test_audit.py.
     def _audited_adapter_satisfies_writebackport(adapter: AuditedAdapter) -> None:
         _conforms: WritebackPort = adapter
+
+
+_WRITEBACK_DIR_ENV = "LEDGER_SENSE_WRITEBACK_DIR"
+
+
+def audit_log_from_environment() -> AuditLog:
+    """The deployment's audit log, at `<LEDGER_SENSE_WRITEBACK_DIR>/audit.db`.
+    See idempotency.py::ledger_from_environment for the pattern this mirrors."""
+    root = os.environ.get(_WRITEBACK_DIR_ENV)
+    if not root:
+        raise RuntimeError(
+            f"{_WRITEBACK_DIR_ENV} is unset: refusing to guess where the "
+            f"writeback audit log lives.")
+    os.makedirs(root, exist_ok=True)
+    return AuditLog(os.path.join(root, "audit.db"))

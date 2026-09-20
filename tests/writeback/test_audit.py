@@ -386,3 +386,18 @@ def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(
     assert [e.action for e in entries] == ["write", "reversal", "write"]
     assert audit.verify_chain() == []
     audit.close()
+
+
+def test_audit_log_from_environment_builds_a_log_under_the_configured_dir(tmp_path, monkeypatch) -> None:
+    from ledger_sense.writeback.audit import audit_log_from_environment
+    monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
+    audit = audit_log_from_environment()
+    assert audit.verify_chain() == []
+    assert (tmp_path / "audit.db").exists()
+
+
+def test_audit_log_from_environment_raises_when_unset(monkeypatch) -> None:
+    from ledger_sense.writeback.audit import audit_log_from_environment
+    monkeypatch.delenv("LEDGER_SENSE_WRITEBACK_DIR", raising=False)
+    with pytest.raises(RuntimeError, match="LEDGER_SENSE_WRITEBACK_DIR"):
+        audit_log_from_environment()
