@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import httpx
 
+from ledger_sense.store.blobs import kek_from_environment
 from ledger_sense.writeback.idempotency import IdempotencyLedger
 from ledger_sense.writeback.interface import (
     ClosedPeriodError,
@@ -47,10 +48,10 @@ from ledger_sense.writeback.interface import (
     WriteRequest,
     WriteResult,
 )
+from ledger_sense.writeback.tokens import TokenStore
 
 if TYPE_CHECKING:
     from ledger_sense.writeback.interface import WritebackPort
-    from ledger_sense.writeback.tokens import TokenStore
 
 # Intuit's OAuth token endpoint. Fixed, not client-configurable: it is the
 # same host for every realm, sandbox or production (the realm id in the
@@ -422,6 +423,37 @@ class HttpQBOClient:
             "POST", self._company_path("/bill"), params={"operation": "delete"},
             json={"Id": remote_id, "SyncToken": sync_token})
         response.raise_for_status()
+
+
+_WRITEBACK_DIR_ENV = "LEDGER_SENSE_WRITEBACK_DIR"
+_REALM_ID_ENV = "QBO_REALM_ID"
+_QBO_SANDBOX_BASE_URL = "https://sandbox-quickbooks.api.intuit.com"
+
+
+def qbo_adapter_from_environment(ledger: IdempotencyLedger) -> QBOAdapter:
+    """The deployment's QBO adapter: HttpQBOClient against the sandbox,
+    backed by an encrypted-at-rest TokenStore, wrapping `ledger`.
+
+    Mirrors store/blobs.py's factory pattern. Reuses the deployment KEK
+    (store.blobs.kek_from_environment) for the token store rather than
+    inventing a second secret to manage — both protect at-rest client data
+    the same way.
+    """
+    root = os.environ.get(_WRITEBACK_DIR_ENV)
+    if not root:
+        raise RuntimeError(
+            f"{_WRITEBACK_DIR_ENV} is unset: refusing to guess where the "
+            f"QBO token store lives.")
+    realm_id = os.environ.get(_REALM_ID_ENV)
+    if not realm_id:
+        raise RuntimeError(
+            f"{_REALM_ID_ENV} is unset: connect the QBO sandbox account "
+            f"before writing.")
+    os.makedirs(root, exist_ok=True)
+    token_store = TokenStore(os.path.join(root, "tokens.db"),
+                             fernet_key=kek_from_environment())
+    client = HttpQBOClient(_QBO_SANDBOX_BASE_URL, realm_id, token_store)
+    return QBOAdapter(client, ledger, realm_id=realm_id)
 
 
 if TYPE_CHECKING:
