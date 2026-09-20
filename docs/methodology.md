@@ -127,3 +127,17 @@ then, every field routes to review regardless of this score.
   per-invoice cost figures whose provenance we could not verify.
 
 For the product's non-affiliation notice, see the README.
+
+## Single-process constraint
+
+`ledger_sense/__main__.py` runs uvicorn with a single worker (`WORKERS = 1`),
+asserted at that call site. The writeback path's in-process
+`ConcurrentWriteInProgressError` guard (`ledger_sense/writeback/qbo.py`) is
+an in-memory, per-process set — it closes the concurrent-write race
+described in `writeback/idempotency.py`'s module docstring only within one
+process. Running more than one worker (or more than one container) would
+silently reopen the duplicate-bill race `IdempotencyLedger`'s
+`BEGIN IMMEDIATE` transaction alone cannot close. Raising the worker count
+requires first replacing that in-process guard with a cross-process lock in
+the idempotency ledger itself — deferred until the deployment topology
+actually needs more than one process.
