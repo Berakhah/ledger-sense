@@ -21,6 +21,7 @@ the hash chain are both real today; wiring an actual tenant identifier through
 
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from datetime import date, datetime
@@ -49,18 +50,20 @@ _GENESIS_HASH = "0" * 64
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit (
-    id              TEXT PRIMARY KEY,
-    tenant_id       TEXT NOT NULL,
-    doc_id          TEXT NOT NULL,
-    adapter         TEXT NOT NULL,
-    action          TEXT NOT NULL,
-    remote_id       TEXT NOT NULL,
-    idempotency_key TEXT,
-    approved_by     TEXT NOT NULL,
-    occurred_at     TEXT NOT NULL,
-    detail          TEXT NOT NULL,
-    prev_hash       TEXT NOT NULL,
-    entry_hash      TEXT NOT NULL
+    id                    TEXT PRIMARY KEY,
+    tenant_id             TEXT NOT NULL,
+    doc_id                TEXT NOT NULL,
+    adapter               TEXT NOT NULL,
+    action                TEXT NOT NULL,
+    remote_id             TEXT NOT NULL,
+    idempotency_key       TEXT,
+    vendor_ref            TEXT,
+    vendor_invoice_number TEXT,
+    approved_by           TEXT NOT NULL,
+    occurred_at           TEXT NOT NULL,
+    detail                TEXT NOT NULL,
+    prev_hash             TEXT NOT NULL,
+    entry_hash            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_by_remote ON audit (tenant_id, remote_id);
 """
@@ -74,7 +77,8 @@ CREATE INDEX IF NOT EXISTS audit_by_remote ON audit (tenant_id, remote_id);
 # could.
 _PAYLOAD_FIELDS = (
     "id", "tenant_id", "doc_id", "adapter", "action", "remote_id",
-    "idempotency_key", "approved_by", "occurred_at", "detail",
+    "idempotency_key", "vendor_ref", "vendor_invoice_number",
+    "approved_by", "occurred_at", "detail",
 )
 
 # The two chain columns, stored alongside the payload fields but excluded
@@ -102,6 +106,8 @@ class AuditEntry(BaseModel):
     action: Action
     remote_id: str
     idempotency_key: str | None
+    vendor_ref: str | None
+    vendor_invoice_number: str | None
     approved_by: str
     occurred_at: datetime
     detail: str
@@ -195,6 +201,8 @@ class AuditLog:
                 "doc_id": entry.doc_id, "adapter": entry.adapter,
                 "action": entry.action, "remote_id": entry.remote_id,
                 "idempotency_key": entry.idempotency_key,
+                "vendor_ref": entry.vendor_ref,
+                "vendor_invoice_number": entry.vendor_invoice_number,
                 "approved_by": entry.approved_by, "occurred_at": occurred_at,
                 "detail": entry.detail,
             }
@@ -209,10 +217,12 @@ class AuditLog:
             conn.commit()
 
     def record_write(self, doc_id: str, adapter: str, result: WriteResult,
-                     approved_by: str) -> None:
+                     approved_by: str, *, vendor_ref: str,
+                     vendor_invoice_number: str | None = None) -> None:
         self._append(AuditEntry(
             id=str(uuid.uuid4()), doc_id=doc_id, adapter=adapter, action="write",
             remote_id=result.remote_id, idempotency_key=result.idempotency_key,
+            vendor_ref=vendor_ref, vendor_invoice_number=vendor_invoice_number,
             approved_by=approved_by, occurred_at=result.created_at,
             detail="replay of an earlier write" if result.was_replay
                    else "unapproved bill created, awaiting review"))
@@ -226,19 +236,21 @@ class AuditLog:
         self._append(AuditEntry(
             id=str(uuid.uuid4()), doc_id=doc_id, adapter=adapter, action="reversal",
             remote_id=result.remote_id, idempotency_key=idempotency_key,
+            vendor_ref=None, vendor_invoice_number=None,
             approved_by=approved_by, occurred_at=result.reversed_at,
             detail=f"reversed by {result.method}"))
 
     def for_document(self, doc_id: str) -> list[AuditEntry]:
         rows = self._conn.execute(
             "SELECT id, doc_id, adapter, action, remote_id, idempotency_key, "
-            "approved_by, occurred_at, detail FROM audit "
-            "WHERE tenant_id = ? AND doc_id = ? ORDER BY rowid",
+            "vendor_ref, vendor_invoice_number, approved_by, occurred_at, detail "
+            "FROM audit WHERE tenant_id = ? AND doc_id = ? ORDER BY rowid",
             (self._tenant_id, doc_id)).fetchall()
         return [AuditEntry(
             id=r[0], doc_id=r[1], adapter=r[2], action=r[3], remote_id=r[4],
-            idempotency_key=r[5], approved_by=r[6],
-            occurred_at=datetime.fromisoformat(r[7]), detail=r[8]) for r in rows]
+            idempotency_key=r[5], vendor_ref=r[6], vendor_invoice_number=r[7],
+            approved_by=r[8], occurred_at=datetime.fromisoformat(r[9]), detail=r[10])
+            for r in rows]
 
     def document_for_remote(self, remote_id: str) -> str | None:
         """The doc_id of the audited *write* that created `remote_id`.
@@ -341,7 +353,10 @@ class AuditedAdapter:
                 "a write requires approved_by — nothing reaches a client's books "
                 "without a named human on the record")
         result = self._inner.create_unapproved_bill(request)
-        self._audit.record_write(request.doc_id, self.name, result, self._approved_by)
+        self._audit.record_write(
+            request.doc_id, self.name, result, self._approved_by,
+            vendor_ref=request.vendor_ref,
+            vendor_invoice_number=request.vendor_invoice_number)
         return result
 
     def reverse(self, remote_id: str, idempotency_key: str) -> ReversalResult:
@@ -369,3 +384,18 @@ if TYPE_CHECKING:
     # tests/writeback/test_audit.py.
     def _audited_adapter_satisfies_writebackport(adapter: AuditedAdapter) -> None:
         _conforms: WritebackPort = adapter
+
+
+_WRITEBACK_DIR_ENV = "LEDGER_SENSE_WRITEBACK_DIR"
+
+
+def audit_log_from_environment() -> AuditLog:
+    """The deployment's audit log, at `<LEDGER_SENSE_WRITEBACK_DIR>/audit.db`.
+    See idempotency.py::ledger_from_environment for the pattern this mirrors."""
+    root = os.environ.get(_WRITEBACK_DIR_ENV)
+    if not root:
+        raise RuntimeError(
+            f"{_WRITEBACK_DIR_ENV} is unset: refusing to guess where the "
+            f"writeback audit log lives.")
+    os.makedirs(root, exist_ok=True)
+    return AuditLog(os.path.join(root, "audit.db"))

@@ -249,7 +249,7 @@ def test_concurrent_appends_do_not_fork_the_chain(tmp_path):
                     remote_id=f"w{worker}-{i}", idempotency_key=f"key-{worker}-{i}",
                     adapter="qbo", created_at=datetime.now(UTC), was_replay=False)
                 audit.record_write(f"doc-{worker}-{i}", "qbo", result,
-                                   approved_by="A. Bookkeeper")
+                                   approved_by="A. Bookkeeper", vendor_ref="V-1")
         except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
             errors.append(exc)
 
@@ -323,6 +323,51 @@ def test_write_reverse_write_through_audited_qbo_adapter_produces_a_new_bill(tmp
     audit.close()
 
 
+def test_record_write_carries_the_requests_vendor_fields(tmp_path) -> None:
+    """F-40's DocNumber/PrivateNote split lives in qbo.py; this is the
+    audit-side half — the vendor identity a bill was posted under must be
+    recoverable later without re-deriving it, because the idempotency key
+    (build_idempotency_key) deliberately excludes vendor identity (Ruling 5,
+    Phase 6 spec) and a later call with different vendor fields needs
+    something to compare against."""
+    audit = AuditLog(str(tmp_path / "audit.db"))
+    adapter = AuditedAdapter(ExportAdapter(out_dir=str(tmp_path / "export")),
+                             audit=audit, approved_by="reviewer@example.test")
+    request = WriteRequest(
+        idempotency_key=build_idempotency_key("h1", "C-1", 1), doc_id="doc-1",
+        vendor_ref="V-9", vendor_invoice_number="INV-1", txn_date=date(2026, 1, 1),
+        line_items=[LineItem(description="Sitework", amount=money("100.00"), account_ref="54")],
+        memo="m")
+    adapter.create_unapproved_bill(request)
+
+    entries = audit.for_document("doc-1")
+    assert len(entries) == 1
+    assert entries[0].vendor_ref == "V-9"
+    assert entries[0].vendor_invoice_number == "INV-1"
+    audit.close()
+
+
+def test_record_reversal_carries_no_vendor_fields(tmp_path) -> None:
+    """A reversal call (remote_id + idempotency_key only) has no vendor data
+    of its own to record — None, not a stale copy of the original write's."""
+    audit = AuditLog(str(tmp_path / "audit.db"))
+    adapter = AuditedAdapter(ExportAdapter(out_dir=str(tmp_path / "export")),
+                             audit=audit, approved_by="reviewer@example.test")
+    request = WriteRequest(
+        idempotency_key=build_idempotency_key("h1", "C-1", 1), doc_id="doc-1",
+        vendor_ref="V-9", vendor_invoice_number=None, txn_date=date(2026, 1, 1),
+        line_items=[LineItem(description="Sitework", amount=money("100.00"), account_ref="54")],
+        memo="m")
+    result = adapter.create_unapproved_bill(request)
+    adapter.reverse(result.remote_id, result.idempotency_key)
+
+    entries = audit.for_document("doc-1")
+    reversal = next(e for e in entries if e.action == "reversal")
+    assert reversal.vendor_ref is None
+    assert reversal.vendor_invoice_number is None
+    audit.close()
+
+
 def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(tmp_path):
     """I-2, the ExportAdapter composition. Not the QBO adapter — the export
     peer adapter, which reuses the idempotency key itself as the remote id."""
@@ -341,3 +386,18 @@ def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(
     assert [e.action for e in entries] == ["write", "reversal", "write"]
     assert audit.verify_chain() == []
     audit.close()
+
+
+def test_audit_log_from_environment_builds_a_log_under_the_configured_dir(tmp_path, monkeypatch) -> None:
+    from ledger_sense.writeback.audit import audit_log_from_environment
+    monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
+    audit = audit_log_from_environment()
+    assert audit.verify_chain() == []
+    assert (tmp_path / "audit.db").exists()
+
+
+def test_audit_log_from_environment_raises_when_unset(monkeypatch) -> None:
+    from ledger_sense.writeback.audit import audit_log_from_environment
+    monkeypatch.delenv("LEDGER_SENSE_WRITEBACK_DIR", raising=False)
+    with pytest.raises(RuntimeError, match="LEDGER_SENSE_WRITEBACK_DIR"):
+        audit_log_from_environment()
