@@ -1071,11 +1071,12 @@ The simplest route first: no vendor fields, no gate, no adapter dispatch — jus
 
 **Files:**
 - Create: `ledger_sense/api/writeback.py`
+- Modify: `ledger_sense/api/app.py` (register the router — see below; not deferred to Task 12)
 - Test: `tests/api/test_writeback.py`
 
 **Interfaces:**
-- Consumes: `ledger_sense.api.deps.{owned, require_session}`, `ledger_sense.store.retention.documents`, `ledger_sense.store.session.app_engine`, `ledger_sense.writeback.assemble.{MissingClaimError, derive_idempotency_key}`, `ledger_sense.writeback.audit.{AuditEntry, AuditLog, audit_log_from_environment}`.
-- Produces: `router = APIRouter(prefix="/api/writeback")` with one route so far, `GET /api/writeback/documents/{doc_id}/status`; `_get_document(document_id, session, conn) -> sa.Row[Any]`; `_live_write_entries(audit: AuditLog, doc_id: str) -> dict[str, AuditEntry]`. Task 9-11 add to the same router and reuse both helpers.
+- Consumes: `ledger_sense.api.deps.{owned, require_session, register}`, `ledger_sense.store.retention.documents`, `ledger_sense.store.session.app_engine`, `ledger_sense.writeback.assemble.{MissingClaimError, derive_idempotency_key}`, `ledger_sense.writeback.audit.{AuditEntry, AuditLog, audit_log_from_environment}`.
+- Produces: `router = APIRouter(prefix="/api/writeback")`, registered on `app` in this same task, with one route so far, `GET /api/writeback/documents/{doc_id}/status`; `_get_document(document_id, session, conn) -> sa.Row[Any]`; `_live_write_entries(audit: AuditLog, doc_id: str) -> dict[str, AuditEntry]`. Task 9-11 add more routes to the same already-registered router and reuse both helpers.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1185,7 +1186,7 @@ def test_status_on_a_cross_tenant_document_is_404(two_tenants: tuple[TenantClien
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/api/test_writeback.py -v`
-Expected: FAIL — 404 (route does not exist yet) rather than the asserted status codes.
+Expected: FAIL — 404, because `ledger_sense/api/writeback.py` doesn't exist yet AND `app.py` doesn't register it yet. (Both are fixed together in Step 3 below — see the registration note after the module code, which explains why this task, not Task 12, must wire it into `app.py`.)
 
 - [ ] **Step 3: Write the minimal implementation**
 
@@ -1288,10 +1289,31 @@ def status(doc_id: str, session: CurrentSession) -> StatusResponse:
 
 (The `from fastapi import HTTPException` local import inside `status` is temporary scaffolding for this task only — Task 9 hoists it to a top-level import alongside the other exception-mapping routes it adds; leaving it local here keeps this task's diff minimal and self-contained.)
 
+**Register the router now, not in Task 12.** `tests/api/conftest.py`'s `TenantClient` reaches every route through the one shared `TestClient(app)` built from `ledger_sense.api.app`'s module-level `app = build_app()`. If `register(app, writeback_router)` isn't called until Task 12, `/api/writeback/...` returns 404 "not found" for every test in Tasks 8-11 regardless of whether the route itself is correct — an unregistered path 404s identically to a route that doesn't exist, so Step 2's RED and Step 4's (attempted) GREEN would be indistinguishable failures. Because Python re-imports the whole module tree fresh for every pytest process, registering the (currently single-route) router now is safe: each later task (9, 10, 11) adds more `@router.post`/`@router.get` decorators to the same `ledger_sense/api/writeback.py` module, and since those decorators run at import time — before `register()` ever walks `router.routes` — every route defined in the file by that later commit is picked up automatically. No re-registration step is needed in any later task.
+
+In `ledger_sense/api/app.py`, add the import alongside the other routers and register it in `build_app()`:
+
+```python
+from ledger_sense.api.writeback import router as writeback_router
+```
+
+```python
+    register(app, baseline_router)
+    register(app, inbox_router)
+    register(app, review_router)
+    register(app, reconciliation_router)
+    register(app, writeback_router)
+```
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/api/test_writeback.py -v`
-Expected: PASS.
+Expected: PASS — now that the router is actually mounted on `app`.
+
+- [ ] **Step 4b: Confirm no regression in the route-registration audit**
+
+Run: `uv run pytest tests/api/test_route_registration.py tests/api/test_auth.py -v`
+Expected: PASS — the new route must show up in the walkable route table with `require_session` in its dependencies, same as every other router `register()` mounts.
 
 - [ ] **Step 5: Run mypy/ruff and commit**
 
@@ -1777,15 +1799,14 @@ writeback surface the Phase 6 spec defines."
 
 ---
 
-## Task 12: Register the router; single-process constraint; methodology doc
+## Task 12: Single-process constraint; methodology doc
 
-Wires the finished router into the app and closes the second open Phase 5 exit item (Ruling 3): the single-process assumption the in-process `ConcurrentWriteInProgressError` guard depends on, pinned as a source-level fact rather than left as a comment.
+Closes the second open Phase 5 exit item (Ruling 3): the single-process assumption the in-process `ConcurrentWriteInProgressError` guard depends on, pinned as a source-level fact rather than left as a comment. (The router registration originally planned for this task was moved forward into Task 8 — see that task's "Register the router now, not in Task 12" note. `ledger_sense/api/app.py` already registers `writeback_router`; this task does not touch it again.)
 
 **Files:**
-- Modify: `ledger_sense/api/app.py` (register the router)
 - Modify: `ledger_sense/__main__.py` (`WORKERS` constant + assertion)
 - Modify: `docs/methodology.md` (document the constraint)
-- Test: `tests/api/test_route_registration.py` (implicitly covered — no new test needed there since `register()` already satisfies the walk), `tests/test_platform_skeleton.py` (new regression test for `WORKERS`)
+- Test: `tests/test_platform_skeleton.py` (new regression test for `WORKERS`)
 
 **Interfaces:** None new — this task wires together interfaces already produced by Tasks 8-11.
 
@@ -1810,20 +1831,6 @@ Run: `uv run pytest tests/test_platform_skeleton.py::test_ledger_sense_runs_as_a
 Expected: FAIL — `ImportError: cannot import name 'WORKERS'`.
 
 - [ ] **Step 3: Write the minimal implementation**
-
-In `ledger_sense/api/app.py`, add the import alongside the other routers and register it in `build_app()`:
-
-```python
-from ledger_sense.api.writeback import router as writeback_router
-```
-
-```python
-    register(app, baseline_router)
-    register(app, inbox_router)
-    register(app, review_router)
-    register(app, reconciliation_router)
-    register(app, writeback_router)
-```
 
 In `ledger_sense/__main__.py`, add above `main()`:
 
@@ -1871,14 +1878,15 @@ Expected: PASS — including `tests/api/test_route_registration.py::test_the_aud
 
 - [ ] **Step 5: Run mypy/ruff and commit**
 
-Run: `uv run mypy --strict ledger_sense/api/app.py ledger_sense/__main__.py && uv run ruff check ledger_sense/api/app.py ledger_sense/__main__.py`
+Run: `uv run mypy --strict ledger_sense/__main__.py && uv run ruff check ledger_sense/__main__.py`
 
 ```bash
-git add ledger_sense/api/app.py ledger_sense/__main__.py docs/methodology.md tests/test_platform_skeleton.py
-git commit -m "feat: register the writeback router; pin the single-process constraint
+git add ledger_sense/__main__.py docs/methodology.md tests/test_platform_skeleton.py
+git commit -m "feat: pin the single-process constraint
 
 WORKERS = 1 in __main__.py, asserted at the uvicorn.run call site and
-documented in docs/methodology.md — closing Phase 5's second open exit item."
+documented in docs/methodology.md — closing Phase 5's second open exit item.
+(The writeback router itself was registered in Task 8, not here.)"
 ```
 
 ---
