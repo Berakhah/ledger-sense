@@ -105,6 +105,18 @@ def _extract(argv: list[str]) -> int:
     return 0
 
 
+# Phase 6 Ruling 3: writeback/qbo.py's ConcurrentWriteInProgressError guard is
+# an in-memory, per-process set — it closes the concurrent-write race
+# (writeback/idempotency.py's module docstring) only within one process.
+# Raising this requires a cross-process lock in the idempotency ledger first
+# (see docs/methodology.md); until then this is asserted, not just commented.
+WORKERS = 1
+assert WORKERS == 1, (
+    "raising WORKERS requires a cross-process lock in the idempotency "
+    "ledger first — see docs/methodology.md's single-process constraint "
+    "section before changing this.")
+
+
 def main() -> None:
     argv = sys.argv
     if len(argv) > 1 and argv[1] == "extract":
@@ -114,7 +126,7 @@ def main() -> None:
     # 0.0.0.0: this process IS the container's edge for port 8000
     # (docker-compose.yml maps "8000:8000") — binding to localhost only would
     # make it unreachable from the host or from `web`.
-    uvicorn.run("ledger_sense.api.app:app", host="0.0.0.0", port=8000)
+    uvicorn.run("ledger_sense.api.app:app", host="0.0.0.0", port=8000, workers=WORKERS)
 
 
 if __name__ == "__main__":
