@@ -216,8 +216,12 @@ class CalibrationCurve:
         unknown = bases - _VALID_BASES
         if unknown:
             raise UnknownBasisError(f"unknown label basis: {sorted(unknown)!r}")
-        # A single synthetic label contaminates the whole curve.  Weakest link wins.
-        basis: Basis = "field" if bases == {"field"} else "synthetic"
+        # A single synthetic label contaminates the whole curve.  Weakest link
+        # wins. 'audit' labels are FIELD evidence -- a held-back sample of the
+        # same production population, just routed to review on purpose (F-49)
+        # -- so a basis set of {"field"}, {"audit"}, or {"field", "audit"} is
+        # all field-grade. Only the presence of "synthetic" contaminates.
+        basis: Basis = "synthetic" if "synthetic" in bases else "field"
         field_type = labels[0].field_type
         xs_raw = [lab.predicted_confidence for lab in labels]
         ys = [1.0 if lab.was_correct else 0.0 for lab in labels]
@@ -348,10 +352,17 @@ class CalibrationStore:
              for lab in labels])
         self._conn.commit()
 
-    def labels_for(self, field_type: str) -> list[Label]:
-        rows = self._conn.execute(
-            "SELECT field_type, predicted_confidence, was_correct, observed_at,"
-            " source_claim_id, basis FROM labels WHERE field_type = ?", (field_type,)).fetchall()
+    def labels_for(self, field_type: str, *, basis: str | None = None) -> list[Label]:
+        if basis is None:
+            rows = self._conn.execute(
+                "SELECT field_type, predicted_confidence, was_correct, observed_at,"
+                " source_claim_id, basis FROM labels WHERE field_type = ?",
+                (field_type,)).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT field_type, predicted_confidence, was_correct, observed_at,"
+                " source_claim_id, basis FROM labels WHERE field_type = ? AND basis = ?",
+                (field_type, basis)).fetchall()
         return [Label(r[0], r[1], bool(r[2]), datetime.fromisoformat(r[3]), r[4], r[5])
                 for r in rows]
 
@@ -378,6 +389,16 @@ class CalibrationStore:
         return CalibrationCurve(row[0], row[1], row[2],
                                 tuple(json.loads(row[3])), tuple(json.loads(row[4])),
                                 row[5], tuple(json.loads(row[6])), tuple(json.loads(row[7])))
+
+    def withdraw_curve(self, field_type: str, *, reason: str) -> None:
+        """Remove a field type's stored curve so ``load_curve`` afterward
+        returns ``None`` and the router falls back to review (F-49: automatic
+        withdrawal on detected drift). ``reason`` is accepted for the audit
+        trail / future logging even though this simple store does not
+        currently persist it anywhere other than the caller's own records."""
+        del reason
+        self._conn.execute("DELETE FROM curves WHERE field_type = ?", (field_type,))
+        self._conn.commit()
 
     def all_curves(self) -> list[CalibrationCurve]:
         rows = self._conn.execute("SELECT field_type FROM curves").fetchall()
