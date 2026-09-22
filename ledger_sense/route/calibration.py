@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from math import exp, lgamma, log
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -69,7 +70,10 @@ def _binom_sf(k: int, n: int, p: float) -> float:
 
 
 def _beta_reg(a: float, b: float, x: float) -> float:
-    """Regularised incomplete beta function I_x(a, b) via continued fractions."""
+    """Regularised incomplete beta function I_x(a, b) via continued fractions.
+
+    Uses log-space computation to avoid numerical underflow with large a, b.
+    """
     if x <= 0.0:
         return 0.0
     if x >= 1.0:
@@ -77,35 +81,54 @@ def _beta_reg(a: float, b: float, x: float) -> float:
     # Use symmetry: I_x(a,b) = 1 - I_{1-x}(b,a)
     if x > (a + 1) / (a + b + 2):
         return 1.0 - _beta_reg(b, a, 1.0 - x)
-    # Continued fraction expansion (handle numerical underflow for large a, b)
-    beta_ab = _beta(a, b)
-    if beta_ab == 0.0:
-        return 0.0
-    front = (x ** a) * ((1.0 - x) ** b) / (a * beta_ab)
-    if front == 0.0:
-        return 0.0
+
+    # Compute in log-space to avoid underflow:
+    # front = (x^a * (1-x)^b) / (a * Beta(a,b))
+    #       = exp(a*log(x) + b*log(1-x) - log(a) - lgamma(a) - lgamma(b) + lgamma(a+b))
+    log_front = a * log(x) + b * log(1.0 - x) - log(a) - lgamma(a) - lgamma(b) + lgamma(a + b)
+    front = exp(log_front)
+
     return float(front * _beta_cf(a, b, x))
 
 
-def _beta(a: float, b: float) -> float:
-    """Beta function via logarithms of gamma."""
-    from math import exp, lgamma
-    return exp(lgamma(a) + lgamma(b) - lgamma(a + b))
-
-
 def _beta_cf(a: float, b: float, x: float) -> float:
-    """Continued fraction for beta."""
-    max_iter = 100
-    tiny = 1.0e-30
-    f = 1.0
+    """Continued fraction for the incomplete beta function (modified Lentz's method)."""
+    max_iter = 200
+    eps = 3.0e-16
+    fpmin = 1.0e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < fpmin:
+        d = fpmin
+    d = 1.0 / d
+    h = d
     for m in range(1, max_iter + 1):
         m2 = 2 * m
-        numerator = m * (b - m) * x / ((a + m2 - 1) * (a + m2))
-        f = 1.0 + numerator / f
-        f = max(f, tiny)
-        denominator = 1.0 + (a + m2) * x / ((a + m2 + 1) * (a + m2 - 1) / f)
-        f = max(denominator, tiny)
-    return f
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < eps:
+            break
+    return h
 
 
 class UnknownBasisError(ValueError):

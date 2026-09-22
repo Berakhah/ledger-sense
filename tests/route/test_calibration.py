@@ -115,6 +115,23 @@ def test_the_clopper_pearson_bound_matches_the_rule_of_three():
     assert clopper_pearson_lower(600, 600) >= 0.994
 
 
+def test_clopper_pearson_lower_regression_large_parameters():
+    """F-48 / Fix Round 2: Verify log-space computation avoids overestimate.
+
+    When beta function underflows (common at large a, b), incorrect handling
+    would return 0.0 unconditionally, causing a step-function artefact that
+    overestimates the lower bound. The true CP lower for (780, 1380) is ~0.543.
+    The buggy version would incorrectly return ~0.565.
+    """
+    from ledger_sense.route.calibration import clopper_pearson_lower
+
+    # This parameter set triggers beta underflow in the original code.
+    # The true lower bound is approximately 0.543 (verified via Decimal arithmetic).
+    # Tolerance of ±0.002 catches the ~0.02 overestimate bug.
+    result = clopper_pearson_lower(780, 1380)
+    assert 0.541 <= result <= 0.545, f"Expected ~0.543, got {result}"
+
+
 def test_the_threshold_is_derived_on_held_out_data():
     """F-48. Isotonic with one knot per observation interpolates its training
     data, so a threshold read off the fit is optimistically biased — and the
