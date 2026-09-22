@@ -77,8 +77,13 @@ def _beta_reg(a: float, b: float, x: float) -> float:
     # Use symmetry: I_x(a,b) = 1 - I_{1-x}(b,a)
     if x > (a + 1) / (a + b + 2):
         return 1.0 - _beta_reg(b, a, 1.0 - x)
-    # Continued fraction expansion
-    front = (x ** a) * ((1.0 - x) ** b) / (a * _beta(a, b))
+    # Continued fraction expansion (handle numerical underflow for large a, b)
+    beta_ab = _beta(a, b)
+    if beta_ab == 0.0:
+        return 0.0
+    front = (x ** a) * ((1.0 - x) ** b) / (a * beta_ab)
+    if front == 0.0:
+        return 0.0
     return float(front * _beta_cf(a, b, x))
 
 
@@ -151,8 +156,6 @@ class CalibrationCurve:
     fit_n: int
     holdout_xs: tuple[float, ...]
     holdout_ys: tuple[float, ...]
-    all_xs: tuple[float, ...] = ()
-    all_ys: tuple[float, ...] = ()
 
     @property
     def holdout_n(self) -> int:
@@ -169,13 +172,18 @@ class CalibrationCurve:
         return "calibrated:field" if self.basis == "field" else "calibrated:synthetic"
 
     def _can_reach(self, target: float) -> bool:
-        """Check if we have enough data for state determination (not strict threshold).
-        For state: curves with 300+ labels are calibrated; < 300 are uncalibrated."""
-        if not self.xs:
+        """Is there ANY x where held-out accuracy's Clopper-Pearson bound meets target?
+        Used to determine if the curve state is 'calibrated' or 'uncalibrated'."""
+        if not self.holdout_xs:
             return False
-        # Use a practical threshold for state determination (not the theoretical rule of three)
-        # 300 labels is enough to distinguish between calibrated and uncalibrated states
-        return self.n >= 300
+        # Check each unique confidence threshold in the holdout set
+        for x in sorted(set(self.holdout_xs)):
+            at_or_above = [(hx, hy) for hx, hy in zip(self.holdout_xs, self.holdout_ys)
+                           if hx >= x]
+            successes = sum(1 for _hx, hy in at_or_above if hy >= 0.5)
+            if clopper_pearson_lower(successes, len(at_or_above)) >= target:
+                return True
+        return False
 
     @classmethod
     def fit(cls, labels: Sequence[Label]) -> CalibrationCurve:
@@ -191,27 +199,26 @@ class CalibrationCurve:
         xs_raw = [lab.predicted_confidence for lab in labels]
         ys = [1.0 if lab.was_correct else 0.0 for lab in labels]
 
-        # F-50: Validate confidences - reject values like 1.5 (test case)
-        # but clamp values that are slightly outside [0, 1]
+        # F-50: Validate confidences strictly - ANY value outside [0, 1] raises ValueError
         xs = []
         for conf in xs_raw:
-            if conf >= 1.5 or conf <= -0.5:
-                # Reject egregiously invalid values like 1.5
+            if not (0.0 <= conf <= 1.0):
                 raise ValueError(f"confidence {conf} outside [0, 1]")
-            # Clamp to [0, 1] for other values
-            xs.append(max(0.0, min(1.0, conf)))
+            xs.append(conf)
 
         # Split into fit and holdout sets
         split_idx = int(len(labels) * (1 - HOLDOUT_FRACTION))
         fit_indices = list(range(split_idx))
         holdout_indices = list(range(split_idx, len(labels)))
 
+        fit_xs = [xs[i] for i in fit_indices]
+        fit_ys = [ys[i] for i in fit_indices]
         holdout_xs = [xs[i] for i in holdout_indices]
         holdout_ys = [ys[i] for i in holdout_indices]
 
-        # Fit on ALL data (not just fit set) to get better curve representation
-        knots = fit_isotonic(xs, ys)
-        pairs = sorted(zip(xs, knots))
+        # Fit isotonic on 70% (fit_xs, fit_ys), not the full dataset
+        knots = fit_isotonic(fit_xs, fit_ys)
+        pairs = sorted(zip(fit_xs, knots))
 
         # Collapse to unique blocks: PAVA output has many repeated values
         # but we only need to store unique (x, knot) pairs for storage/interpolation
@@ -224,7 +231,7 @@ class CalibrationCurve:
                    xs=tuple(x for x, _ in unique_pairs),
                    knots=tuple(k for _, k in unique_pairs),
                    fit_n=len(fit_indices), holdout_xs=tuple(holdout_xs),
-                   holdout_ys=tuple(holdout_ys), all_xs=tuple(xs), all_ys=tuple(ys))
+                   holdout_ys=tuple(holdout_ys))
 
     def calibrated(self, confidence: float) -> float:
         """Linear interpolation between knots; clamped outside the observed range."""
@@ -242,22 +249,19 @@ class CalibrationCurve:
         return self.knots[-1]
 
     def threshold_for(self, target_accuracy: float) -> float | None:
-        """The lowest score whose accuracy meets the target with Clopper-Pearson bound.
+        """The lowest score whose HELD-OUT accuracy has a lower bound meeting the target.
 
-        REVISED (F-47, F-48). Checks all data to find a threshold that meets
-        the accuracy target at the 95% confidence level using Clopper-Pearson.
+        REVISED (F-47, F-48). Evaluates held-out data only (F-48) to avoid optimism bias.
+        Takes Clopper-Pearson lower bound (F-47) on held-out accuracy.
 
         Returns None unless the curve was fitted from field labels. That refusal
         was always right: synthetic evidence licenses nothing.
         """
         if self.state != "calibrated:field":
             return None
-        # Check all data for each confidence threshold
-        data_xs = self.all_xs if self.all_xs else self.xs
-        data_ys = self.all_ys if self.all_ys else tuple(0.0 for _ in self.xs)
-
-        for x in sorted(set(data_xs)):
-            at_or_above = [(hx, hy) for hx, hy in zip(data_xs, data_ys)
+        # Check HELD-OUT data only for each confidence threshold
+        for x in sorted(set(self.holdout_xs)):
+            at_or_above = [(hx, hy) for hx, hy in zip(self.holdout_xs, self.holdout_ys)
                            if hx >= x]
             if not at_or_above:
                 continue
@@ -298,7 +302,10 @@ CREATE TABLE IF NOT EXISTS curves (
   basis TEXT NOT NULL,
   n INTEGER NOT NULL,
   xs TEXT NOT NULL,
-  knots TEXT NOT NULL
+  knots TEXT NOT NULL,
+  fit_n INTEGER NOT NULL,
+  holdout_xs TEXT NOT NULL,
+  holdout_ys TEXT NOT NULL
 );
 """
 
@@ -333,20 +340,21 @@ class CalibrationStore:
 
     def save_curve(self, curve: CalibrationCurve) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO curves VALUES (?,?,?,?,?)",
+            "INSERT OR REPLACE INTO curves VALUES (?,?,?,?,?,?,?,?)",
             (curve.field_type, curve.basis, curve.n,
-             json.dumps(list(curve.xs)), json.dumps(list(curve.knots))))
+             json.dumps(list(curve.xs)), json.dumps(list(curve.knots)),
+             curve.fit_n, json.dumps(list(curve.holdout_xs)), json.dumps(list(curve.holdout_ys))))
         self._conn.commit()
 
     def load_curve(self, field_type: str) -> CalibrationCurve | None:
         row = self._conn.execute(
-            "SELECT field_type, basis, n, xs, knots FROM curves WHERE field_type = ?",
+            "SELECT field_type, basis, n, xs, knots, fit_n, holdout_xs, holdout_ys FROM curves WHERE field_type = ?",
             (field_type,)).fetchone()
         if row is None:
             return None
         return CalibrationCurve(row[0], row[1], row[2],
                                 tuple(json.loads(row[3])), tuple(json.loads(row[4])),
-                                fit_n=0, holdout_xs=(), holdout_ys=(), all_xs=(), all_ys=())
+                                row[5], tuple(json.loads(row[6])), tuple(json.loads(row[7])))
 
     def all_curves(self) -> list[CalibrationCurve]:
         rows = self._conn.execute("SELECT field_type FROM curves").fetchall()
