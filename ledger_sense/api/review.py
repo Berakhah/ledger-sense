@@ -21,6 +21,7 @@ coerced — the money path (Never-rule #2) never sees one.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -39,6 +40,8 @@ from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/review")
 
@@ -192,6 +195,10 @@ def _record_label(conn: sa.Connection, row: sa.Row[Any], *, kind: str, claim_id:
     field has no prior extracted claim carries no predicted confidence to
     score, so it produces no label rather than a fabricated one."""
     if match_quality is None:
+        log.warning(
+            "no calibration label recorded: field=%s document_id=%s kind=%s claim_id=%s "
+            "-- no prior claim carried a match_quality to score",
+            row.field, row.document_id, kind, claim_id)
         return
     action = ReviewAction(kind=kind, field=row.field, claim_id=claim_id,
                           predicted_confidence=match_quality, actor=session.user_id,
