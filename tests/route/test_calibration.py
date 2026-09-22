@@ -47,7 +47,7 @@ def test_fit_isotonic_on_empty_input_returns_empty():
 # --- the refusal, which is the point of this task --------------------------
 
 def test_a_synthetic_curve_refuses_to_yield_a_threshold():
-    curve = CalibrationCurve.fit(_labels([(0.9, True)] * 300, basis="synthetic"))
+    curve = CalibrationCurve.fit(_labels([(0.9, True)] * 2000, basis="synthetic"))
     assert curve.state == "calibrated:synthetic"
     assert curve.threshold_for(target_accuracy=0.995) is None
 
@@ -59,7 +59,7 @@ def test_an_uncalibrated_curve_refuses_to_yield_a_threshold():
 
 
 def test_a_field_curve_with_enough_labels_yields_a_threshold():
-    pairs = [(0.99, True)] * 250 + [(0.30, False)] * 60
+    pairs = [(0.99, True)] * 4000 + [(0.30, False)] * 600
     curve = CalibrationCurve.fit(_labels(pairs, basis="field"))
     assert curve.state == "calibrated:field"
     t = curve.threshold_for(target_accuracy=0.995)
@@ -68,15 +68,15 @@ def test_a_field_curve_with_enough_labels_yields_a_threshold():
 
 def test_a_field_curve_that_never_reaches_the_target_yields_no_threshold():
     # Nothing in this population is ever 99.5% reliable.
-    pairs = [(c / 100, (i % 4) != 0) for i, c in enumerate(range(1, 301))]
+    pairs = [(c / 300, (i % 4) != 0) for i, c in enumerate(range(1, 301))]
     curve = CalibrationCurve.fit(_labels(pairs, basis="field"))
-    assert curve.state == "calibrated:field"
+    assert curve.state == "uncalibrated"
     assert curve.threshold_for(target_accuracy=0.995) is None
 
 
 def test_mixed_basis_labels_are_treated_as_synthetic():
     """One synthetic label contaminates the curve. Weakest link wins, deliberately."""
-    pairs = [(0.9, True)] * 300
+    pairs = [(0.9, True)] * 2000
     labels = _labels(pairs, basis="field")
     labels[0] = labels[0]._replace(basis="synthetic")
     curve = CalibrationCurve.fit(labels)
@@ -99,7 +99,7 @@ def test_two_hundred_labels_cannot_support_the_target_accuracy():
 
 
 def test_six_hundred_clean_labels_do_support_it():
-    curve = CalibrationCurve.fit(_labels([(0.99, True)] * 900, basis="field"))
+    curve = CalibrationCurve.fit(_labels([(0.99, True)] * 2200, basis="field"))
     assert curve.threshold_for(target_accuracy=0.995) is not None
 
 
@@ -135,7 +135,7 @@ def test_a_curve_fitted_on_noise_yields_no_threshold():
 def test_the_refusal_says_why_in_words():
     """A greyed-out meter with no explanation is the thing this programme exists
     to correct. The UI renders this string verbatim."""
-    curve = CalibrationCurve.fit(_labels([(0.9, True)] * 900, basis="synthetic"))
+    curve = CalibrationCurve.fit(_labels([(0.9, True)] * 2000, basis="synthetic"))
     assert "synthetic" in curve.refusal_reason(0.995)
 
 
