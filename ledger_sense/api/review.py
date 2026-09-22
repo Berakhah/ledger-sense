@@ -31,8 +31,13 @@ from pydantic import BaseModel, StrictStr, field_validator
 
 from ledger_sense.api.deps import owned, require_session
 from ledger_sense.auth.session import Session
+from ledger_sense.boundary import Sensitivity
 from ledger_sense.provenance import Method
-from ledger_sense.store.retention import claims, findings
+from ledger_sense.review.actions import ReviewAction
+from ledger_sense.route.calibration import Basis
+from ledger_sense.route.deps import calibration_store_from_environment
+from ledger_sense.route.labels import labels_from_action
+from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
 
 router = APIRouter(prefix="/api/review")
@@ -149,6 +154,53 @@ def _value_type_for(conn: sa.Connection, document_id: str, field: str) -> str:
     return row.value_type if row is not None else "str"
 
 
+def _match_quality_for(conn: sa.Connection, document_id: str, field: str) -> float | None:
+    """The extraction's own quality score for the value a reviewer is now
+    judging — the prior DETERMINISTIC claim for this (document_id, field),
+    found the same way `_value_type_for` finds the prior claim's type.
+
+    Labels carry `match_quality`, not `confidence` (F-46): `Claim.confidence`
+    is `None` for every deterministic extraction and always was. Returns None
+    when no prior claim exists (mirrors `_value_type_for`'s "str" fallback
+    gap — reachable from `edit` on a finding whose `actual` was never a typed
+    claim); callers must skip labelling rather than inventing a confidence
+    that was never predicted."""
+    row = conn.execute(
+        sa.select(claims.c.match_quality)
+        .where(claims.c.document_id == document_id, claims.c.field == field)
+        .order_by(claims.c.observed_at.desc())
+        .limit(1)
+    ).one_or_none()
+    return None if row is None else row.match_quality
+
+
+def _basis_for(conn: sa.Connection, document_id: str) -> Basis:
+    """Derived from the source document's own sensitivity label, never from a
+    caller-supplied value — F-49/Never-rule #1's spirit applied to labels: no
+    route may exist by which a synthetic review session gets recorded as
+    field evidence."""
+    sensitivity = conn.execute(
+        sa.select(documents.c.sensitivity).where(documents.c.id == document_id)
+    ).scalar_one()
+    return "synthetic" if sensitivity == Sensitivity.SYNTHETIC.value else "field"
+
+
+def _record_label(conn: sa.Connection, row: sa.Row[Any], *, kind: str, claim_id: str,
+                  session: Session, match_quality: float | None) -> None:
+    """Turn an accept/edit into a calibration label and persist it — the
+    review queue is the training signal (route/labels.py). A finding whose
+    field has no prior extracted claim carries no predicted confidence to
+    score, so it produces no label rather than a fabricated one."""
+    if match_quality is None:
+        return
+    action = ReviewAction(kind=kind, field=row.field, claim_id=claim_id,
+                          predicted_confidence=match_quality, actor=session.user_id,
+                          at=datetime.now(UTC))
+    labels = labels_from_action(action, basis=_basis_for(conn, row.document_id))
+    if labels:
+        calibration_store_from_environment().add_labels(labels)
+
+
 def _write_claim(conn: sa.Connection, row: sa.Row[Any], *, value: str,
                  value_type: str, session: Session) -> str:
     claim_id = uuid.uuid4().hex
@@ -188,8 +240,11 @@ def accept(exc_id: str, session: CurrentSession) -> dict[str, str | None]:
             raise HTTPException(status_code=422, detail="no extracted value to accept")
         _close(conn, exc_id, "accepted")
         value_type = _value_type_for(conn, row.document_id, row.field)
+        match_quality = _match_quality_for(conn, row.document_id, row.field)
         claim_id = _write_claim(conn, row, value=row.actual, value_type=value_type,
                                 session=session)
+        _record_label(conn, row, kind="accept", claim_id=claim_id, session=session,
+                      match_quality=match_quality)
     return {"status": "accepted", "claim_id": claim_id}
 
 
@@ -202,8 +257,11 @@ def edit(exc_id: str, body: EditBody, session: CurrentSession) -> dict[str, str 
             raise HTTPException(status_code=422, detail=_NO_GEOMETRY_DETAIL)
         _close(conn, exc_id, "edited")
         value_type = _value_type_for(conn, row.document_id, row.field)
+        match_quality = _match_quality_for(conn, row.document_id, row.field)
         claim_id = _write_claim(conn, row, value=body.value, value_type=value_type,
                                 session=session)
+        _record_label(conn, row, kind="edit", claim_id=claim_id, session=session,
+                      match_quality=match_quality)
     return {"status": "edited", "claim_id": claim_id}
 
 

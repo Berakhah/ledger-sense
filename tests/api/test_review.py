@@ -11,6 +11,7 @@ through a test seam, because none exists here: unlike the stale Task 28 plan
 sketch, this router has no in-memory store to seed.
 """
 
+import inspect
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -20,10 +21,12 @@ import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ledger_sense.api import review
 from ledger_sense.api.review import router
 from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.auth.session import issue_session
 from ledger_sense.boundary import Origin, Sensitivity
+from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
 
@@ -39,15 +42,27 @@ def _session_cookie() -> tuple[dict[str, str], str]:
     return {"session": issue_session(user_id, tenant_id)}, tenant_id
 
 
-def _document(tenant_id: str) -> str:
+def _document(tenant_id: str, *, sensitivity: Sensitivity = Sensitivity.SYNTHETIC) -> str:
     document_id = uuid.uuid4().hex
     with app_engine().begin() as conn:
         conn.execute(documents.insert().values(
             id=document_id, tenant_id=tenant_id, blob_id=None,
-            received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
+            received_at=datetime.now(UTC), sensitivity=sensitivity.value,
             origin=Origin.CORPUS.value, provenance="tests/api/test_review.py",
             filename="fixture.pdf"))
     return document_id
+
+
+def _prior_claim(tenant_id: str, document_id: str, field: str, *,
+                 match_quality: float = 0.87) -> None:
+    """A prior DETERMINISTIC claim for the field a finding flags — the
+    extraction's own quality score that a reviewer's accept/edit judges."""
+    with app_engine().begin() as conn:
+        conn.execute(claims.insert().values(
+            id=uuid.uuid4().hex, tenant_id=tenant_id, document_id=document_id,
+            field=field, value="1000.00", value_type="money", method="deterministic",
+            confidence=None, match_quality=match_quality, page=0, x0=288.0, top=100.0,
+            x1=368.0, bottom=112.0, caveat=None, observed_at=datetime.now(UTC)))
 
 
 def _finding(tenant_id: str, document_id: str, *, index: int = 0,
@@ -289,3 +304,81 @@ def test_an_unknown_exception_id_is_not_found() -> None:
     cookies, _tenant_id = _session_cookie()
     resp = client.post(f"/api/review/exceptions/{uuid.uuid4().hex}/accept", cookies=cookies)
     assert resp.status_code == 404
+
+
+def test_accepting_a_synthetic_documents_exception_writes_a_synthetic_label() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id, sensitivity=Sensitivity.SYNTHETIC)
+    field = "line[000].total_completed_and_stored"
+    _prior_claim(tenant_id, doc_id, field, match_quality=0.91)
+    exc_id = _finding(tenant_id, doc_id)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/accept", cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    claim_id = resp.json()["claim_id"]
+
+    store = calibration_store_from_environment()
+    labels = store.labels_for(field, basis="synthetic")
+    assert any(lab.source_claim_id == claim_id and lab.was_correct is True
+              and lab.predicted_confidence == 0.91 for lab in labels)
+    # No route promotes a synthetic session's evidence to field-grade.
+    assert store.labels_for(field, basis="field") == []
+
+
+def test_editing_a_client_confidential_documents_exception_writes_a_field_label() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id, sensitivity=Sensitivity.CLIENT_CONFIDENTIAL)
+    field = "line[000].total_completed_and_stored"
+    _prior_claim(tenant_id, doc_id, field, match_quality=0.42)
+    exc_id = _finding(tenant_id, doc_id)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/edit",
+                       json={"value": "1234.56"}, cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    claim_id = resp.json()["claim_id"]
+
+    store = calibration_store_from_environment()
+    labels = store.labels_for(field, basis="field")
+    assert any(lab.source_claim_id == claim_id and lab.was_correct is False
+              and lab.predicted_confidence == 0.42 for lab in labels)
+
+
+def test_rejecting_writes_no_calibration_label() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    field = "line[000].total_completed_and_stored"
+    _prior_claim(tenant_id, doc_id, field)
+    exc_id = _finding(tenant_id, doc_id)
+    before = calibration_store_from_environment().count(field)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/reject",
+                       json={"reason": "false positive"}, cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    after = calibration_store_from_environment().count(field)
+    assert after == before
+
+
+def test_accepting_with_no_prior_claim_writes_no_calibration_label() -> None:
+    """A finding whose field has no prior extracted claim carries no
+    predicted confidence to score -- nothing is fabricated."""
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    field = "line[999].never_extracted"
+    exc_id = _finding(tenant_id, doc_id, index=999)
+    with app_engine().begin() as conn:
+        conn.execute(findings.update().where(findings.c.id == exc_id).values(field=field))
+    before = calibration_store_from_environment().count(field)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/accept", cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    after = calibration_store_from_environment().count(field)
+    assert after == before
+
+
+def test_no_review_route_accepts_a_caller_supplied_basis() -> None:
+    """No route may exist by which a synthetic session is labelled as field
+    evidence: none of accept/edit/reject take a `basis` the caller controls.
+
+    The brief's own integration test names a single `review.record_action`
+    function; this codebase has no such function (accept/edit/reject are
+    separate FastAPI route handlers -- see task-42-report.md), so this checks
+    the same property against each of them instead."""
+    for handler in (review.accept, review.edit, review.reject):
+        sig = inspect.signature(handler)
+        assert "basis" not in sig.parameters
