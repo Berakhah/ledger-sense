@@ -130,37 +130,56 @@ def test_no_derived_threshold_is_hard_coded_anywhere_in_the_router():
     assert offenders == [], f"literal thresholds found in router.py: {offenders}"
 
 
+# F-24. Reviewed exemptions to the blanket extract/ float-literal guard
+# below. This allowlist is a REVIEW GATE, not a naming convention: each entry
+# is one specific (file, line, value) the reviewer has actually looked at and
+# confirmed is a PDF-geometry tolerance, never a confidence/quality cut-off. A
+# new float literal anywhere in extract/ -- named CONFIDENCE, THRESHOLD, or
+# anything else, e.g. a future OCR_FLOOR = 0.5 or MIN_QUALITY = 0.5 -- is NOT
+# exempt just by not matching a name pattern; it must be individually added
+# here, with a reason, or the test fails. That is the whole point of F-24.
+_EXTRACT_FLOAT_ALLOWLIST: frozenset[tuple[str, int, float]] = frozenset({
+    # anchors.py: point-distance tolerances for "is this value near that
+    # label on the page", not a confidence score.
+    ("ledger_sense/extract/anchors.py", 18, 6.0),   # SAME_BAND_PT
+    ("ledger_sense/extract/anchors.py", 24, 12.0),  # BELOW_BAND_PT -- Task 17 review (Important-1)
+    ("ledger_sense/extract/anchors.py", 27, 20.0),  # BELOW_X_SLACK_PT
+    # tables.py: row/column banding tolerances for grid reconstruction, not
+    # a confidence score.
+    ("ledger_sense/extract/tables.py", 27, 6.0),    # ROW_BAND_PT
+    ("ledger_sense/extract/tables.py", 28, 4.0),    # COLUMN_SLACK_PT
+})
+
+
 def test_the_same_guard_covers_extract_where_a_floor_was_hiding():
     """F-24. The principle was right and its SCOPE was wrong: extract/ocr.py
-    carried MIN_CONFIDENCE = 0.5, an uncalibrated cut-off written by feel, on the
-    noisiest path in the product, with no equivalent guard.
+    carried MIN_CONFIDENCE = 0.5, an uncalibrated cut-off written by feel, on
+    the noisiest path in the product, with no equivalent guard.
 
-    Scoped to CONFIDENCE/THRESHOLD-named constants specifically (not every
-    float in extract/): anchors.py and tables.py carry reviewed PDF-geometry
-    tolerances in points (SAME_BAND_PT, BELOW_BAND_PT, BELOW_X_SLACK_PT,
-    table row/column spacing) that are not confidence cut-offs and are out of
-    this task's scope to touch. A blanket "no float but 0.0/1.0 anywhere in
-    extract/" guard would flag those legitimate constants alongside a real
-    F-24 regression, which defeats the guard by making it too noisy to trust.
+    The guard is BLANKET (any float literal in extract/ other than 0.0/1.0),
+    exactly like the router.py guard above -- narrowing it to only
+    CONFIDENCE/THRESHOLD-named constants would let a future uncalibrated
+    cut-off through silently under any other name (OCR_FLOOR, MIN_QUALITY,
+    ...), which defeats the reason this guard exists. The five PDF-geometry
+    tolerances in anchors.py/tables.py are real, already-reviewed exceptions
+    -- they are named individually in _EXTRACT_FLOAT_ALLOWLIST above, by
+    file/line/value, so a future reviewer can see exactly what is exempted
+    and why. Anything not on that list still trips the test, whatever it is
+    named.
     """
     import ast
     import pathlib
     offenders = []
     for path in pathlib.Path("ledger_sense/extract").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
-                continue
-            value = node.value
-            if not (isinstance(value, ast.Constant) and isinstance(value.value, float)):
-                continue
-            if value.value in (0.0, 1.0):
-                continue
-            for target in node.targets:
-                if isinstance(target, ast.Name) and (
-                        "CONFIDENCE" in target.id or "THRESHOLD" in target.id):
-                    offenders.append(f"{path}:{node.lineno}: {target.id} = {value.value}")
-    assert offenders == [], f"uncalibrated confidence/threshold constants in extract/: {offenders}"
+        rel = path.as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, float):
+                if node.value in (0.0, 1.0):
+                    continue
+                if (rel, node.lineno, node.value) in _EXTRACT_FLOAT_ALLOWLIST:
+                    continue
+                offenders.append(f"{rel}:{node.lineno}: {node.value}")
+    assert offenders == [], f"literal thresholds in extract/: {offenders}"
 
 
 # ---- Hold-back audit: F-49 ----
