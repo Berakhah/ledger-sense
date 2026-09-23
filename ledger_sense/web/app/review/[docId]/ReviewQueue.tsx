@@ -58,6 +58,7 @@ const STATE_LABEL: Record<ExceptionState, string> = {
   accepted: 'Accepted',
   edited: 'Edited',
   rejected: 'Rejected',
+  confirmed: 'Confirmed',
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
