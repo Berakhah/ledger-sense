@@ -125,6 +125,36 @@ def _value_after_label(words: list[Word], label_words: list[Word],
 value_after_label = _value_after_label
 
 
+def _value_after_label_merged(words: list[Word], label_words: list[Word],
+                              predicate: Callable[[Word], bool]) -> Word | None:
+    """Like `_value_after_label`, but merges every same-band value-shaped word
+    to the label's right into one Word, sorted left to right — a multi-word
+    value (e.g. a vendor name spanning two tokens) is not silently truncated
+    to its first token. Falls back to `_value_after_label`'s existing
+    below-band single-word search unchanged when no same-band words match —
+    same merge convention `assemble._value_in_box` already uses for a
+    reviewer-correction replay box."""
+    label_right = max(w.bbox.x1 for w in label_words)
+    label_top = min(w.bbox.top for w in label_words)
+    page = label_words[0].page
+
+    same_band = sorted(
+        (w for w in words
+         if w.page == page and w.bbox.x0 >= label_right
+         and abs(w.bbox.top - label_top) <= SAME_BAND_PT
+         and predicate(w)),
+        key=lambda w: w.bbox.x0)
+    if same_band:
+        merged_bbox = BBox(same_band[0].bbox.x0, min(w.bbox.top for w in same_band),
+                           same_band[-1].bbox.x1, max(w.bbox.bottom for w in same_band))
+        return Word(text=" ".join(w.text for w in same_band), bbox=merged_bbox, page=page)
+    return _value_after_label(words, label_words, predicate)
+
+
+# Public alias, same convention as `find_labels`/`value_after_label` above.
+value_after_label_merged = _value_after_label_merged
+
+
 def _value_near(words: list[Word], label_words: list[Word]) -> Word | None:
     return _value_after_label(
         words, label_words, lambda w: bool(MONEY_TOKEN.fullmatch(w.text)))

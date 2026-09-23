@@ -25,6 +25,7 @@ from ledger_sense.extract.anchors import (
     extract_summary,
     find_labels,
     value_after_label,
+    value_after_label_merged,
 )
 from ledger_sense.extract.profiles import ProfileCache
 from ledger_sense.extract.tables import (
@@ -50,6 +51,7 @@ _DOCUMENT_HEADER_LABELS: dict[str, str] = {
     "Contract Number": "contract_id",
     "Application Number": "application_no",
     "Period Ending": "period_to",
+    "Contractor": "vendor_name",
 }
 _INTEGER_TOKEN = re.compile(r"-?\d+")
 _DATE_TOKEN = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -116,11 +118,13 @@ def extract_document_header(words: list[Word]) -> dict[str, HeaderHit]:
         "contract_id": lambda w: bool(w.text.strip()),
         "application_no": lambda w: bool(_INTEGER_TOKEN.fullmatch(w.text)),
         "period_to": lambda w: bool(_DATE_TOKEN.fullmatch(w.text)),
+        "vendor_name": lambda w: bool(w.text.strip()),
     }
     parsers: dict[str, Callable[[str], object]] = {
         "contract_id": str,
         "application_no": int,
         "period_to": lambda text: date.fromisoformat(text),
+        "vendor_name": str,
     }
 
     header: dict[str, HeaderHit] = {}
@@ -128,7 +132,10 @@ def extract_document_header(words: list[Word]) -> dict[str, HeaderHit]:
         matches = find_labels(words, label)
         if len(matches) != 1:
             continue  # absent, or ambiguous — refuse rather than guess which one
-        value_word = value_after_label(words, matches[0], predicates[field])
+        if field == "vendor_name":
+            value_word = value_after_label_merged(words, matches[0], predicates[field])
+        else:
+            value_word = value_after_label(words, matches[0], predicates[field])
         if value_word is None:
             continue
         try:
@@ -300,7 +307,8 @@ def assemble_pay_application(
     contract_id = header["contract_id"].value if "contract_id" in header else None
     application_no = header["application_no"].value if "application_no" in header else None
     period_to = header["period_to"].value if "period_to" in header else None
-    for field_name in ("contract_id", "application_no", "period_to"):
+    vendor_name = header["vendor_name"].value if "vendor_name" in header else None
+    for field_name in ("contract_id", "application_no", "period_to", "vendor_name"):
         header_hit = header.get(field_name)
         if header_hit is None:
             unextractable.append(UnextractableField(field_name, "not found on page"))
@@ -315,6 +323,7 @@ def assemble_pay_application(
     assert contract_id is None or isinstance(contract_id, str)
     assert application_no is None or isinstance(application_no, int)
     assert period_to is None or isinstance(period_to, date)
+    assert vendor_name is None or isinstance(vendor_name, str)
 
     provenance["_unextractable"] = unextractable
     # F-37: I1 matches on a line-item fingerprint that nothing produced.
@@ -323,6 +332,7 @@ def assemble_pay_application(
         contract_id=contract_id,
         application_no=application_no,
         period_to=period_to,
+        vendor_name=vendor_name,
         lines=lines, provenance=provenance,
         change_orders_net=totals["change_orders_net"],
         retainage_total=totals["retainage_total"],
