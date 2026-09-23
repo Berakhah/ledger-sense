@@ -140,6 +140,7 @@ class PayApplication(_Base):
     contract_id: str | None = None
     application_no: int | None = None
     period_to: date | None = None
+    vendor_name: str | None = None
     lines: list[ContinuationLine] = Field(default_factory=list)
     change_orders_net: Money
     retainage_total: Money

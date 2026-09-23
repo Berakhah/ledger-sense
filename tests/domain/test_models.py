@@ -72,3 +72,18 @@ def test_unset_optional_money_field_serialises_to_json_null_not_the_string_none(
     )
     dumped = line.model_dump_json().replace(" ", "")
     assert '"balance_to_finish":null' in dumped
+
+
+def test_vendor_name_defaults_to_none_and_is_never_guessed() -> None:
+    app = PayApplication(
+        change_orders_net=money("0.00"), retainage_total=money("0.00"),
+        previous_payments=money("0.00"), total_completed_and_stored=money("0.00"))
+    assert app.vendor_name is None
+
+
+def test_vendor_name_accepts_an_extracted_string() -> None:
+    app = PayApplication(
+        vendor_name="Acme Steel Company",
+        change_orders_net=money("0.00"), retainage_total=money("0.00"),
+        previous_payments=money("0.00"), total_completed_and_stored=money("0.00"))
+    assert app.vendor_name == "Acme Steel Company"
