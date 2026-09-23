@@ -7,13 +7,14 @@ everything to human review.  There is no override.
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from math import exp, lgamma, log
 from pathlib import Path
 from typing import Literal, NamedTuple
+
+from ledger_sense.store.sqlite import connect as _connect
 
 Basis = Literal["synthetic", "field"]
 CalibrationState = Literal["uncalibrated", "calibrated:synthetic", "calibrated:field"]
@@ -340,7 +341,7 @@ CREATE TABLE IF NOT EXISTS curves (
 class CalibrationStore:
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
-        self._conn = sqlite3.connect(self._path)
+        self._conn = _connect(str(self._path))
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
