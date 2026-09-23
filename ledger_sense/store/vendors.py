@@ -1,0 +1,96 @@
+"""The vendors/vendor_aliases/payment_details tables' one writer and one
+reader (§4, same discipline as store/documents.py).
+
+`load_vendor_ledger` hydrates every vendor a tenant has ever recorded into an
+in-memory VendorLedger; `save_vendor_ledger` replaces that tenant's rows
+across all three tables wholesale. VendorLedger keeps no dirty-tracking of
+its own (domain/vendor.py's docstring) and a tenant's vendor count is small
+at this project's scale, so a snapshot replace is simpler — and harder to
+get subtly wrong — than incremental diffing against three tables at once.
+
+tests/boundary/test_structure.py enforces that vendors.insert()/
+vendor_aliases.insert()/payment_details.insert() appear nowhere else under
+ledger_sense/ — this is the only door.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+
+import sqlalchemy as sa
+from sqlalchemy import Connection
+
+from ledger_sense.domain.vendor import CanonicalVendor, PaymentDetail, VendorAlias, VendorLedger
+from ledger_sense.store.retention import payment_details, vendor_aliases, vendors
+
+__all__ = ["load_vendor_ledger", "save_vendor_ledger"]
+
+
+def load_vendor_ledger(conn: Connection, tenant_id: str) -> VendorLedger:
+    vendor_rows = conn.execute(
+        sa.select(vendors).where(vendors.c.tenant_id == tenant_id)).all()
+
+    aliases_by_vendor: dict[str, list[VendorAlias]] = defaultdict(list)
+    alias_rows = conn.execute(
+        sa.select(vendor_aliases)
+        .where(vendor_aliases.c.tenant_id == tenant_id)
+        .order_by(vendor_aliases.c.first_seen)
+    ).all()
+    for row in alias_rows:
+        aliases_by_vendor[str(row.vendor_id)].append(VendorAlias(
+            id=str(row.id), name=row.name, first_seen=row.first_seen,
+            source_document=row.source_document, confirmed_by=row.confirmed_by,
+            merged_from=row.merged_from))
+
+    details_by_vendor: dict[str, list[PaymentDetail]] = defaultdict(list)
+    detail_rows = conn.execute(
+        sa.select(payment_details)
+        .where(payment_details.c.tenant_id == tenant_id)
+        .order_by(payment_details.c.observed_at)
+    ).all()
+    for row in detail_rows:
+        details_by_vendor[str(row.vendor_id)].append(PaymentDetail(
+            id=str(row.id), account_last4=row.account_last4, routing_last4=row.routing_last4,
+            account_hmac=row.account_hmac, observed_at=row.observed_at,
+            source_document=row.source_document, confirmed_by=row.confirmed_by,
+            confirmed_at=row.confirmed_at))
+
+    canon = [
+        CanonicalVendor(
+            id=str(row.id), name=row.name,
+            aliases=aliases_by_vendor[str(row.id)],
+            payment_history=details_by_vendor[str(row.id)])
+        for row in vendor_rows
+    ]
+    return VendorLedger.from_vendors(canon)
+
+
+def save_vendor_ledger(conn: Connection, tenant_id: str, ledger: VendorLedger) -> None:
+    conn.execute(payment_details.delete().where(payment_details.c.tenant_id == tenant_id))
+    conn.execute(vendor_aliases.delete().where(vendor_aliases.c.tenant_id == tenant_id))
+    conn.execute(vendors.delete().where(vendors.c.tenant_id == tenant_id))
+
+    canon = ledger.all_vendors()
+    if not canon:
+        return
+
+    conn.execute(vendors.insert(), [
+        {"id": v.id, "tenant_id": tenant_id, "name": v.name} for v in canon])
+
+    alias_rows = [
+        {"id": a.id, "tenant_id": tenant_id, "vendor_id": v.id, "name": a.name,
+         "first_seen": a.first_seen, "source_document": a.source_document,
+         "confirmed_by": a.confirmed_by, "merged_from": a.merged_from}
+        for v in canon for a in v.aliases]
+    if alias_rows:
+        conn.execute(vendor_aliases.insert(), alias_rows)
+
+    detail_rows = [
+        {"id": d.id, "tenant_id": tenant_id, "vendor_id": v.id,
+         "account_last4": d.account_last4, "routing_last4": d.routing_last4,
+         "account_hmac": d.account_hmac, "observed_at": d.observed_at,
+         "source_document": d.source_document, "confirmed_by": d.confirmed_by,
+         "confirmed_at": d.confirmed_at}
+        for v in canon for d in v.payment_history]
+    if detail_rows:
+        conn.execute(payment_details.insert(), detail_rows)
