@@ -155,6 +155,23 @@ def test_every_claim_carries_a_match_quality_score() -> None:
         assert 0.0 <= c.match_quality <= 1.0, field
 
 
+def test_vendor_name_is_extracted_with_a_claim() -> None:
+    _, app, pdf = generate(seed=1, error="clean")
+    result = assemble_pay_application(pdf, "test-source")
+    assert result.vendor_name == app.vendor_name
+    c = claim(result, "vendor_name")
+    assert c.value == app.vendor_name
+    assert c.method == Method.DETERMINISTIC
+    assert file_source(c).bbox is not None
+
+
+def test_a_missing_vendor_name_label_is_omitted_not_guessed() -> None:
+    pdf = generate(seed=1, error="clean")[2]
+    result = assemble_pay_application(pdf, "test-source", _drop_labels=frozenset({"Contractor"}))
+    assert result.vendor_name is None
+    assert "vendor_name" in {e.field for e in unextractable_fields(result)}
+
+
 def test_a_cold_anchor_scores_lower_than_a_profile_hit() -> None:
     """The score must actually vary with the evidence, or it is a constant with
     a nicer name."""
