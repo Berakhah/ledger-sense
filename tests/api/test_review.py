@@ -29,6 +29,7 @@ from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
+from ledger_sense.store.vendors import load_vendor_ledger
 
 app = FastAPI()
 app.include_router(router)
@@ -369,6 +370,137 @@ def test_accepting_with_no_prior_claim_writes_no_calibration_label() -> None:
     assert resp.status_code == 200, resp.text
     after = calibration_store_from_environment().count(field)
     assert after == before
+
+
+def _vendor_name_claim(tenant_id: str, document_id: str, name: str) -> None:
+    with app_engine().begin() as conn:
+        conn.execute(claims.insert().values(
+            id=uuid.uuid4().hex, tenant_id=tenant_id, document_id=document_id,
+            field="vendor_name", value=name, value_type="str", method="deterministic",
+            confidence=None, match_quality=0.6, page=0, x0=10.0, top=10.0,
+            x1=100.0, bottom=20.0, caveat=None, observed_at=datetime.now(UTC)))
+
+
+def _i2_finding(tenant_id: str, document_id: str) -> str:
+    exc_id = uuid.uuid4().hex
+    with app_engine().begin() as conn:
+        conn.execute(findings.insert().values(
+            id=exc_id, tenant_id=tenant_id, document_id=document_id,
+            rule_id="I2", field="vendor_name",
+            message="vendor name did not resolve to a known vendor",
+            expected=None, actual=None, page=0,
+            x0=10.0, top=10.0, x1=100.0, bottom=20.0,
+            state="open", created_at=datetime.now(UTC)))
+    return exc_id
+
+
+def _existing_vendor(tenant_id: str, name: str) -> str:
+    with app_engine().begin() as conn:
+        ledger = load_vendor_ledger(conn, tenant_id)
+        vendor_id = ledger.create(name)
+        from ledger_sense.store.vendors import save_vendor_ledger
+        save_vendor_ledger(conn, tenant_id, ledger)
+    return vendor_id
+
+
+def test_confirm_vendor_links_an_existing_vendor() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    vendor_id = _existing_vendor(tenant_id, "Acme Roofing Co.")
+
+    resp = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                       json={"vendor_id": vendor_id}, cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "confirmed", "vendor_id": vendor_id}
+
+    exceptions = _exceptions(cookies, doc_id)
+    assert next(e for e in exceptions if e["id"] == exc_id)["state"] == "confirmed"
+
+    with app_engine().connect() as conn:
+        doc_row = conn.execute(
+            sa.select(documents.c.vendor_id).where(documents.c.id == doc_id)).one()
+    assert doc_row.vendor_id == vendor_id
+
+    with app_engine().connect() as conn:
+        ledger = load_vendor_ledger(conn, tenant_id)
+    vendor = ledger.get(vendor_id)
+    assert vendor is not None
+    assert any(a.name == "Acme Roofing" and a.confirmed_by is not None
+              for a in vendor.aliases)
+
+
+def test_confirm_vendor_creates_a_new_vendor() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Brand New Roofing Co.")
+    exc_id = _i2_finding(tenant_id, doc_id)
+
+    resp = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                       json={"new_vendor_name": "Brand New Roofing Co."}, cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    new_vendor_id = resp.json()["vendor_id"]
+    assert new_vendor_id is not None
+
+    with app_engine().connect() as conn:
+        ledger = load_vendor_ledger(conn, tenant_id)
+    vendor = ledger.get(new_vendor_id)
+    assert vendor is not None
+    assert vendor.name == "Brand New Roofing Co."
+
+
+def test_confirm_vendor_rejects_both_fields_at_once() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                       json={"vendor_id": "v1", "new_vendor_name": "X"}, cookies=cookies)
+    assert resp.status_code == 422
+
+
+def test_confirm_vendor_rejects_neither_field() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                       json={}, cookies=cookies)
+    assert resp.status_code == 422
+
+
+def test_confirm_vendor_refuses_a_non_i2_exception() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    other_exc_id = _finding(tenant_id, doc_id)  # rule_id="A2"
+    resp = client.post(f"/api/review/exceptions/{other_exc_id}/confirm-vendor",
+                       json={"new_vendor_name": "X"}, cookies=cookies)
+    assert resp.status_code == 422
+
+
+def test_confirm_vendor_is_404_for_another_tenants_vendor_id() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    _other_cookies, other_tenant = _session_cookie()
+    other_vendor_id = _existing_vendor(other_tenant, "Other Tenant's Vendor")
+    resp = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                       json={"vendor_id": other_vendor_id}, cookies=cookies)
+    assert resp.status_code == 404
+
+
+def test_confirm_vendor_twice_is_409() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+               json={"new_vendor_name": "X"}, cookies=cookies)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                       json={"new_vendor_name": "Y"}, cookies=cookies)
+    assert resp.status_code == 409
 
 
 def test_no_review_route_accepts_a_caller_supplied_basis() -> None:
