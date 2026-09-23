@@ -148,6 +148,9 @@ _EXTRACT_FLOAT_ALLOWLIST: frozenset[tuple[str, int, float]] = frozenset({
     # a confidence score.
     ("ledger_sense/extract/tables.py", 27, 6.0),    # ROW_BAND_PT
     ("ledger_sense/extract/tables.py", 28, 4.0),    # COLUMN_SLACK_PT
+    # anchors.py: I3 (final whole-branch review) -- max inter-word gap for
+    # _value_after_label_merged's same-band collection, not a confidence score.
+    ("ledger_sense/extract/anchors.py", 37, 15.0),  # MAX_MERGE_GAP_PT
 })
 
 
