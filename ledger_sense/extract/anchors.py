@@ -25,6 +25,16 @@ BELOW_BAND_PT = 12.0
 # The below-band value must sit roughly under the LABEL'S OWN text, not
 # anywhere else on the page -- see the Important-1 fix in `_value_near`.
 BELOW_X_SLACK_PT = 20.0
+# I3 (final whole-branch review): `_value_after_label_merged`'s same-band
+# collection originally had no horizontal bound between consecutive words, so
+# it would happily merge a genuine second label/value pair sharing the band
+# into one corrupted "value". The corpus's own inter-word gap within a single
+# value (e.g. a two-word vendor name at BODY_FONT_PT=9.0) measures ~2.5pt --
+# the width of one space glyph. 15.0pt gives ~6x that headroom (comfortable
+# for a wider font or looser kerning) while staying far short of any genuine
+# second column: the document header's own label-to-value offset alone is
+# ~100pt+. A gap past this bound ends the merge rather than crossing it.
+MAX_MERGE_GAP_PT = 15.0
 
 
 class Anchored(NamedTuple):
@@ -133,7 +143,13 @@ def _value_after_label_merged(words: list[Word], label_words: list[Word],
     to its first token. Falls back to `_value_after_label`'s existing
     below-band single-word search unchanged when no same-band words match —
     same merge convention `assemble._value_in_box` already uses for a
-    reviewer-correction replay box."""
+    reviewer-correction replay box.
+
+    I3 (final whole-branch review): the merge STOPS at the first gap wider
+    than `MAX_MERGE_GAP_PT`, same horizontal-proximity principle as the
+    Important-1 fix above (`_value_after_label`'s below-band search) — a
+    genuine second label/value pair sharing this band must not be swept into
+    one corrupted value just because both are value-shaped and to the right."""
     label_right = max(w.bbox.x1 for w in label_words)
     label_top = min(w.bbox.top for w in label_words)
     page = label_words[0].page
@@ -145,9 +161,14 @@ def _value_after_label_merged(words: list[Word], label_words: list[Word],
          and predicate(w)),
         key=lambda w: w.bbox.x0)
     if same_band:
-        merged_bbox = BBox(same_band[0].bbox.x0, min(w.bbox.top for w in same_band),
-                           same_band[-1].bbox.x1, max(w.bbox.bottom for w in same_band))
-        return Word(text=" ".join(w.text for w in same_band), bbox=merged_bbox, page=page)
+        merged = [same_band[0]]
+        for w in same_band[1:]:
+            if w.bbox.x0 - merged[-1].bbox.x1 > MAX_MERGE_GAP_PT:
+                break
+            merged.append(w)
+        merged_bbox = BBox(merged[0].bbox.x0, min(w.bbox.top for w in merged),
+                           merged[-1].bbox.x1, max(w.bbox.bottom for w in merged))
+        return Word(text=" ".join(w.text for w in merged), bbox=merged_bbox, page=page)
     return _value_after_label(words, label_words, predicate)
 
 

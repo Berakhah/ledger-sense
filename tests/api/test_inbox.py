@@ -17,12 +17,14 @@ from httpx import Response
 from ledger_sense.api.app import MULTIPART_OVERHEAD_BYTES
 from ledger_sense.boundary import Origin
 from ledger_sense.corpus.generate import generate
+from ledger_sense.domain.vendor import VendorLedger
 from ledger_sense.ingest.intake import accept_document
 from ledger_sense.ingest.limits import DEFAULT_LIMITS
 from ledger_sense.store import session as store_session
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import store_document
 from ledger_sense.store.retention import documents
+from ledger_sense.store.vendors import save_vendor_ledger
 from tests.api.conftest import TenantClient, client
 
 
@@ -405,11 +407,26 @@ def _corpus_pdf(error: str = "clean") -> bytes:
     return generate(seed=1, error=error)[2]  # type: ignore[arg-type]
 
 
+def _register_vendor(tenant: TenantClient, vendor_name: str) -> None:
+    # A fresh tenant's vendor ledger is empty, so the corpus document's
+    # vendor must be pre-registered before the run — otherwise I2 legitimately
+    # fires ("first time we've seen this name") and a "no findings" or exact
+    # finding-count expectation would be false. Mirrors
+    # tests/run/test_document.py::test_a_clean_document_produces_no_findings.
+    ledger = VendorLedger()
+    ledger.create(vendor_name)
+    with store_session.app_engine().begin() as conn:
+        save_vendor_ledger(conn, tenant.tenant_id, ledger)
+
+
 def test_an_upload_answers_received_and_is_extracted_by_the_time_it_is_read_back(
     two_tenants: tuple[TenantClient, TenantClient],
 ) -> None:
     a, _ = two_tenants
-    response = _upload(a, _corpus_pdf())
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    _register_vendor(a, app.vendor_name)
+    response = _upload(a, pdf)
     assert response.status_code == 201
     assert response.json()["status"] == "received"
     # TestClient runs BackgroundTasks before returning, so the run is done.

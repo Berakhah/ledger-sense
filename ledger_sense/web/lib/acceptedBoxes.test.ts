@@ -28,6 +28,11 @@ describe('acceptedBoxesOf', () => {
     expect(acceptedBoxesOf([exc({ id: 'e1', state: 'open' })])).toEqual([])
   })
 
+  it('gives a confirmed vendor exception no field-value rule — it resolved an ' +
+     'identity finding, not a field value', () => {
+    expect(acceptedBoxesOf([exc({ id: 'e1', state: 'confirmed' })])).toEqual([])
+  })
+
   it('skips a closed field with no located geometry', () => {
     expect(acceptedBoxesOf([exc({ id: 'e1', page: null })])).toEqual([])
     expect(acceptedBoxesOf([exc({ id: 'e2', bbox: null })])).toEqual([])

@@ -99,7 +99,7 @@ def test_an_unknown_vendor_id_is_404() -> None:
 
 def test_another_tenants_vendor_is_404_not_403() -> None:
     cookies_a, tenant_a = _session_cookie()
-    cookies_b, tenant_b = _session_cookie()
+    cookies_b, _tenant_b = _session_cookie()
 
     ledger = VendorLedger()
     vendor_id = ledger.create("Tenant A Vendor")

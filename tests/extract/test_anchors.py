@@ -4,6 +4,7 @@ from ledger_sense.extract.anchors import (
     MONEY_TOKEN,
     Anchored,
     _find_labels,
+    _value_after_label_merged,
     _value_near,
     extract_summary,
 )
@@ -110,6 +111,41 @@ def test_value_near_finds_a_directly_below_value_when_none_is_beside_it() -> Non
     label = [Word("Label", BBox(100.0, 100.0, 140.0, 110.0), 0)]
     value = Word("500.00", BBox(105.0, 108.0, 140.0, 118.0), 0)
     assert _value_near([*label, value], label) == value
+
+
+def _nonblank(w: Word) -> bool:
+    return bool(w.text.strip())
+
+
+def test_value_after_label_merged_joins_a_three_word_value() -> None:
+    """A 3-word vendor name (e.g. 'Meridian Electrical Group') must still
+    merge into one value — the multi-word case this function exists for."""
+    label = [Word("Contractor", BBox(36.0, 100.0, 80.0, 109.0), 0)]
+    w1 = Word("Meridian", BBox(160.0, 100.0, 190.0, 109.0), 0)
+    w2 = Word("Electrical", BBox(192.5, 100.0, 225.0, 109.0), 0)
+    w3 = Word("Group", BBox(227.5, 100.0, 250.0, 109.0), 0)
+    result = _value_after_label_merged([*label, w1, w2, w3], label, _nonblank)
+    assert result is not None
+    assert result.text == "Meridian Electrical Group"
+    assert result.bbox == BBox(160.0, 100.0, 250.0, 109.0)
+
+
+def test_value_after_label_merged_does_not_cross_into_a_second_columns_label() -> None:
+    """I3 (final whole-branch review): a genuine second label/value pair on
+    the SAME band, spaced well past a normal word gap (the corpus's own
+    inter-word gap is ~2.5pt at BODY_FONT_PT), must not be swept into the
+    first label's merged value just because it is also value-shaped and to
+    the right. Only the two adjacent, close-gap words merge."""
+    label = [Word("Contractor", BBox(36.0, 100.0, 80.0, 109.0), 0)]
+    w1 = Word("Meridian", BBox(160.0, 100.0, 190.0, 109.0), 0)
+    w2 = Word("Electrical", BBox(192.5, 100.0, 225.0, 109.0), 0)
+    # A second column's label/value pair on the identical band, far to the
+    # right -- e.g. "Date: 04/01/2026" starting a full column width away.
+    unrelated = Word("04/01/2026", BBox(420.0, 100.0, 470.0, 109.0), 0)
+    result = _value_after_label_merged([*label, w1, w2, unrelated], label, _nonblank)
+    assert result is not None
+    assert result.text == "Meridian Electrical"
+    assert result.bbox == BBox(160.0, 100.0, 225.0, 109.0)
 
 
 def test_value_near_rejects_a_below_value_in_the_wrong_column() -> None:
