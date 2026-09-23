@@ -28,7 +28,7 @@ from typing import Annotated, Any, Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, StrictStr, field_validator
+from pydantic import BaseModel, StrictStr, field_validator, model_validator
 
 from ledger_sense.api.deps import owned, require_session
 from ledger_sense.auth.session import Session
@@ -40,6 +40,7 @@ from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
+from ledger_sense.store.vendors import load_vendor_ledger, save_vendor_ledger
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ router = APIRouter(prefix="/api/review")
 
 CurrentSession = Annotated[Session, Depends(require_session)]
 
-ExceptionState = Literal["open", "accepted", "edited", "rejected"]
+ExceptionState = Literal["open", "accepted", "edited", "rejected", "confirmed"]
 
 _NO_GEOMETRY_DETAIL = (
     "this exception has no located geometry; accept/edit needs a confirmed "
@@ -80,6 +81,17 @@ class RejectBody(BaseModel):
         if not value.strip():
             raise ValueError("a rejection must state a reason")
         return value
+
+
+class ConfirmVendorBody(BaseModel):
+    vendor_id: str | None = None
+    new_vendor_name: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "ConfirmVendorBody":
+        if (self.vendor_id is None) == (self.new_vendor_name is None):
+            raise ValueError("exactly one of vendor_id or new_vendor_name is required")
+        return self
 
 
 def _bbox(row: sa.Row[Any]) -> tuple[float, float, float, float] | None:
@@ -175,6 +187,16 @@ def _match_quality_for(conn: sa.Connection, document_id: str, field: str) -> flo
         .limit(1)
     ).one_or_none()
     return None if row is None else row.match_quality
+
+
+def _observed_vendor_name(conn: sa.Connection, document_id: str) -> str | None:
+    row = conn.execute(
+        sa.select(claims.c.value)
+        .where(claims.c.document_id == document_id, claims.c.field == "vendor_name")
+        .order_by(claims.c.observed_at.desc())
+        .limit(1)
+    ).one_or_none()
+    return None if row is None else row.value
 
 
 def _basis_for(conn: sa.Connection, document_id: str) -> Basis:
@@ -279,6 +301,37 @@ def reject(exc_id: str, body: RejectBody, session: CurrentSession) -> dict[str, 
         _require_open(row)
         _close(conn, exc_id, "rejected", reason=body.reason)
     return {"status": "rejected", "claim_id": None}
+
+
+@router.post("/exceptions/{exc_id}/confirm-vendor")
+def confirm_vendor(exc_id: str, body: ConfirmVendorBody,
+                   session: CurrentSession) -> dict[str, str | None]:
+    with app_engine().begin() as conn:
+        row = _get_finding(exc_id, session, conn)
+        _require_open(row)
+        if row.rule_id != "I2":
+            raise HTTPException(status_code=422,
+                                detail="confirm-vendor only applies to an I2 exception")
+        observed_name = _observed_vendor_name(conn, row.document_id)
+        if observed_name is None:
+            raise HTTPException(status_code=422, detail="no extracted vendor name to confirm")
+
+        ledger = load_vendor_ledger(conn, session.tenant_id)
+        if body.vendor_id is not None:
+            if ledger.get(body.vendor_id) is None:
+                raise HTTPException(status_code=404, detail="not found")
+            vendor_id = body.vendor_id
+        else:
+            assert body.new_vendor_name is not None  # the validator guarantees one is set
+            vendor_id = ledger.create(body.new_vendor_name)
+        ledger.confirm_alias(vendor_id, observed_name, source_document=row.document_id,
+                             confirmed_by=session.user_id)
+
+        save_vendor_ledger(conn, session.tenant_id, ledger)
+        conn.execute(documents.update().where(documents.c.id == row.document_id)
+                     .values(vendor_id=vendor_id))
+        _close(conn, exc_id, "confirmed")
+    return {"status": "confirmed", "vendor_id": vendor_id}
 
 
 @router.get("/documents/{doc_id}/progress")
