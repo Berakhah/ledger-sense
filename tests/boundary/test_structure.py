@@ -157,14 +157,27 @@ def _vendor_table_insert_calls(tree: ast.AST) -> list[ast.Call]:
     """Matches `vendors.insert(...)`, `vendor_aliases.insert(...)`,
     `payment_details.insert(...)`, with or without an import alias or an
     attribute-chain prefix — same shape as _documents_insert_calls above,
-    generalized to three table names instead of one."""
+    generalized to three table names instead of one.
+
+    Each table name resolves its own alias set independently, the same as
+    `_documents_insert_calls` does for the single `documents` name: a local
+    binding from `from ledger_sense.store.retention import payment_details
+    as pd` is recognised as `payment_details` even though the source text
+    never spells that name at the call site.
+    """
     names = {"vendors", "vendor_aliases", "payment_details"}
+    aliases = set(names)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "ledger_sense.store.retention":
+            aliases |= {alias.asname or alias.name
+                        for alias in node.names if alias.name in names}
+
     calls = []
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "insert"):
             target = node.func.value
-            if isinstance(target, ast.Name) and target.id in names:
+            if isinstance(target, ast.Name) and target.id in aliases:
                 calls.append(node)
             elif isinstance(target, ast.Attribute) and target.attr in names:
                 calls.append(node)
@@ -185,6 +198,14 @@ def test_the_store_does_call_vendor_table_inserts() -> None:
     site = PACKAGE / "store" / "vendors.py"
     tree = ast.parse(site.read_text(encoding="utf-8"))
     assert _vendor_table_insert_calls(tree), f"{site} no longer calls insert() on a vendor table"
+
+
+def test_vendor_table_insert_calls_aliased_import() -> None:
+    tree = ast.parse(
+        "from ledger_sense.store.retention import payment_details as pd\n"
+        "pd.insert()\n"
+    )
+    assert len(_vendor_table_insert_calls(tree)) == 1
 
 
 # Modules the writeback exemption above must never import. The exemption's

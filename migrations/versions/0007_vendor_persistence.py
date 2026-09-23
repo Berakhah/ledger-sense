@@ -63,7 +63,8 @@ def upgrade() -> None:
     with op.batch_alter_table("documents") as batch:
         batch.add_column(
             sa.Column("vendor_id", sa.Text(),
-                      sa.ForeignKey("vendors.id", name="fk_documents_vendor_id_vendors"),
+                      sa.ForeignKey("vendors.id", name="fk_documents_vendor_id_vendors",
+                                    deferrable=True, initially="DEFERRED"),
                       nullable=True))
 
 
