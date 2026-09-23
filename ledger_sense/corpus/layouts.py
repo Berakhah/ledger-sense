@@ -79,6 +79,7 @@ DOC_HEADER_FIELDS: tuple[tuple[str, str], ...] = (
     ("Contract Number",     "contract_id"),
     ("Application Number",  "application_no"),
     ("Period Ending",       "period_to"),
+    ("Contractor",          "vendor_name"),
 )
 DOC_HEADER_TOP_PT = 576.0
 DOC_HEADER_LABEL_X_PT = 36.0
