@@ -289,3 +289,38 @@ def test_0005_adds_the_run_columns_the_findings_table_and_named_checks(
         assert "field" not in {c["name"] for c in inspector.get_columns("claims")}
         assert "filename" in {c["name"] for c in inspector.get_columns("documents")}
     store_session.reset_app_engine()
+
+
+def test_0007_adds_vendor_tables_and_the_documents_vendor_id_column(
+    tmp_path: pathlib.Path,
+) -> None:
+    database = (tmp_path / "m.db").as_posix()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{database}")
+        store_session.reset_app_engine()
+        config = _alembic_config()
+        command.upgrade(config, "head")
+        inspector = sa.inspect(store_session.app_engine())
+
+        assert {"vendors", "vendor_aliases", "payment_details"} <= set(
+            inspector.get_table_names())
+        vendor_cols = {c["name"] for c in inspector.get_columns("vendors")}
+        assert vendor_cols == {"id", "tenant_id", "name"}
+        alias_cols = {c["name"] for c in inspector.get_columns("vendor_aliases")}
+        assert alias_cols == {"id", "tenant_id", "vendor_id", "name", "first_seen",
+                              "source_document", "confirmed_by", "merged_from"}
+        detail_cols = {c["name"] for c in inspector.get_columns("payment_details")}
+        assert detail_cols == {"id", "tenant_id", "vendor_id", "account_last4",
+                               "routing_last4", "account_hmac", "observed_at",
+                               "source_document", "confirmed_by", "confirmed_at"}
+        doc_cols = {c["name"] for c in inspector.get_columns("documents")}
+        assert "vendor_id" in doc_cols
+
+        # Downgrade one step removes everything 0007 added and nothing else.
+        command.downgrade(config, "0006_review_reject_reason")
+        inspector = sa.inspect(store_session.app_engine())
+        assert "vendors" not in inspector.get_table_names()
+        assert "vendor_aliases" not in inspector.get_table_names()
+        assert "payment_details" not in inspector.get_table_names()
+        assert "vendor_id" not in {c["name"] for c in inspector.get_columns("documents")}
+    store_session.reset_app_engine()

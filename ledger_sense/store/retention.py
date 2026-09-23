@@ -75,6 +75,11 @@ documents = sa.Table(
     sa.Column("run_note", sa.Text, nullable=True),
     sa.Column("rounding_policy_source", sa.Text, nullable=True),
     sa.Column("run_attempts", sa.Integer, nullable=False, server_default="0"),
+    # 0007: set only when a reviewer confirms a vendor match via the
+    # review-queue's confirm-vendor action — never inferred, never defaulted.
+    sa.Column("vendor_id", sa.Text,
+              sa.ForeignKey("vendors.id", name="fk_documents_vendor_id_vendors"),
+              nullable=True),
     # Named to match the migrations exactly: SQLite batch recreate keeps named CHECKs.
     sa.CheckConstraint(
         "sensitivity IN (" + ", ".join(f"'{s.value}'" for s in Sensitivity) + ")",
@@ -162,6 +167,43 @@ retention_audit_log = sa.Table(
     sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
     sa.Index("ix_retention_audit_log_tenant_id_id", "tenant_id", "id"),
     sa.Index("ix_retention_audit_log_document_id", "document_id"),
+)
+
+# 0007: persistence for the vendor ledger (I2 vendor resolution, I3 bank-detail
+# hard stop) — previously in-memory only, per-process, for one test's duration.
+vendors = sa.Table(
+    "vendors", metadata,
+    sa.Column("id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, sa.ForeignKey("tenants.id"), nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+)
+
+vendor_aliases = sa.Table(
+    "vendor_aliases", metadata,
+    sa.Column("id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, sa.ForeignKey("tenants.id"), nullable=False),
+    sa.Column("vendor_id", sa.Text, sa.ForeignKey("vendors.id"), nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("first_seen", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("source_document", sa.Text, nullable=False),
+    sa.Column("confirmed_by", sa.Text, nullable=False),
+    sa.Column("merged_from", sa.Text, nullable=True),
+)
+
+payment_details = sa.Table(
+    "payment_details", metadata,
+    sa.Column("id", sa.Text, primary_key=True),
+    sa.Column("tenant_id", sa.Text, sa.ForeignKey("tenants.id"), nullable=False),
+    sa.Column("vendor_id", sa.Text, sa.ForeignKey("vendors.id"), nullable=False),
+    sa.Column("account_last4", sa.Text, nullable=False),
+    sa.Column("routing_last4", sa.Text, nullable=False),
+    # HMAC of the full account+routing under LEDGER_SENSE_PAYMENT_HMAC_KEY
+    # (domain/vendor.py:payment_hmac) — never the plaintext account number.
+    sa.Column("account_hmac", sa.Text, nullable=False),
+    sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("source_document", sa.Text, nullable=False),
+    sa.Column("confirmed_by", sa.Text, nullable=True),
+    sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 SCHEDULED_JOB = "retention-job"
