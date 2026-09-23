@@ -43,6 +43,7 @@ from ledger_sense.api.reconciliation import RECONCILIATION_SEED_PATH
 from ledger_sense.api.reconciliation import router as reconciliation_router
 from ledger_sense.api.reconciliation import seed_demo as reconciliation_seed
 from ledger_sense.api.review import router as review_router
+from ledger_sense.api.vendors import router as vendors_router
 from ledger_sense.api.writeback import router as writeback_router
 from ledger_sense.auth.models import authenticate
 from ledger_sense.auth.session import SESSION_TTL, issue_session
@@ -237,6 +238,7 @@ def build_app() -> FastAPI:
     register(app, review_router)
     register(app, reconciliation_router)
     register(app, writeback_router)
+    register(app, vendors_router)
 
     for router in stub_routers():
         register(app, router)
