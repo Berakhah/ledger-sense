@@ -4,6 +4,7 @@ import pytest
 from ledger_sense.corpus.errors import generate_history
 from ledger_sense.corpus.generate import generate, ground_truth
 from ledger_sense.corpus.layouts import CONTINUATION_COLUMNS, SUMMARY_FIELDS, columns_for
+from ledger_sense.extract.textlayer import extract_words
 from ledger_sense.rules.arithmetic.foot import rule_a1
 from ledger_sense.rules.arithmetic.payment import rule_a8
 
@@ -62,6 +63,17 @@ def test_no_summary_label_collides_with_a_column_header() -> None:
     headers = {c.header for c in CONTINUATION_COLUMNS}
     labels = {label for label, _ in SUMMARY_FIELDS}
     assert headers & labels == set()
+
+
+def test_the_document_header_carries_a_vendor_name() -> None:
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    assert app.vendor_name.strip() != ""
+    # F-09's lesson, extended: the vendor name must not collide with any
+    # continuation-grid header, summary label, or the other three header
+    # labels, or a label-anchor test could bind to the wrong text.
+    words = {w.text for w in extract_words(pdf)}
+    assert "Contractor" in words
 
 
 def test_the_duplicate_injector_produces_a_second_document() -> None:
