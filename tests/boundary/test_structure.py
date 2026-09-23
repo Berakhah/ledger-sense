@@ -177,9 +177,8 @@ def _vendor_table_insert_calls(tree: ast.AST) -> list[ast.Call]:
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "insert"):
             target = node.func.value
-            if isinstance(target, ast.Name) and target.id in aliases:
-                calls.append(node)
-            elif isinstance(target, ast.Attribute) and target.attr in names:
+            if ((isinstance(target, ast.Name) and target.id in aliases)
+                    or (isinstance(target, ast.Attribute) and target.attr in names)):
                 calls.append(node)
     return calls
 

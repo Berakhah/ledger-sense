@@ -88,7 +88,7 @@ class ConfirmVendorBody(BaseModel):
     new_vendor_name: StrictStr | None = None
 
     @model_validator(mode="after")
-    def _exactly_one(self) -> "ConfirmVendorBody":
+    def _exactly_one(self) -> ConfirmVendorBody:
         if (self.vendor_id is None) == (self.new_vendor_name is None):
             raise ValueError("exactly one of vendor_id or new_vendor_name is required")
         return self

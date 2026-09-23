@@ -10,7 +10,7 @@ import type { BBox } from './bbox'
  * list, never kept in a browser-side copy that could disagree with it.
  */
 
-export type ExceptionState = 'open' | 'accepted' | 'edited' | 'rejected'
+export type ExceptionState = 'open' | 'accepted' | 'edited' | 'rejected' | 'confirmed'
 
 /** The slice of ReviewException the rule needs. */
 export interface ExceptionLike {
@@ -27,7 +27,14 @@ export interface AcceptedBox {
 }
 
 /** Every verified field with located geometry, in queue order. A rejected
- *  field was not verified, so it gets no rule. */
+ *  field was not verified, so it gets no rule.
+ *
+ *  'confirmed' (a vendor-identity confirmation resolving an I2 finding, not a
+ *  field-level value claim) deliberately does NOT earn the accumulating
+ *  green rule either: the rule marks a *field's boxed value* as verified,
+ *  and a vendor confirmation has no single field box of its own — it
+ *  resolves the exception without asserting any one extracted value is
+ *  correct. Only 'accepted'/'edited' — field-value verifications — draw it. */
 export function acceptedBoxesOf(items: ReadonlyArray<ExceptionLike>): AcceptedBox[] {
   const boxes: AcceptedBox[] = []
   for (const item of items) {
