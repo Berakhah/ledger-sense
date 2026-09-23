@@ -43,7 +43,7 @@ from ledger_sense.store.session import app_engine
 
 DOCUMENT_STATUSES = ("received", "extracted", "cannot_extract", "duplicate", "failed")
 DOC_TYPES = ("pay_application", "continuation_sheet", "invoice", "lien_waiver", "unknown")
-FINDING_STATES = ("open", "accepted", "edited", "rejected")
+FINDING_STATES = ("open", "accepted", "edited", "rejected", "confirmed")
 CLAIM_VALUE_TYPES = ("money", "date", "int", "str")
 
 
