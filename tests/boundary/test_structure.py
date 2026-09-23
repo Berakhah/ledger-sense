@@ -153,6 +153,40 @@ def test_no_module_outside_the_gateway_imports_a_provider_client() -> None:
     assert offenders == [], f"a provider client outside gateway.py: {offenders}"
 
 
+def _vendor_table_insert_calls(tree: ast.AST) -> list[ast.Call]:
+    """Matches `vendors.insert(...)`, `vendor_aliases.insert(...)`,
+    `payment_details.insert(...)`, with or without an import alias or an
+    attribute-chain prefix — same shape as _documents_insert_calls above,
+    generalized to three table names instead of one."""
+    names = {"vendors", "vendor_aliases", "payment_details"}
+    calls = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "insert"):
+            target = node.func.value
+            if isinstance(target, ast.Name) and target.id in names:
+                calls.append(node)
+            elif isinstance(target, ast.Attribute) and target.attr in names:
+                calls.append(node)
+    return calls
+
+
+def test_vendor_table_inserts_are_called_only_by_store_vendors() -> None:
+    offenders = []
+    for path in (path for path in PACKAGE.rglob("*.py")
+                 if path != PACKAGE / "store" / "vendors.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if _vendor_table_insert_calls(tree):
+            offenders.append(str(path))
+    assert offenders == [], f"vendor table insert outside store/vendors.py: {offenders}"
+
+
+def test_the_store_does_call_vendor_table_inserts() -> None:
+    site = PACKAGE / "store" / "vendors.py"
+    tree = ast.parse(site.read_text(encoding="utf-8"))
+    assert _vendor_table_insert_calls(tree), f"{site} no longer calls insert() on a vendor table"
+
+
 # Modules the writeback exemption above must never import. The exemption's
 # justification (writeback never touches a raw document, only
 # already-validated billing fields going to the client's own connected

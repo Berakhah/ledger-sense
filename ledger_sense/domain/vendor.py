@@ -130,6 +130,23 @@ class VendorLedger:
     def __init__(self) -> None:
         self._vendors: dict[str, CanonicalVendor] = {}
 
+    def all_vendors(self) -> list[CanonicalVendor]:
+        """Every canonical vendor this ledger currently holds — the whole
+        state a repository snapshot-replace needs to persist. Read-only:
+        callers get the live CanonicalVendor objects, not copies, matching
+        `get()`'s existing behaviour."""
+        return list(self._vendors.values())
+
+    @classmethod
+    def from_vendors(cls, vendors: list[CanonicalVendor]) -> "VendorLedger":
+        """Rehydrate a ledger from a repository read. The inverse of
+        `all_vendors()` — round-trips exactly, including each vendor's
+        aliases and payment_history, since CanonicalVendor already carries
+        both."""
+        ledger = cls()
+        ledger._vendors = {v.id: v for v in vendors}
+        return ledger
+
     def create(self, name: str) -> str:
         vendor_id = str(uuid.uuid4())
         self._vendors[vendor_id] = CanonicalVendor(id=vendor_id, name=name)
