@@ -228,6 +228,7 @@ def test_check_vendor_resolution_flags_an_unrecognised_name(ledger: VendorLedger
     """I2 tripping fixture: no canonical vendor is close enough to match."""
     findings = check_vendor_resolution(ledger, "Zenith Glazing")
     assert [f.rule_id for f in findings] == ["I2"]
+    assert findings[0].field == "vendor_name"
 
 
 def test_check_vendor_resolution_flags_a_name_needing_confirmation(
@@ -235,6 +236,7 @@ def test_check_vendor_resolution_flags_a_name_needing_confirmation(
     """I2 tripping fixture: a close-but-not-exact name must not resolve silently."""
     findings = check_vendor_resolution(ledger, "Acme Steel Co.")
     assert [f.rule_id for f in findings] == ["I2"]
+    assert findings[0].field == "vendor_name"
 
 
 def test_check_vendor_resolution_clean_control_produces_no_finding(

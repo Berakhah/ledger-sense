@@ -11,10 +11,12 @@ import sqlalchemy as sa
 from ledger_sense.corpus.errors import ErrorClass
 from ledger_sense.corpus.generate import generate
 from ledger_sense.domain.money import money
+from ledger_sense.domain.vendor import VendorLedger as _VendorLedger
 from ledger_sense.extract.assemble import UnextractableField, assemble_pay_application
 from ledger_sense.provenance import Claim
 from ledger_sense.run.document import RunOutcome, run_document
 from ledger_sense.store.retention import documents, findings
+from ledger_sense.store.vendors import save_vendor_ledger
 from tests.run.conftest import RunDb
 
 
@@ -293,7 +295,17 @@ def test_a_row_that_changes_status_during_the_write_raises_instead_of_failing(
 
 
 def test_a_clean_document_produces_no_findings(db: RunDb) -> None:
-    document_id = db.store_pdf(_clean_pdf())
+    # A fresh tenant's vendor ledger is empty, so the vendor on this
+    # document must be pre-registered — otherwise I2 legitimately fires
+    # ("first time we've seen this name") and "no findings" would be false.
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    with db.engine.begin() as conn:
+        ledger = _VendorLedger()
+        ledger.create(app.vendor_name)
+        save_vendor_ledger(conn, db.tenant_id, ledger)
+
+    document_id = db.store_pdf(pdf)
     outcome = run_document(db.engine, document_id)
     assert outcome.findings_written == 0
     assert db.findings_for(document_id) == []
@@ -337,7 +349,17 @@ def test_arithmetic_is_not_run_on_a_field_that_could_not_be_extracted(
         return app.model_copy(update={"total_completed_and_stored": money("0.00")})
     monkeypatch.setattr(run_module, "assemble_pay_application", _scrub_total)
 
-    document_id = db.store_pdf(_clean_pdf())
+    # Pre-register the vendor so this test's assertion isolates the
+    # arithmetic-suppression behaviour it's actually about, rather than
+    # also picking up I2's unrelated "first time we've seen this vendor".
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    with db.engine.begin() as conn:
+        ledger = _VendorLedger()
+        ledger.create(app.vendor_name)
+        save_vendor_ledger(conn, db.tenant_id, ledger)
+
+    document_id = db.store_pdf(pdf)
     run_document(db.engine, document_id)
     rules_fired = {f.rule_id for f in db.findings_for(document_id)}
     assert rules_fired == {"X0"}, rules_fired
@@ -442,3 +464,47 @@ def test_a_row_without_a_hash_is_never_matched(db: RunDb) -> None:
                      .values(content_sha256=None))
     later = db.store_pdf(pdf)
     assert run_document(db.engine, later).status == "extracted"
+
+
+def test_an_unresolved_vendor_name_produces_an_i2_finding(db: RunDb) -> None:
+    document_id = db.store_pdf(_clean_pdf())
+    run_document(db.engine, document_id)
+    findings = db.findings_for(document_id)
+    i2 = [f for f in findings if f.rule_id == "I2"]
+    assert len(i2) == 1
+    assert i2[0].field == "vendor_name"
+    # boxed at the vendor_name claim's own geometry, same as every other
+    # rule finding _rule_rows produces.
+    assert i2[0].page is not None
+
+
+def test_a_vendor_name_that_exactly_matches_an_existing_vendor_produces_no_i2_finding(
+    db: RunDb,
+) -> None:
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    with db.engine.begin() as conn:
+        ledger = _VendorLedger()
+        ledger.create(app.vendor_name)
+        save_vendor_ledger(conn, db.tenant_id, ledger)
+
+    document_id = db.store_pdf(pdf)
+    run_document(db.engine, document_id)
+    findings = db.findings_for(document_id)
+    assert [f for f in findings if f.rule_id == "I2"] == []
+
+
+def test_i2_never_touches_another_tenants_vendor_ledger(db: RunDb) -> None:
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    other_tenant = db.new_tenant()
+    with db.engine.begin() as conn:
+        ledger = _VendorLedger()
+        ledger.create(app.vendor_name)
+        save_vendor_ledger(conn, other_tenant, ledger)  # a DIFFERENT tenant
+
+    document_id = db.store_pdf(pdf)  # stored under db.tenant_id
+    run_document(db.engine, document_id)
+    findings = db.findings_for(document_id)
+    # db.tenant_id's own ledger is still empty, so the name is unresolved.
+    assert [f.rule_id for f in findings if f.rule_id == "I2"] == ["I2"]

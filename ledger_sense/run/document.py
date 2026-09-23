@@ -39,10 +39,12 @@ from ledger_sense.rules.engine import (
     run_rules,
     unverifiable_money_fields,
 )
+from ledger_sense.rules.integrity.vendors import check_vendor_resolution
 from ledger_sense.store.blobs import BlobStore, blob_store_from_environment
 from ledger_sense.store.documents import load_document
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
+from ledger_sense.store.vendors import load_vendor_ledger
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +256,30 @@ def _rule_rows(tenant_id: str, document_id: str, app: PayApplication,
     return rows
 
 
+def _vendor_rows(conn: Connection, tenant_id: str, document_id: str,
+                 app: PayApplication, claim_rows: list[dict[str, object]],
+                 now: datetime) -> list[dict[str, object]]:
+    """I2, read-only: resolve() never mutates the ledger, so this never
+    calls save_vendor_ledger — there is nothing here to persist back."""
+    if app.vendor_name is None:
+        return []  # X0 already reports the omission; nothing to resolve.
+    ledger = load_vendor_ledger(conn, tenant_id)
+    boxes = {str(c["field"]): c for c in claim_rows}
+    box = boxes.get("vendor_name")
+    rows: list[dict[str, object]] = []
+    for finding in check_vendor_resolution(ledger, app.vendor_name):
+        rows.append({
+            "id": uuid.uuid4().hex, "tenant_id": tenant_id, "document_id": document_id,
+            "rule_id": finding.rule_id, "field": finding.field, "message": finding.message,
+            "expected": str(finding.expected), "actual": str(finding.actual),
+            "page": box["page"] if box else None,
+            "x0": box["x0"] if box else None, "top": box["top"] if box else None,
+            "x1": box["x1"] if box else None, "bottom": box["bottom"] if box else None,
+            "state": "open", "created_at": now,
+        })
+    return rows
+
+
 def _write(conn: Connection, row: sa.Row[tuple[object, ...]],
            claim_rows: list[dict[str, object]],
            finding_rows: list[dict[str, object]]) -> RunOutcome:
@@ -339,6 +365,7 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
         claim_rows = _claim_rows(tenant_id, document_id, app)
         finding_rows = _x0_rows(tenant_id, document_id, app, now)
         finding_rows += _rule_rows(tenant_id, document_id, app, claim_rows, now)
+        finding_rows += _vendor_rows(conn, tenant_id, document_id, app, claim_rows, now)
     except Exception as exc:  # every document-level error becomes `failed`
         raise _RunFailure(exc, doc_type) from exc
     # Outside the try on purpose (spec §2 step 7's catch-all covers steps 3-5
