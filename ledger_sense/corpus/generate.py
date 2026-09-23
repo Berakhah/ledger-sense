@@ -57,6 +57,18 @@ _TRADES = [
     "Roofing", "Glazing", "Drywall", "Painting", "Electrical", "Plumbing", "HVAC",
 ]
 
+# A closed pool, same discipline as _TRADES: deterministic per seed via
+# rng.choice, never a fabricated one-off that could collide with a
+# hand-typed test fixture name.
+_VENDOR_NAMES = [
+    "Acme Steel Company",
+    "Zenith Glazing",
+    "Harborview Concrete",
+    "Meridian Electrical",
+    "Cascade Roofing",
+    "Ironclad Mechanical",
+]
+
 _FONT = b"Helvetica"
 
 
@@ -130,7 +142,8 @@ def _clean(seed: int) -> tuple[Contract, PayApplication]:
         contract_id=contract.id, application_no=rng.randint(1, 12),
         period_to=date(2026, 8, 31), lines=lines, change_orders_net=money("0.00"),
         retainage_total=money("0.00"), previous_payments=money("0.00"),
-        total_completed_and_stored=grand_total)
+        total_completed_and_stored=grand_total,
+        vendor_name=rng.choice(_VENDOR_NAMES))
     return contract, app
 
 
@@ -190,6 +203,7 @@ def _render(app: PayApplication, contract: Contract, layout: str) -> bytes:
         "contract_id": contract.id,
         "application_no": str(app.application_no),
         "period_to": str(app.period_to),
+        "vendor_name": app.vendor_name or "",
     }
     y = DOC_HEADER_TOP_PT
     for label, field in DOC_HEADER_FIELDS:
