@@ -77,8 +77,15 @@ documents = sa.Table(
     sa.Column("run_attempts", sa.Integer, nullable=False, server_default="0"),
     # 0007: set only when a reviewer confirms a vendor match via the
     # review-queue's confirm-vendor action — never inferred, never defaulted.
+    # deferrable/initially="DEFERRED": store/vendors.py's save_vendor_ledger
+    # deletes and reinserts a tenant's whole vendors table (same ids) inside
+    # one transaction. A non-deferrable FK has Postgres check the reference
+    # the instant DELETE FROM vendors runs, which fails even though the same
+    # vendor id exists again by commit. Deferred, the check runs at commit,
+    # by which point the reinsert has restored the reference.
     sa.Column("vendor_id", sa.Text,
-              sa.ForeignKey("vendors.id", name="fk_documents_vendor_id_vendors"),
+              sa.ForeignKey("vendors.id", name="fk_documents_vendor_id_vendors",
+                            deferrable=True, initially="DEFERRED"),
               nullable=True),
     # Named to match the migrations exactly: SQLite batch recreate keeps named CHECKs.
     sa.CheckConstraint(
