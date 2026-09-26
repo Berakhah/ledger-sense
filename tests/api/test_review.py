@@ -535,6 +535,61 @@ def test_confirm_vendor_twice_is_409() -> None:
     assert resp.status_code == 409
 
 
+def _vendor_match(cookies: dict[str, str], exc_id: str) -> dict[str, Any]:
+    resp = client.get(f"/api/review/exceptions/{exc_id}/vendor-match", cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    return dict(resp.json())
+
+
+def test_vendor_match_has_no_candidate_for_a_name_that_matches_nothing() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Brand New Roofing Co.")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    result = _vendor_match(cookies, exc_id)
+    assert result == {"observed_name": "Brand New Roofing Co.", "candidate": None}
+
+
+def test_vendor_match_returns_the_close_matching_candidate() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Steel Co.")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    vendor_id = _existing_vendor(tenant_id, "Acme Steel Company")
+
+    result = _vendor_match(cookies, exc_id)
+    assert result["observed_name"] == "Acme Steel Co."
+    assert result["candidate"]["vendor_id"] == vendor_id
+    assert result["candidate"]["name"] == "Acme Steel Company"
+    assert isinstance(result["candidate"]["score"], float)
+
+
+def test_vendor_match_refuses_a_non_i2_exception() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    other_exc_id = _finding(tenant_id, doc_id)  # rule_id="A2"
+    resp = client.get(f"/api/review/exceptions/{other_exc_id}/vendor-match", cookies=cookies)
+    assert resp.status_code == 422
+
+
+def test_vendor_match_422_when_no_extracted_vendor_name() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    exc_id = _i2_finding(tenant_id, doc_id)  # no _vendor_name_claim seeded
+    resp = client.get(f"/api/review/exceptions/{exc_id}/vendor-match", cookies=cookies)
+    assert resp.status_code == 422
+
+
+def test_vendor_match_is_404_for_another_tenants_exception() -> None:
+    _cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    other_cookies, _other_tenant = _session_cookie()
+    resp = client.get(f"/api/review/exceptions/{exc_id}/vendor-match", cookies=other_cookies)
+    assert resp.status_code == 404
+
+
 def test_no_review_route_accepts_a_caller_supplied_basis() -> None:
     """No route may exist by which a synthetic session is labelled as field
     evidence: none of accept/edit/reject take a `basis` the caller controls.
