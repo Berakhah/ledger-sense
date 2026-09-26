@@ -431,6 +431,38 @@ def test_confirm_vendor_links_an_existing_vendor() -> None:
               for a in vendor.aliases)
 
 
+def test_confirm_vendor_loads_the_ledger_through_the_concurrency_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """confirm_vendor must load through load_vendor_ledger_for_update, not the
+    plain load_vendor_ledger — that guard (an advisory lock on Postgres,
+    store/vendors.py) is the only thing serialising two reviewers who confirm
+    a vendor for the same tenant at once. Wiring it into the route is a
+    separate step from the guard existing at all, and this is what proves
+    that step happened: a spy on the route module's own reference, not on the
+    store module, so a review.py that quietly reverted to the unguarded
+    loader fails this test even though store/vendors.py itself is untouched.
+    """
+    calls: list[str] = []
+    real = review.load_vendor_ledger_for_update
+
+    def spy(conn: Any, tenant_id: str) -> Any:
+        calls.append(tenant_id)
+        return real(conn, tenant_id)
+
+    monkeypatch.setattr(review, "load_vendor_ledger_for_update", spy)
+
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+
+    resp = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                       json={"new_vendor_name": "Acme Roofing"}, cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    assert calls == [tenant_id]
+
+
 def test_confirm_vendor_creates_a_new_vendor() -> None:
     cookies, tenant_id = _session_cookie()
     doc_id = _document(tenant_id)

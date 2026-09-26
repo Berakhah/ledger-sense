@@ -40,7 +40,7 @@ from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
-from ledger_sense.store.vendors import load_vendor_ledger, save_vendor_ledger
+from ledger_sense.store.vendors import load_vendor_ledger_for_update, save_vendor_ledger
 
 log = logging.getLogger(__name__)
 
@@ -316,7 +316,7 @@ def confirm_vendor(exc_id: str, body: ConfirmVendorBody,
         if observed_name is None:
             raise HTTPException(status_code=422, detail="no extracted vendor name to confirm")
 
-        ledger = load_vendor_ledger(conn, session.tenant_id)
+        ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
         if body.vendor_id is not None:
             if ledger.get(body.vendor_id) is None:
                 raise HTTPException(status_code=404, detail="not found")
