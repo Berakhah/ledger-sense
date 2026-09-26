@@ -23,7 +23,34 @@ from sqlalchemy import Connection
 from ledger_sense.domain.vendor import CanonicalVendor, PaymentDetail, VendorAlias, VendorLedger
 from ledger_sense.store.retention import payment_details, vendor_aliases, vendors
 
-__all__ = ["load_vendor_ledger", "save_vendor_ledger"]
+__all__ = ["load_vendor_ledger", "load_vendor_ledger_for_update", "save_vendor_ledger"]
+
+
+def load_vendor_ledger_for_update(conn: Connection, tenant_id: str) -> VendorLedger:
+    """Same as `load_vendor_ledger`, but first serialises concurrent writers
+    for this tenant so a subsequent `save_vendor_ledger` cannot lose one.
+
+    `save_vendor_ledger` replaces a tenant's whole vendor/alias/payment-detail
+    row set from an in-memory snapshot with no row-level tracking of its own
+    (module docstring). Two callers who each load -> mutate -> save for the
+    SAME tenant can both load before either saves; the second save then
+    silently overwrites the first's write. A Postgres advisory transaction
+    lock, not `SELECT ... FOR UPDATE`, is the guard: `FOR UPDATE` has no rows
+    to lock when a tenant's vendor tables are still empty, which is exactly
+    the state a tenant's very first confirm-vendor call runs against.
+    `pg_advisory_xact_lock` needs no row and releases automatically at this
+    transaction's commit or rollback, so callers get the same lifetime the
+    tables' own locks would give them, without depending on rows existing.
+
+    A no-op on any other dialect (SQLite in tests): SQLite's own
+    concurrency limits are already an accepted, documented gap for the test
+    suite (store/session.py's `app_engine` "ponytail" comment), and it has no
+    matching advisory-lock primitive.
+    """
+    if conn.dialect.name == "postgresql":
+        conn.execute(sa.text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
+                     {"tenant_id": tenant_id})
+    return load_vendor_ledger(conn, tenant_id)
 
 
 def load_vendor_ledger(conn: Connection, tenant_id: str) -> VendorLedger:
