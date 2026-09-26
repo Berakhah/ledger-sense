@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
@@ -7,6 +8,7 @@ import { acceptedBoxesOf, type AcceptedBox, type ExceptionState } from '@/lib/ac
 import type { BBox } from '@/lib/bbox'
 import { latestOnly } from '@/lib/latestOnly'
 import { useReviewKeys } from '@/lib/useReviewKeys'
+import { VendorConfirmPanel } from './VendorConfirmPanel'
 
 // Browser only. pdf.js renders to a canvas and has nothing to say on the
 // server; its module scope also touches globals (`Iterator`) that a Node 20
@@ -107,6 +109,10 @@ export function ReviewQueue({ docId }: { docId: string }) {
   // Per-exception: the last write that failed and left it open on the
   // server. Rendered with the item, cleared only when the item resolves.
   const [failures, setFailures] = useState<Record<string, string>>({})
+  // vendor_id from a successful confirm-vendor, by exception id — confirm-
+  // vendor's response is the only place this id exists client-side; nothing
+  // else on the exception carries it.
+  const [confirmedVendorIds, setConfirmedVendorIds] = useState<Record<string, string>>({})
 
   // The queue's source of truth. A keystroke must see the previous one's
   // result immediately, before React has rendered it — a reviewer pressing
@@ -293,7 +299,11 @@ export function ReviewQueue({ docId }: { docId: string }) {
    *  round trip: those refusals are permanent (review.py), so the item must
    *  never be optimistically closed for them. */
   const refusal = useCallback((item: ReviewException, state: ExceptionState): string | null => {
-    if (state === 'rejected') return null
+    // Neither rejecting nor confirming a vendor asserts anything about a
+    // field's location — confirm-vendor's own 422s (I2 wrong exception,
+    // vendor lookup 404) are round-tripped and reported by the caller
+    // instead, the same way a reject's reason validation is.
+    if (state === 'rejected' || state === 'confirmed') return null
     if (item.bbox === null) {
       return 'This field has no located geometry, so it cannot be accepted or edited yet — reject it, or leave it open.'
     }
@@ -314,6 +324,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
   const actOnCurrent = useCallback((
     state: ExceptionState,
     request: (item: ReviewException) => Promise<unknown>,
+    onSuccess?: (item: ReviewException, result: unknown) => void,
   ) => {
     const { items, cursor } = model.current
     const item = items[cursor]
@@ -340,8 +351,9 @@ export function ReviewQueue({ docId }: { docId: string }) {
 
     inFlight.current.add(item.id)
     void request(item)
-      .then(() => {
+      .then((result) => {
         inFlight.current.delete(item.id)
+        onSuccess?.(item, result)
         setFailures((prev) => {
           if (!(item.id in prev)) return prev
           const next = { ...prev }
@@ -382,6 +394,30 @@ export function ReviewQueue({ docId }: { docId: string }) {
   const onAccept = useCallback(() => {
     actOnCurrent('accepted', (item) => postJson(`/api/review/exceptions/${item.id}/accept`, {}))
   }, [actOnCurrent])
+
+  const recordConfirmedVendor = useCallback((item: ReviewException, result: unknown) => {
+    const vendorId = (result as { vendor_id?: unknown } | null)?.vendor_id
+    if (typeof vendorId === 'string') {
+      setConfirmedVendorIds((prev) => ({ ...prev, [item.id]: vendorId }))
+    }
+  }, [])
+
+  const confirmVendorExisting = useCallback((vendorId: string) => {
+    actOnCurrent(
+      'confirmed',
+      (item) => postJson(`/api/review/exceptions/${item.id}/confirm-vendor`, { vendor_id: vendorId }),
+      recordConfirmedVendor,
+    )
+  }, [actOnCurrent, recordConfirmedVendor])
+
+  const confirmVendorNew = useCallback((name: string) => {
+    actOnCurrent(
+      'confirmed',
+      (item) => postJson(`/api/review/exceptions/${item.id}/confirm-vendor`,
+        { new_vendor_name: name }),
+      recordConfirmedVendor,
+    )
+  }, [actOnCurrent, recordConfirmedVendor])
 
   // The value goes to the API exactly as typed — a string, never a Number.
   const submitEdit = useCallback((value: string) => {
@@ -587,6 +623,28 @@ export function ReviewQueue({ docId }: { docId: string }) {
                   </dl>
                 </li>
               </ul>
+
+              {current.rule_id === 'I2' && (
+                current.state === 'confirmed' && confirmedVendorIds[current.id] ? (
+                  <p className="mt-3 text-sm">
+                    <Link
+                      href={`/vendors/${confirmedVendorIds[current.id]}`}
+                      className="underline"
+                    >
+                      View vendor ledger →
+                    </Link>
+                  </p>
+                ) : current.state === 'open' ? (
+                  <VendorConfirmPanel
+                    key={current.id}
+                    excId={current.id}
+                    apiUrl={API_URL}
+                    disabled={false}
+                    onConfirmExisting={confirmVendorExisting}
+                    onConfirmNew={confirmVendorNew}
+                  />
+                ) : null
+              )}
 
               <h3 className="mt-5 text-sm font-semibold">Provenance</h3>
               <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 border-l-2 border-rule pl-3 text-sm">
