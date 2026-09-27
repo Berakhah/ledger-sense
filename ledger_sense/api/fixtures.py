@@ -64,19 +64,26 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import Response
+import sqlalchemy as sa
+from fastapi import HTTPException, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import Connection, Engine
 
 from ledger_sense.api._stub_routes import STUB_METADATA
 from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.auth.session import SESSION_TTL, issue_session
 from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.corpus.generate import generate
+from ledger_sense.domain.vendor import VendorLedger
 from ledger_sense.ingest.intake import accept_document
+from ledger_sense.provenance import Method
+from ledger_sense.rules.engine import Finding
+from ledger_sense.rules.integrity.vendors import check_vendor_resolution
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import store_document
-from ledger_sense.store.retention import findings
+from ledger_sense.store.retention import claims, findings
 from ledger_sense.store.session import app_engine
+from ledger_sense.store.vendors import load_vendor_ledger_for_update, save_vendor_ledger
 
 SEED_PATH = "/api/fixtures/seed"
 DEMO_PROFILE = "demo"
@@ -86,10 +93,17 @@ SYNTHETIC = Sensitivity.SYNTHETIC.value
 # so they are constrained at the boundary rather than trusted: no separators,
 # no LIKE wildcards, bounded length.
 DocId = Annotated[str, Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")]
+# Rendered in the review queue and the vendor ledger, so bounded the same way:
+# a business-name alphabet, starting on a letter or digit, no markup.
+VendorName = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9 .,&'-]{0,79}$")]
 
 # Enough for the fifty-exception keyboard run with headroom; a bound, because
 # an unbounded count is an unbounded write from an unauthenticated caller.
 MAX_EXCEPTIONS = 500
+
+# The pre-seeded known vendor's evidence: a synthetic prior bill, never the
+# seeded document itself. See _seed_known_vendor for why that matters.
+PRIOR_BILL = "corpus://seed/prior-bill"
 
 
 def demo_profile_enabled() -> bool:
@@ -102,6 +116,17 @@ def demo_profile_enabled() -> bool:
     return os.environ.get("LEDGER_SENSE_PROFILE") == DEMO_PROFILE
 
 
+class VendorScenario(BaseModel):
+    """An I2 vendor finding for the review queue's confirm/undo path.
+
+    `observed_name` becomes the document's vendor_name claim — what
+    confirm-vendor reads. `known_vendor`, when set, is already in the tenant's
+    ledger before the document arrives, so vendor-match offers it as the
+    candidate."""
+    observed_name: VendorName
+    known_vendor: VendorName | None = None
+
+
 class SeedRequest(BaseModel):
     # No longer a document id: it is the exception-key prefix
     # (_exception_id below) and the filename stem for the seeded document.
@@ -109,13 +134,61 @@ class SeedRequest(BaseModel):
     # minted by store_document, same as any upload.
     doc_id: DocId
     exceptions: int = Field(default=0, ge=0, le=MAX_EXCEPTIONS)
+    vendor: VendorScenario | None = None
 
 
-def _exception_id(doc_id: str, index: int) -> str:
+def _exception_id(doc_id: str, index: int | str) -> str:
     # ":exc:" is outside DocId's alphabet, so an exception row's id can never
     # collide with a document id, and the prefix delete below cannot reach
     # another document's rows ("doc-50:exc:" does not prefix "doc-500:exc:").
     return f"{doc_id}:exc:{index}"
+
+
+def ensure_stub_tables(engine: Engine) -> None:
+    """create_all(checkfirst=True) is check-then-create: Playwright's parallel
+    workers seeding a fresh demo database all see no table, all CREATE it, and
+    every loser dies on pg_type's unique index. An advisory transaction lock
+    (store/vendors.py's primitive) makes the check see the winner's commit.
+    A no-op lock on SQLite, which serialises writers on its own."""
+    with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            conn.execute(sa.text("SELECT pg_advisory_xact_lock(hashtext('stub_resources'))"))
+        STUB_METADATA.create_all(conn, checkfirst=True)
+
+
+def _i2_for(vendor: VendorScenario) -> Finding:
+    """The finding the real pipeline would raise for this scenario — the same
+    rule, run against a scratch ledger holding only the known vendor, so the
+    seeded message is I2's own wording rather than a paraphrase of it.
+
+    Checked before anything is written: an exact match raises no I2, and a
+    seed that silently mints a document with no vendor finding on it would
+    fail the caller's spec somewhere far from the cause."""
+    scratch = VendorLedger()
+    if vendor.known_vendor is not None:
+        scratch.create(vendor.known_vendor)
+    found = check_vendor_resolution(scratch, vendor.observed_name)
+    if not found:
+        raise HTTPException(status_code=422,
+                            detail="observed_name resolves to known_vendor without "
+                                   "confirmation, so there is no I2 finding to seed")
+    return found[0]
+
+
+def _seed_known_vendor(conn: Connection, tenant_id: str, user_id: str, name: str) -> str:
+    """Put `name` in the tenant's ledger ahead of the document.
+
+    Its alias's evidence is PRIOR_BILL, not the seeded document. That is what
+    keeps undo honest: undo-confirm-vendor removes the alias this document's
+    confirmation added and deletes a vendor left with no evidence. Were the
+    known vendor's only alias sourced from this document, undoing a "Yes,
+    it's X" would delete a vendor that existed before the reviewer touched
+    anything."""
+    ledger = load_vendor_ledger_for_update(conn, tenant_id)
+    vendor_id = ledger.create_confirmed(name, name, source_document=PRIOR_BILL,
+                                        confirmed_by=user_id)
+    save_vendor_ledger(conn, tenant_id, ledger)
+    return vendor_id
 
 
 def seed(body: SeedRequest, response: Response) -> dict[str, object]:
@@ -127,6 +200,11 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     the exception rows are idempotent by `doc_id`: re-seeding deletes and
     reinserts them by their `doc_id`-prefixed key, so an E2E suite can be run
     twice without a primary-key failure on those.
+
+    With `vendor` set it also writes a vendor_name claim and one I2 finding
+    after the A2 rows (and, with `known_vendor`, pre-seeds that vendor in this
+    call's fresh tenant). Still SYNTHETIC throughout: the observed name is
+    whatever the caller typed, not read from the generated PDF.
     """
     # ponytail: unauthenticated and unrate-limited, and each call mints a
     # tenant, a user (one argon2 hash) and a session that are never collected.
@@ -138,7 +216,8 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     # _stub_routes.py). checkfirst makes this a no-op under pytest, where
     # conftest has already created it.
     engine = app_engine()
-    STUB_METADATA.create_all(engine, checkfirst=True)
+    ensure_stub_tables(engine)
+    i2 =None if body.vendor is None else _i2_for(body.vendor)
 
     # A fresh tenant per seed call, following tests/api/conftest.py's
     # collision-safe naming. The password is random and thrown away: this
@@ -174,6 +253,30 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
             "x0": 288.0, "top": 100.0 + i * 18.0, "x1": 368.0, "bottom": 112.0 + i * 18.0,
             "state": "open", "created_at": datetime.now(UTC),
         } for i in range(body.exceptions)]
+
+        known_vendor_id = None
+        if body.vendor is not None and i2 is not None:
+            if body.vendor.known_vendor is not None:
+                known_vendor_id = _seed_known_vendor(conn, tenant_id, user_id,
+                                                     body.vendor.known_vendor)
+            # Below the last A2 row, so the review queue's position sort puts
+            # it after them: a spec reaches it with J, the way a reviewer would.
+            top = 100.0 + body.exceptions * 18.0
+            box = {"page": 0, "x0": 288.0, "top": top, "x1": 468.0, "bottom": top + 12.0}
+            # confirm-vendor reads the observed name from this claim, not
+            # from the finding. match_quality stays None: nothing was matched.
+            conn.execute(claims.insert().values(
+                id=uuid.uuid4().hex, tenant_id=tenant_id, document_id=document_id,
+                field="vendor_name", value=body.vendor.observed_name, value_type="str",
+                method=Method.DETERMINISTIC.value, confidence=None, match_quality=None,
+                caveat=None, observed_at=datetime.now(UTC), **box))
+            finding_rows.append({
+                "id": _exception_id(body.doc_id, "vendor"), "tenant_id": tenant_id,
+                "document_id": document_id, "rule_id": i2.rule_id, "field": i2.field,
+                "message": i2.message, "expected": str(i2.expected), "actual": str(i2.actual),
+                **box, "state": "open", "created_at": datetime.now(UTC),
+            })
+
         if finding_rows:
             conn.execute(findings.insert(), finding_rows)
 
@@ -188,5 +291,6 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
         secure=False,
         path="/",
     )
-    return {"doc_id": document_id, "exceptions": body.exceptions,
-            "sensitivity": SYNTHETIC, "tenant_id": tenant_id}
+    return {"doc_id": document_id, "exceptions": len(finding_rows),
+            "sensitivity": SYNTHETIC, "tenant_id": tenant_id,
+            "known_vendor_id": known_vendor_id}
