@@ -1,22 +1,22 @@
 import ast
 import pathlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from ledger_sense.route.calibration import CalibrationCurve, CalibrationStore, Label
-from ledger_sense.route.router import AUDIT_FRACTION_DEFAULT, Router, TARGET_ACCURACY_DEFAULT
+from ledger_sense.route.router import AUDIT_FRACTION_DEFAULT, TARGET_ACCURACY_DEFAULT, Router
 
 
 def _curve(basis, pairs):
-    labels = [Label("retainage_rate", c, ok, datetime(2026, 8, 1, tzinfo=timezone.utc),
+    labels = [Label("retainage_rate", c, ok, datetime(2026, 8, 1, tzinfo=UTC),
                     f"c{i}", basis) for i, (c, ok) in enumerate(pairs)]
     return CalibrationCurve.fit(labels)
 
 
 def _labels(pairs, basis="synthetic"):
     return [Label(field_type="retainage_rate", predicted_confidence=c, was_correct=ok,
-                  observed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                  observed_at=datetime(2026, 8, 1, tzinfo=UTC),
                   source_claim_id=f"c{i}", basis=basis)
             for i, (c, ok) in enumerate(pairs)]
 

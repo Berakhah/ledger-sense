@@ -1,15 +1,21 @@
+from datetime import UTC, datetime
+from itertools import pairwise
+
 import pytest
-from datetime import datetime, timezone
 
 from ledger_sense.route.calibration import (
-    CalibrationCurve, CalibrationStore, Label, clopper_pearson_lower,
-    fit_isotonic, UnknownBasisError,
+    CalibrationCurve,
+    CalibrationStore,
+    Label,
+    UnknownBasisError,
+    clopper_pearson_lower,
+    fit_isotonic,
 )
 
 
 def _labels(pairs, basis="synthetic"):
     return [Label(field_type="retainage_rate", predicted_confidence=c, was_correct=ok,
-                  observed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                  observed_at=datetime(2026, 8, 1, tzinfo=UTC),
                   source_claim_id=f"c{i}", basis=basis)
             for i, (c, ok) in enumerate(pairs)]
 
@@ -31,7 +37,7 @@ def test_fit_isotonic_pools_a_single_violation():
 def test_fit_isotonic_output_is_non_decreasing_on_adversarial_input():
     ys = [0.9, 0.1, 0.8, 0.2, 0.7, 0.3]
     out = fit_isotonic([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], ys)
-    assert all(a <= b + 1e-12 for a, b in zip(out, out[1:]))
+    assert all(a <= b + 1e-12 for a, b in pairwise(out))
 
 
 def test_fit_isotonic_preserves_the_mean():
@@ -105,12 +111,11 @@ def test_six_hundred_clean_labels_do_support_it():
 
 def test_no_min_labels_constant_survives_anywhere_in_the_module():
     """A derived requirement, not a number somebody picked."""
-    import ledger_sense.route.calibration as calibration
+    from ledger_sense.route import calibration
     assert not hasattr(calibration, "MIN_LABELS_FOR_FIELD")
 
 
 def test_the_clopper_pearson_bound_matches_the_rule_of_three():
-    from ledger_sense.route.calibration import clopper_pearson_lower
     assert clopper_pearson_lower(200, 200) < 0.995
     assert clopper_pearson_lower(600, 600) >= 0.994
 
@@ -123,7 +128,6 @@ def test_clopper_pearson_lower_regression_large_parameters():
     overestimates the lower bound. The true CP lower for (780, 1380) is ~0.543.
     The buggy version would incorrectly return ~0.565.
     """
-    from ledger_sense.route.calibration import clopper_pearson_lower
 
     # This parameter set triggers beta underflow in the original code.
     # The true lower bound is approximately 0.543 (verified via Decimal arithmetic).
