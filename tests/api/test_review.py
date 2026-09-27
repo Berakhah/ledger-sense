@@ -535,6 +535,119 @@ def test_confirm_vendor_twice_is_409() -> None:
     assert resp.status_code == 409
 
 
+def test_undo_confirm_vendor_reopens_the_exception_and_clears_the_document_vendor() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Brand New Roofing Co.")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    confirmed = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                            json={"new_vendor_name": "Brand New Roofing Co."}, cookies=cookies)
+    vendor_id = confirmed.json()["vendor_id"]
+
+    resp = client.post(f"/api/review/exceptions/{exc_id}/undo-confirm-vendor", cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "open"}
+
+    exceptions = _exceptions(cookies, doc_id)
+    assert next(e for e in exceptions if e["id"] == exc_id)["state"] == "open"
+
+    with app_engine().connect() as conn:
+        doc_row = conn.execute(
+            sa.select(documents.c.vendor_id).where(documents.c.id == doc_id)).one()
+    assert doc_row.vendor_id is None
+
+    # The vendor was created solely for this confirmation, so undoing it
+    # leaves no orphan record.
+    with app_engine().connect() as conn:
+        ledger = load_vendor_ledger(conn, tenant_id)
+    assert ledger.get(vendor_id) is None
+
+
+def test_a_confirmed_i2_exception_carries_its_vendor_id() -> None:
+    """The list endpoint must surface a confirmed I2 exception's vendor_id
+    on its own — a UI that only learns it from confirm-vendor's own response
+    loses it the moment the page reloads or a different reviewer opens the
+    same document, which is exactly when "undo" needs to still work."""
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    confirmed = client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+                            json={"new_vendor_name": "Acme Roofing"}, cookies=cookies)
+    vendor_id = confirmed.json()["vendor_id"]
+
+    exceptions = _exceptions(cookies, doc_id)
+    exc = next(e for e in exceptions if e["id"] == exc_id)
+    assert exc["vendor_id"] == vendor_id
+
+
+def test_an_open_i2_exceptions_vendor_id_is_null() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    exceptions = _exceptions(cookies, doc_id)
+    exc = next(e for e in exceptions if e["id"] == exc_id)
+    assert exc["vendor_id"] is None
+
+
+def test_undo_confirm_vendor_keeps_a_vendor_with_other_aliases() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    vendor_id = _existing_vendor(tenant_id, "Acme Roofing Co.")
+    from ledger_sense.store.vendors import save_vendor_ledger
+    with app_engine().begin() as conn:
+        ledger = load_vendor_ledger(conn, tenant_id)
+        ledger.confirm_alias(vendor_id, "Acme Roofing Corp.", source_document="other-doc",
+                             confirmed_by="reviewer-1")
+        save_vendor_ledger(conn, tenant_id, ledger)
+    client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+               json={"vendor_id": vendor_id}, cookies=cookies)
+
+    resp = client.post(f"/api/review/exceptions/{exc_id}/undo-confirm-vendor", cookies=cookies)
+    assert resp.status_code == 200, resp.text
+
+    with app_engine().connect() as conn:
+        ledger = load_vendor_ledger(conn, tenant_id)
+    vendor = ledger.get(vendor_id)
+    assert vendor is not None
+    assert all(a.name != "Acme Roofing" for a in vendor.aliases)
+
+
+def test_undo_confirm_vendor_refuses_an_exception_that_was_never_confirmed() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/undo-confirm-vendor", cookies=cookies)
+    assert resp.status_code == 409
+
+
+def test_undo_confirm_vendor_twice_is_409() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    client.post(f"/api/review/exceptions/{exc_id}/confirm-vendor",
+               json={"new_vendor_name": "Acme Roofing"}, cookies=cookies)
+    client.post(f"/api/review/exceptions/{exc_id}/undo-confirm-vendor", cookies=cookies)
+    resp = client.post(f"/api/review/exceptions/{exc_id}/undo-confirm-vendor", cookies=cookies)
+    assert resp.status_code == 409
+
+
+def test_undo_confirm_vendor_is_404_for_another_tenants_exception() -> None:
+    _cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    _vendor_name_claim(tenant_id, doc_id, "Acme Roofing")
+    exc_id = _i2_finding(tenant_id, doc_id)
+    other_cookies, _other_tenant = _session_cookie()
+    resp = client.post(f"/api/review/exceptions/{exc_id}/undo-confirm-vendor",
+                       cookies=other_cookies)
+    assert resp.status_code == 404
+
+
 def _vendor_match(cookies: dict[str, str], exc_id: str) -> dict[str, Any]:
     resp = client.get(f"/api/review/exceptions/{exc_id}/vendor-match", cookies=cookies)
     assert resp.status_code == 200, resp.text
