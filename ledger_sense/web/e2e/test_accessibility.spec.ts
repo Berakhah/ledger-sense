@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
-import { seedDocument, seedReconciliationDocument } from './seed'
+import { tabTo } from './keyboard'
+import { seedDocument, seedReconciliationDocument, seedVendorDocument } from './seed'
 
 // Task 33: an axe gate across every screen, density and the 375px viewport.
 //
@@ -27,9 +28,25 @@ function docKey(stem: string): string {
 const blocking = (violations: { impact?: string | null }[]) =>
   violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')
 
+async function expectAxeClean(page: Page) {
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze()
+  const found = blocking(results.violations)
+  // A negative assertion passes just as happily when axe evaluated nothing
+  // (see tests/api/test_route_registration.py::test_the_walk_is_not_empty
+  // for the house precedent on this shape of bug) — prove axe actually ran
+  // real checks against this page before trusting the zero-violations read.
+  expect(results.passes.length).toBeGreaterThan(0)
+  expect(found, JSON.stringify(found, null, 2)).toEqual([])
+}
+
 interface Screen {
   name: string
   seed: (page: Page) => Promise<string>
+  /** What must be on screen before axe looks — without it axe can run
+   *  against a loading placeholder and pass on markup nobody reviews with. */
+  ready?: (page: Page) => Promise<void>
 }
 
 const SCREENS: Screen[] = [
@@ -39,6 +56,20 @@ const SCREENS: Screen[] = [
     seed: async (page) => {
       const docId = await seedDocument(page, docKey('doc-a11y'), 3)
       return `/review/${docId}`
+    },
+  },
+  {
+    // The I2 alone, so the cursor lands on it: the confirm-vendor panel
+    // (candidate button, new-vendor field) is what axe sees.
+    name: 'review with an open vendor panel',
+    seed: async (page) => {
+      const { docId } = await seedVendorDocument(page, docKey('doc-a11y-vendor'), 0, {
+        observed_name: 'Acme Steel Company', known_vendor: 'Acme Steel Co.',
+      })
+      return `/review/${docId}`
+    },
+    ready: async (page) => {
+      await expect(page.getByTestId('vendor-confirm-panel')).toBeVisible()
     },
   },
   {
@@ -58,22 +89,15 @@ for (const screen of SCREENS) {
   test(`${screen.name} has no serious or critical axe violations`, async ({ page }) => {
     const url = await screen.seed(page)
     await page.goto(url)
-    const results = await new AxeBuilder({ page })
-      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-      .analyze()
-    const found = blocking(results.violations)
-    // A negative assertion passes just as happily when axe evaluated nothing
-    // (see tests/api/test_route_registration.py::test_the_walk_is_not_empty
-    // for the house precedent on this shape of bug) — prove axe actually ran
-    // real checks against this page before trusting the zero-violations read.
-    expect(results.passes.length).toBeGreaterThan(0)
-    expect(found, JSON.stringify(found, null, 2)).toEqual([])
+    await screen.ready?.(page)
+    await expectAxeClean(page)
   })
 
   test(`${screen.name} does not scroll horizontally at 375px`, async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 })
     const url = await screen.seed(page)
     await page.goto(url)
+    await screen.ready?.(page)
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth,
     )
@@ -84,6 +108,7 @@ for (const screen of SCREENS) {
     test(`${screen.name} passes axe at ${density} density`, async ({ page }) => {
       const url = await screen.seed(page)
       await page.goto(url)
+      await screen.ready?.(page)
       await page.evaluate(
         (d) => document.documentElement.setAttribute('data-density', d),
         density,
@@ -95,6 +120,21 @@ for (const screen of SCREENS) {
     })
   }
 }
+
+test('review with the vendor-confirmed banner showing passes axe', async ({ page }) => {
+  // One A2 then the I2: confirming moves the cursor back to the A2, so what
+  // axe sees is the banner on its own, the state a reviewer is left in.
+  const { docId } = await seedVendorDocument(page, docKey('doc-a11y-banner'), 1, {
+    observed_name: 'Keystone Framing LLC',
+  })
+  await page.goto(`/review/${docId}`)
+  await expect(page.getByTestId('current-field')).toBeVisible()
+  await page.keyboard.press('j')
+  await tabTo(page, page.getByRole('button', { name: 'Confirm new vendor' }))
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('vendor-confirmed-banner')).toBeVisible()
+  await expectAxeClean(page)
+})
 
 test('EVERY focusable control has a visible focus ring', async ({ page }) => {
   // The original pressed Tab once and checked one element, then called
