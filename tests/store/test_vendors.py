@@ -1,5 +1,6 @@
 import os
 import pathlib
+import threading
 import uuid
 from datetime import UTC, datetime
 
@@ -13,7 +14,11 @@ from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.domain.vendor import PaymentDetail, VendorLedger, payment_hmac
 from ledger_sense.store import session as store_session
 from ledger_sense.store.retention import documents, vendors
-from ledger_sense.store.vendors import load_vendor_ledger, save_vendor_ledger
+from ledger_sense.store.vendors import (
+    load_vendor_ledger,
+    load_vendor_ledger_for_update,
+    save_vendor_ledger,
+)
 from tests.store.conftest import SeededDocuments
 
 OBSERVED_AT = datetime(2026, 9, 15, 10, 0, tzinfo=UTC)
@@ -143,6 +148,80 @@ def test_resaving_does_not_violate_the_documents_vendor_id_fk_on_postgres(
                 sa.select(documents.c.vendor_id).where(documents.c.id == document_id)
             ).one()
         assert row.vendor_id == vendor_id
+    finally:
+        command.downgrade(_alembic_config(), "base")
+        store_session.reset_app_engine()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LEDGER_SENSE_LIVE_POSTGRES_URL"),
+    reason="set LEDGER_SENSE_LIVE_POSTGRES_URL to validate against a live Postgres",
+)
+def test_two_concurrent_confirmations_do_not_lose_a_write_on_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """save_vendor_ledger replaces a tenant's whole vendor/alias table set from
+    an in-memory snapshot. Two callers who each load -> mutate -> save for the
+    SAME tenant (e.g. two reviewers confirming vendors on two different
+    documents at once) can both load before either saves; the second save
+    then overwrites the first's alias with no trace it ever existed. Only a
+    real Postgres proves the fix serializes them, the same reason
+    test_resaving_does_not_violate_the_documents_vendor_id_fk_on_postgres
+    above needs one: SQLite takes no meaningful row locks for this to race on.
+    """
+    monkeypatch.setenv("LEDGER_SENSE_DB_URL", os.environ["LEDGER_SENSE_LIVE_POSTGRES_URL"])
+    store_session.reset_app_engine()
+    try:
+        command.upgrade(_alembic_config(), "head")
+
+        tenant_id = uuid.uuid4().hex
+        with store_session.app_engine().begin() as conn:
+            conn.execute(tenants.insert().values(
+                id=tenant_id, name="pg-race-tenant",
+                created_at=datetime.now(UTC), retention_days=365))
+
+        ledger = VendorLedger()
+        vendor_id = ledger.create("Acme Steel Company")
+        with store_session.app_engine().begin() as conn:
+            save_vendor_ledger(conn, tenant_id, ledger)
+
+        start = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def confirm(alias_name: str, source_document: str) -> None:
+            try:
+                with store_session.app_engine().begin() as conn:
+                    # Both threads reach the load call at once, on purpose:
+                    # a correct fix serializes them INSIDE the load (one
+                    # blocks on the lock until the other commits), so the
+                    # synchronisation point must be before the lock is
+                    # taken, not after — barrier-then-load, never
+                    # load-then-barrier, or the blocked thread would wait on
+                    # a barrier the other side can't reach until it unblocks.
+                    start.wait(timeout=5)
+                    mine = load_vendor_ledger_for_update(conn, tenant_id)
+                    mine.confirm_alias(vendor_id, alias_name,
+                                       source_document=source_document,
+                                       confirmed_by="reviewer")
+                    save_vendor_ledger(conn, tenant_id, mine)
+            except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=confirm, args=("Acme Steel Co.", "doc-a")),
+            threading.Thread(target=confirm, args=("Acme Steel Ltd.", "doc-b")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == []
+        with store_session.app_engine().connect() as conn:
+            reloaded = load_vendor_ledger(conn, tenant_id)
+        vendor = reloaded.get(vendor_id)
+        assert vendor is not None
+        assert {a.name for a in vendor.aliases} == {"Acme Steel Co.", "Acme Steel Ltd."}
     finally:
         command.downgrade(_alembic_config(), "base")
         store_session.reset_app_engine()
