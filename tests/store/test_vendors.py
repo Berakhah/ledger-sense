@@ -225,3 +225,91 @@ def test_two_concurrent_confirmations_do_not_lose_a_write_on_postgres(
     finally:
         command.downgrade(_alembic_config(), "base")
         store_session.reset_app_engine()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LEDGER_SENSE_LIVE_POSTGRES_URL"),
+    reason="set LEDGER_SENSE_LIVE_POSTGRES_URL to validate against a live Postgres",
+)
+def test_two_concurrent_undos_of_the_same_confirmation_never_both_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduces api/review.py's undo_confirm_vendor sequence directly: lock
+    the tenant, THEN re-read documents.vendor_id and look up the alias — a
+    prior version read both before acquiring the lock and asserted they were
+    non-None, which a genuine concurrent double-undo could trip (the loser
+    would see state a winning, already-committed undo had just cleared),
+    crashing with an unhandled AssertionError (500) instead of a clean 409.
+    Only a live Postgres proves the lock actually serialises this, the same
+    reason the confirmation-race test above needs one.
+    """
+    monkeypatch.setenv("LEDGER_SENSE_DB_URL", os.environ["LEDGER_SENSE_LIVE_POSTGRES_URL"])
+    store_session.reset_app_engine()
+    try:
+        command.upgrade(_alembic_config(), "head")
+
+        tenant_id = uuid.uuid4().hex
+        document_id = uuid.uuid4().hex
+        with store_session.app_engine().begin() as conn:
+            conn.execute(tenants.insert().values(
+                id=tenant_id, name="pg-undo-race-tenant",
+                created_at=datetime.now(UTC), retention_days=365))
+            conn.execute(documents.insert().values(
+                id=document_id, tenant_id=tenant_id, blob_id=None,
+                received_at=datetime.now(UTC),
+                sensitivity=Sensitivity.SYNTHETIC.value, origin=Origin.CORPUS.value,
+                provenance="tests/store/test_vendors.py", filename="undo-race-test"))
+
+        ledger = VendorLedger()
+        vendor_id = ledger.create_confirmed(
+            "Brand New Roofing Co.", "Brand New Roofing Co.",
+            source_document=document_id, confirmed_by="reviewer")
+        with store_session.app_engine().begin() as conn:
+            save_vendor_ledger(conn, tenant_id, ledger)
+            conn.execute(documents.update().where(documents.c.id == document_id)
+                         .values(vendor_id=vendor_id))
+
+        start = threading.Barrier(2)
+        errors: list[BaseException] = []
+        outcomes: list[str] = []
+
+        def undo() -> None:
+            try:
+                with store_session.app_engine().begin() as conn:
+                    start.wait(timeout=5)
+                    # Same order as undo_confirm_vendor: lock, THEN read.
+                    mine = load_vendor_ledger_for_update(conn, tenant_id)
+                    doc_row = conn.execute(
+                        sa.select(documents.c.vendor_id)
+                        .where(documents.c.id == document_id)
+                    ).one()
+                    if doc_row.vendor_id is None:
+                        outcomes.append("already-undone")
+                        return
+                    alias = mine.alias_confirmed_from(doc_row.vendor_id, document_id)
+                    if alias is None:
+                        outcomes.append("already-undone")
+                        return
+                    mine.undo_confirmation(doc_row.vendor_id, alias.id)
+                    save_vendor_ledger(conn, tenant_id, mine)
+                    conn.execute(documents.update().where(documents.c.id == document_id)
+                                 .values(vendor_id=None))
+                    outcomes.append("undone")
+            except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+                errors.append(exc)
+
+        threads = [threading.Thread(target=undo) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == [], f"a race crashed instead of returning a clean outcome: {errors}"
+        assert sorted(outcomes) == ["already-undone", "undone"]
+
+        with store_session.app_engine().connect() as conn:
+            reloaded = load_vendor_ledger(conn, tenant_id)
+        assert reloaded.get(vendor_id) is None
+    finally:
+        command.downgrade(_alembic_config(), "base")
+        store_session.reset_app_engine()

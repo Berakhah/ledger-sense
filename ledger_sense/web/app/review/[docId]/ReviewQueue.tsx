@@ -444,7 +444,11 @@ export function ReviewQueue({ docId }: { docId: string }) {
   // often not under the cursor at all (the banner that offers it is shown
   // independent of cursor position — see lastConfirmedVendor). Waits for the
   // server's answer before flipping local state, rather than closing
-  // optimistically first.
+  // optimistically first. Patches local state directly rather than calling
+  // resync(): deliberate given the server response already confirms success,
+  // though it means a genuinely concurrent change to this document by
+  // another reviewer, landing between this request and its response, would
+  // not be picked up the way resync() would pick it up.
   const undoConfirmation = useCallback((excId: string) => {
     void postJson(`/api/review/exceptions/${excId}/undo-confirm-vendor`, {})
       .then(() => {
