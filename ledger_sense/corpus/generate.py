@@ -47,6 +47,7 @@ from ledger_sense.domain.models import (
     RetainageTerms,
 )
 from ledger_sense.domain.money import Money, RoundingPolicy, money
+from ledger_sense.pdfium_lock import PDFIUM_LOCK
 
 # "Structural Steel" first and deliberately multi-word: item 010 always gets
 # it (index 0, see `_clean`), which is what the `wrapped_descriptions` layout
@@ -168,9 +169,21 @@ def _render(app: PayApplication, contract: Contract, layout: str) -> bytes:
     Only `alternate_headers` changes the column set (`columns_for` handles
     that); `right_aligned`, `wrapped_descriptions` and `two_page` are rendering
     decisions made here.
+
+    Serialised on PDFIUM_LOCK (ledger_sense/pdfium_lock.py): both demo seed
+    routes call this from FastAPI's thread pool.
     """
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument.new()
+        try:
+            return _render_into(pdf, app, contract, layout)
+        finally:
+            pdf.close()  # inside the lock, not left to a finaliser on another thread
+
+
+def _render_into(pdf: pdfium.PdfDocument, app: PayApplication, contract: Contract,
+                 layout: str) -> bytes:
     columns = columns_for(layout)
-    pdf = pdfium.PdfDocument.new()
 
     if layout == "two_page":
         midpoint = max(1, len(app.lines) // 2)
@@ -226,6 +239,8 @@ def _render(app: PayApplication, contract: Contract, layout: str) -> bytes:
 
     buf = io.BytesIO()
     pdf.save(buf)
+    for page in pages:
+        page.close()
     return buf.getvalue()
 
 
