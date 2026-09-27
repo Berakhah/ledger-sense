@@ -422,13 +422,18 @@ export function ReviewQueue({ docId }: { docId: string }) {
     }
   }, [])
 
+  // Both confirm paths hand focus back to the queue, as submitEdit/
+  // submitReject do: the button that held it lives in VendorConfirmPanel,
+  // which unmounts the moment the cursor advances, and focus would otherwise
+  // fall to <body>.
   const confirmVendorExisting = useCallback((vendorId: string) => {
     actOnCurrent(
       'confirmed',
       (item) => postJson(`/api/review/exceptions/${item.id}/confirm-vendor`, { vendor_id: vendorId }),
       recordConfirmedVendor,
     )
-  }, [actOnCurrent, recordConfirmedVendor])
+    focusQueue()
+  }, [actOnCurrent, recordConfirmedVendor, focusQueue])
 
   const confirmVendorNew = useCallback((name: string) => {
     actOnCurrent(
@@ -437,7 +442,8 @@ export function ReviewQueue({ docId }: { docId: string }) {
         { new_vendor_name: name }),
       recordConfirmedVendor,
     )
-  }, [actOnCurrent, recordConfirmedVendor])
+    focusQueue()
+  }, [actOnCurrent, recordConfirmedVendor, focusQueue])
 
   // Not routed through actOnCurrent: undo is a deliberate corrective click,
   // not part of the fast keyboard-accept flow, and the item being undone is
@@ -462,11 +468,14 @@ export function ReviewQueue({ docId }: { docId: string }) {
           return next
         })
         refetchProgress()
+        // Whichever Undo was pressed has just unmounted (the banner clears,
+        // the reopened item swaps its link for the confirm panel).
+        focusQueue()
       })
       .catch((err: unknown) => {
         setActionError(err instanceof Error ? err.message : 'Could not undo the vendor confirmation')
       })
-  }, [commit, refetchProgress, setItemState])
+  }, [commit, refetchProgress, setItemState, focusQueue])
 
   // The value goes to the API exactly as typed — a string, never a Number.
   const submitEdit = useCallback((value: string) => {
@@ -618,22 +627,28 @@ export function ReviewQueue({ docId }: { docId: string }) {
                   past the item that was just confirmed. Cleared on the next
                   action (move/actOnCurrent), so it reads as "what just
                   happened" rather than a stale banner. */}
-              {lastConfirmedVendor && (
-                <p data-testid="vendor-confirmed-banner" className="mt-3 border-l-2 border-accent pl-3 text-sm">
-                  Vendor confirmed.{' '}
-                  <Link href={`/vendors/${lastConfirmedVendor.vendorId}`} className="underline">
-                    View vendor ledger →
-                  </Link>{' '}
-                  <button
-                    type="button"
-                    data-testid="undo-vendor-confirmation-banner"
-                    className="underline"
-                    onClick={() => undoConfirmation(lastConfirmedVendor.excId)}
-                  >
-                    Undo
-                  </button>
-                </p>
-              )}
+              {/* The live region is always in the tree, empty until a
+                  confirmation lands: one inserted together with its content
+                  is not reliably announced. Not role="status" — the header's
+                  position counter already holds that role. */}
+              <div data-testid="vendor-announcer" aria-live="polite">
+                {lastConfirmedVendor && (
+                  <p data-testid="vendor-confirmed-banner" className="mt-3 border-l-2 border-accent pl-3 text-sm">
+                    Vendor confirmed.{' '}
+                    <Link href={`/vendors/${lastConfirmedVendor.vendorId}`} className="underline">
+                      View vendor ledger →
+                    </Link>{' '}
+                    <button
+                      type="button"
+                      data-testid="undo-vendor-confirmation-banner"
+                      className="underline"
+                      onClick={() => undoConfirmation(lastConfirmedVendor.excId)}
+                    >
+                      Undo
+                    </button>
+                  </p>
+                )}
+              </div>
 
               {/* Stays with the item until the item resolves — unlike the
                   action message below, which the next keystroke replaces. */}
