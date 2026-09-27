@@ -40,7 +40,11 @@ from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
-from ledger_sense.store.vendors import load_vendor_ledger, save_vendor_ledger
+from ledger_sense.store.vendors import (
+    load_vendor_ledger,
+    load_vendor_ledger_for_update,
+    save_vendor_ledger,
+)
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +85,17 @@ class RejectBody(BaseModel):
         if not value.strip():
             raise ValueError("a rejection must state a reason")
         return value
+
+
+class VendorCandidate(BaseModel):
+    vendor_id: str
+    name: str
+    score: float
+
+
+class VendorMatch(BaseModel):
+    observed_name: str
+    candidate: VendorCandidate | None
 
 
 class ConfirmVendorBody(BaseModel):
@@ -303,6 +318,36 @@ def reject(exc_id: str, body: RejectBody, session: CurrentSession) -> dict[str, 
     return {"status": "rejected", "claim_id": None}
 
 
+@router.get("/exceptions/{exc_id}/vendor-match")
+def vendor_match(exc_id: str, session: CurrentSession) -> VendorMatch:
+    """The observed vendor name behind an I2 exception, plus the ledger's own
+    fuzzy-match candidate (domain/vendor.py's `resolve`) — what confirm-vendor
+    would act on, so a reviewer sees the same candidate confirm-vendor itself
+    would use instead of re-deriving it from I2's free-text message.
+
+    Read-only: no `_require_open`, since viewing this carries no consequence
+    for an already-closed exception the way accept/edit/reject/confirm-vendor
+    do."""
+    with app_engine().connect() as conn:
+        row = _get_finding(exc_id, session, conn)
+        if row.rule_id != "I2":
+            raise HTTPException(status_code=422,
+                                detail="vendor-match only applies to an I2 exception")
+        observed_name = _observed_vendor_name(conn, row.document_id)
+        if observed_name is None:
+            raise HTTPException(status_code=422, detail="no extracted vendor name to match")
+
+        ledger = load_vendor_ledger(conn, session.tenant_id)
+        match = ledger.resolve(observed_name)
+        candidate = None
+        if match.vendor_id is not None:
+            canonical = ledger.get(match.vendor_id)
+            assert canonical is not None  # resolve() only returns ids it found
+            candidate = VendorCandidate(vendor_id=match.vendor_id, name=canonical.name,
+                                        score=match.score)
+    return VendorMatch(observed_name=observed_name, candidate=candidate)
+
+
 @router.post("/exceptions/{exc_id}/confirm-vendor")
 def confirm_vendor(exc_id: str, body: ConfirmVendorBody,
                    session: CurrentSession) -> dict[str, str | None]:
@@ -316,7 +361,7 @@ def confirm_vendor(exc_id: str, body: ConfirmVendorBody,
         if observed_name is None:
             raise HTTPException(status_code=422, detail="no extracted vendor name to confirm")
 
-        ledger = load_vendor_ledger(conn, session.tenant_id)
+        ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
         if body.vendor_id is not None:
             if ledger.get(body.vendor_id) is None:
                 raise HTTPException(status_code=404, detail="not found")
