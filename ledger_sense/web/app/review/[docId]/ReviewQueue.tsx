@@ -111,8 +111,18 @@ export function ReviewQueue({ docId }: { docId: string }) {
   const [failures, setFailures] = useState<Record<string, string>>({})
   // vendor_id from a successful confirm-vendor, by exception id — confirm-
   // vendor's response is the only place this id exists client-side; nothing
-  // else on the exception carries it.
+  // else on the exception carries it. Kept so the link still reappears if a
+  // reviewer navigates back to this exact item later.
   const [confirmedVendorIds, setConfirmedVendorIds] = useState<Record<string, string>>({})
+  // The most recent confirm-vendor result, shown independent of the cursor:
+  // actOnCurrent advances the cursor to the next open exception the instant
+  // the click fires, before the network response lands, so a link keyed to
+  // `current` would almost never be on screen at the moment it appears —
+  // code review caught this. Cleared on the reviewer's next action so it
+  // reads as "what just happened", not a stale banner.
+  const [lastConfirmedVendor, setLastConfirmedVendor] = useState<
+    { excId: string; vendorId: string } | null
+  >(null)
 
   // The queue's source of truth. A keystroke must see the previous one's
   // result immediately, before React has rendered it — a reviewer pressing
@@ -228,6 +238,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
     const { items, cursor } = model.current
     if (items.length === 0) return
     model.current = { items, cursor: Math.min(items.length - 1, Math.max(0, cursor + delta)) }
+    setLastConfirmedVendor(null)
     commit()
   }, [commit])
 
@@ -345,6 +356,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
       return
     }
     setActionError(null)
+    setLastConfirmedVendor(null)
     setItemState(item.id, state)
     model.current = { ...model.current, cursor: nextOpen(model.current.items, cursor) ?? cursor }
     commit()
@@ -399,6 +411,10 @@ export function ReviewQueue({ docId }: { docId: string }) {
     const vendorId = (result as { vendor_id?: unknown } | null)?.vendor_id
     if (typeof vendorId === 'string') {
       setConfirmedVendorIds((prev) => ({ ...prev, [item.id]: vendorId }))
+      // Shown regardless of where the cursor has moved to by the time this
+      // resolves — see lastConfirmedVendor's declaration for why `current`
+      // alone is the wrong place to key this.
+      setLastConfirmedVendor({ excId: item.id, vendorId })
     }
   }, [])
 
@@ -564,6 +580,20 @@ export function ReviewQueue({ docId }: { docId: string }) {
                 </p>
               )}
 
+              {/* Independent of the cursor on purpose: by the time confirm-
+                  vendor's response lands, actOnCurrent has already advanced
+                  past the item that was just confirmed. Cleared on the next
+                  action (move/actOnCurrent), so it reads as "what just
+                  happened" rather than a stale banner. */}
+              {lastConfirmedVendor && (
+                <p data-testid="vendor-confirmed-banner" className="mt-3 border-l-2 border-accent pl-3 text-sm">
+                  Vendor confirmed.{' '}
+                  <Link href={`/vendors/${lastConfirmedVendor.vendorId}`} className="underline">
+                    View vendor ledger →
+                  </Link>
+                </p>
+              )}
+
               {/* Stays with the item until the item resolves — unlike the
                   action message below, which the next keystroke replaces. */}
               {failures[current.id] !== undefined && (
@@ -639,7 +669,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
                     key={current.id}
                     excId={current.id}
                     apiUrl={API_URL}
-                    disabled={false}
+                    disabled={current.state !== 'open'}
                     onConfirmExisting={confirmVendorExisting}
                     onConfirmNew={confirmVendorNew}
                   />
