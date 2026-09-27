@@ -36,6 +36,33 @@ export async function seedDocument(
   return body.doc_id as string
 }
 
+export interface VendorScenario {
+  observed_name: string
+  known_vendor?: string
+}
+
+/**
+ * seedDocument() plus one I2 vendor finding after the `exceptions` A2 rows.
+ * With `known_vendor`, that vendor is already in the tenant's ledger (its
+ * evidence a synthetic prior bill, not this document), so the review queue
+ * offers "Yes, it's <known_vendor>". Same route, same demo-only guard.
+ */
+export async function seedVendorDocument(
+  page: Page,
+  docId: string,
+  exceptions: number,
+  vendor: VendorScenario,
+): Promise<{ docId: string; knownVendorId: string | null }> {
+  const response = await page.request.post(`${API_URL}/api/fixtures/seed`, {
+    data: { doc_id: docId, exceptions, vendor },
+  })
+  if (response.status() !== 201) {
+    throw new Error(`vendor seed failed (${response.status()}): ${await response.text()}`)
+  }
+  const body = await response.json()
+  return { docId: body.doc_id as string, knownVendorId: body.known_vendor_id as string | null }
+}
+
 /**
  * Mint a synthetic reconciliation document and leave the page logged in as
  * the throwaway tenant that owns it.
