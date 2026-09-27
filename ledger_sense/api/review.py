@@ -387,11 +387,16 @@ def confirm_vendor(exc_id: str, body: ConfirmVendorBody,
             if ledger.get(body.vendor_id) is None:
                 raise HTTPException(status_code=404, detail="not found")
             vendor_id = body.vendor_id
+            ledger.confirm_alias(vendor_id, observed_name, source_document=row.document_id,
+                                 confirmed_by=session.user_id)
         else:
             assert body.new_vendor_name is not None  # the validator guarantees one is set
-            vendor_id = ledger.create(body.new_vendor_name)
-        ledger.confirm_alias(vendor_id, observed_name, source_document=row.document_id,
-                             confirmed_by=session.user_id)
+            # create_confirmed, never bare create(): a vendor this route
+            # creates must never exist with zero evidence, since
+            # undo-confirm-vendor deletes exactly that state on undo.
+            vendor_id = ledger.create_confirmed(body.new_vendor_name, observed_name,
+                                                source_document=row.document_id,
+                                                confirmed_by=session.user_id)
 
         save_vendor_ledger(conn, session.tenant_id, ledger)
         conn.execute(documents.update().where(documents.c.id == row.document_id)
@@ -413,15 +418,25 @@ def undo_confirm_vendor(exc_id: str, session: CurrentSession) -> dict[str, str |
         row = _get_finding(exc_id, session, conn)
         _require_confirmed(row)
 
+        # The lock must be acquired BEFORE anything this transaction reads is
+        # trusted: two concurrent undo calls can both pass _require_confirmed
+        # above (a fast-path check against a row read before either writes,
+        # same caveat as _require_open's), so the vendor_id and alias reads
+        # below are re-derived fresh once this transaction actually holds the
+        # tenant's lock, not from any state read before it.
+        ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
+
         doc_row = conn.execute(
             sa.select(documents.c.vendor_id).where(documents.c.id == row.document_id)
         ).one()
         vendor_id = doc_row.vendor_id
-        assert vendor_id is not None  # confirm_vendor always sets this before "confirmed"
+        if vendor_id is None:
+            raise HTTPException(status_code=409, detail="exception already actioned")
 
-        ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
         alias = ledger.alias_confirmed_from(vendor_id, row.document_id)
-        assert alias is not None  # confirm_vendor always adds one before "confirmed"
+        if alias is None:
+            raise HTTPException(status_code=409, detail="exception already actioned")
+
         ledger.undo_confirmation(vendor_id, alias.id)
         save_vendor_ledger(conn, session.tenant_id, ledger)
 

@@ -152,6 +152,24 @@ class VendorLedger:
         self._vendors[vendor_id] = CanonicalVendor(id=vendor_id, name=name)
         return vendor_id
 
+    def create_confirmed(self, name: str, alias_name: str, source_document: str,
+                         confirmed_by: str) -> str:
+        """The only path that may create a NEW vendor in production
+        (api/review.py's confirm_vendor, on its new-vendor branch) —
+        deliberately, so a vendor can never enter the ledger with zero
+        evidence. `undo_confirmation`'s own "delete a vendor left with no
+        evidence" cleanup depends on that: a bare `create()` with no
+        following alias would be indistinguishable from a vendor undo just
+        emptied, and get silently deleted even if it meant something on its
+        own. `create()` itself stays public and unconstrained — tests use it
+        directly to model a vendor with no aliases yet, which is a real
+        state for `resolve()` to be tested against, just never a state this
+        method's own caller may produce."""
+        vendor_id = self.create(name)
+        self.confirm_alias(vendor_id, alias_name, source_document=source_document,
+                           confirmed_by=confirmed_by)
+        return vendor_id
+
     def get(self, vendor_id: str) -> CanonicalVendor | None:
         return self._vendors.get(vendor_id)
 

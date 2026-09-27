@@ -75,3 +75,23 @@ def test_undo_confirmation_keeps_a_vendor_with_other_evidence() -> None:
 def test_undo_confirmation_on_an_unknown_vendor_is_a_no_op() -> None:
     ledger = VendorLedger()
     ledger.undo_confirmation("nope", "also-nope")
+
+
+def test_create_confirmed_gives_the_new_vendor_its_founding_alias_atomically() -> None:
+    """create_confirmed is the ONLY path that may create a vendor in
+    production (api/review.py's confirm_vendor) — deliberately, so a vendor
+    can never exist with zero evidence. undo_confirmation's own "delete if
+    now empty" cleanup relies on that being true: a bare create() with no
+    alias would make it indistinguishable from a vendor undo just emptied,
+    and get silently deleted even if it meant something on its own."""
+    ledger = VendorLedger()
+
+    vendor_id = ledger.create_confirmed("Brand New Roofing Co.", "Brand New Roofing",
+                                        source_document="doc-1", confirmed_by="reviewer-1")
+
+    vendor = ledger.get(vendor_id)
+    assert vendor is not None
+    assert vendor.name == "Brand New Roofing Co."
+    assert [a.name for a in vendor.aliases] == ["Brand New Roofing"]
+    assert vendor.aliases[0].source_document == "doc-1"
+    assert vendor.aliases[0].confirmed_by == "reviewer-1"

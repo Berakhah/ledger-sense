@@ -83,6 +83,12 @@ documents = sa.Table(
     # the instant DELETE FROM vendors runs, which fails even though the same
     # vendor id exists again by commit. Deferred, the check runs at commit,
     # by which point the reinsert has restored the reference.
+    # A single column: this document has at most one confirmed vendor, which
+    # is only true because check_vendor_resolution fires against exactly one
+    # vendor_name field per document today. api/review.py's confirm-vendor
+    # and undo-confirm-vendor both key off this column and off "the I2
+    # finding for this document" interchangeably — a second vendor-bearing
+    # field would need this column (and both routes) to become per-field.
     sa.Column("vendor_id", sa.Text,
               sa.ForeignKey("vendors.id", name="fk_documents_vendor_id_vendors",
                             deferrable=True, initially="DEFERRED"),
