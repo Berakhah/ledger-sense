@@ -152,6 +152,24 @@ class VendorLedger:
         self._vendors[vendor_id] = CanonicalVendor(id=vendor_id, name=name)
         return vendor_id
 
+    def create_confirmed(self, name: str, alias_name: str, source_document: str,
+                         confirmed_by: str) -> str:
+        """The only path that may create a NEW vendor in production
+        (api/review.py's confirm_vendor, on its new-vendor branch) —
+        deliberately, so a vendor can never enter the ledger with zero
+        evidence. `undo_confirmation`'s own "delete a vendor left with no
+        evidence" cleanup depends on that: a bare `create()` with no
+        following alias would be indistinguishable from a vendor undo just
+        emptied, and get silently deleted even if it meant something on its
+        own. `create()` itself stays public and unconstrained — tests use it
+        directly to model a vendor with no aliases yet, which is a real
+        state for `resolve()` to be tested against, just never a state this
+        method's own caller may produce."""
+        vendor_id = self.create(name)
+        self.confirm_alias(vendor_id, alias_name, source_document=source_document,
+                           confirmed_by=confirmed_by)
+        return vendor_id
+
     def get(self, vendor_id: str) -> CanonicalVendor | None:
         return self._vendors.get(vendor_id)
 
@@ -191,6 +209,35 @@ class VendorLedger:
         self._vendors[vendor_id].aliases.append(VendorAlias(
             name=name, first_seen=datetime.now(UTC),
             source_document=source_document, confirmed_by=confirmed_by))
+
+    def alias_confirmed_from(self, vendor_id: str, source_document: str) -> VendorAlias | None:
+        """The alias — if any — that one document's confirm-vendor call added
+        to this vendor. A document confirms at most once (the review
+        endpoint's own compare-and-swap guarantees that), so at most one
+        alias ever carries this source_document for a given vendor; the last
+        match is returned defensively rather than asserting uniqueness.
+
+        Undo's lookup: returns the alias itself (identity), not merely
+        whether a name matched — the same discipline `merge`/`unmerge`
+        above apply, since removing by value instead of identity is exactly
+        the class of bug F-36/F-67 fixed twice in this file already."""
+        vendor = self._vendors.get(vendor_id)
+        if vendor is None:
+            return None
+        matches = [a for a in vendor.aliases if a.source_document == source_document]
+        return matches[-1] if matches else None
+
+    def undo_confirmation(self, vendor_id: str, alias_id: str) -> None:
+        """Reverse one confirm-vendor call: remove the alias by identity, and
+        delete the vendor entirely if it now carries no evidence at all — a
+        vendor created solely for this confirmation leaves no orphan record
+        behind once undone. A no-op if the vendor no longer exists."""
+        vendor = self._vendors.get(vendor_id)
+        if vendor is None:
+            return
+        vendor.aliases = [a for a in vendor.aliases if a.id != alias_id]
+        if not vendor.aliases and not vendor.payment_history:
+            del self._vendors[vendor_id]
 
     def merge(self, keeper: str, absorbed: str, confirmed_by: str) -> MergeToken:
         """REVISED (F-36). The original popped the absorbed vendor and appended a
