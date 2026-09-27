@@ -1,10 +1,13 @@
+import os
+import threading
 from typing import cast
 
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
-from ledger_sense.api.fixtures import PRIOR_BILL
+from ledger_sense.api._stub_routes import STUB_METADATA
+from ledger_sense.api.fixtures import PRIOR_BILL, ensure_stub_tables
 from ledger_sense.store import session as store_session
 from ledger_sense.store.retention import claims, documents
 
@@ -158,6 +161,43 @@ def test_an_observed_name_that_needs_no_confirmation_is_refused(
         "doc_id": "doc-v4", "exceptions": 0,
         "vendor": {"observed_name": "Acme Steel Co.", "known_vendor": "Acme Steel Co."}})
     assert response.status_code == 422
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LEDGER_SENSE_LIVE_POSTGRES_URL"),
+    reason="set LEDGER_SENSE_LIVE_POSTGRES_URL to validate against a live Postgres",
+)
+def test_concurrent_first_seeds_on_a_fresh_database_do_not_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Playwright's parallel workers all seed at once against a fresh demo
+    stack. Each create_all(checkfirst=True) sees no stub_resources table and
+    issues CREATE TABLE; every loser died on pg_type's unique index with a
+    500. Only a real Postgres shows it — SQLite serialises writers anyway."""
+    monkeypatch.setenv("LEDGER_SENSE_DB_URL", os.environ["LEDGER_SENSE_LIVE_POSTGRES_URL"])
+    store_session.reset_app_engine()
+    try:
+        engine = store_session.app_engine()
+        STUB_METADATA.drop_all(engine, checkfirst=True)
+        start = threading.Barrier(4)
+        errors: list[BaseException] = []
+
+        def ensure() -> None:
+            try:
+                start.wait(timeout=5)
+                ensure_stub_tables(engine)
+            except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+                errors.append(exc)
+
+        threads = [threading.Thread(target=ensure) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+        assert errors == []
+        assert sa.inspect(engine).has_table("stub_resources")
+    finally:
+        store_session.reset_app_engine()
 
 
 @pytest.mark.parametrize("name", ["", " leading-space", "<script>", "x" * 81])
