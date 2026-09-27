@@ -47,6 +47,10 @@ interface ReviewException {
   page: number | null
   bbox: [number, number, number, number] | null
   state: ExceptionState
+  // Present once a confirmed I2 exception's vendor is known — the server's
+  // own record, not merely what confirm-vendor's response said: that
+  // response is gone after a reload, but this must keep working then.
+  vendor_id: string | null
 }
 
 interface Progress {
@@ -435,6 +439,31 @@ export function ReviewQueue({ docId }: { docId: string }) {
     )
   }, [actOnCurrent, recordConfirmedVendor])
 
+  // Not routed through actOnCurrent: undo is a deliberate corrective click,
+  // not part of the fast keyboard-accept flow, and the item being undone is
+  // often not under the cursor at all (the banner that offers it is shown
+  // independent of cursor position — see lastConfirmedVendor). Waits for the
+  // server's answer before flipping local state, rather than closing
+  // optimistically first.
+  const undoConfirmation = useCallback((excId: string) => {
+    void postJson(`/api/review/exceptions/${excId}/undo-confirm-vendor`, {})
+      .then(() => {
+        setItemState(excId, 'open')
+        commit()
+        setLastConfirmedVendor((prev) => (prev?.excId === excId ? null : prev))
+        setConfirmedVendorIds((prev) => {
+          if (!(excId in prev)) return prev
+          const next = { ...prev }
+          delete next[excId]
+          return next
+        })
+        refetchProgress()
+      })
+      .catch((err: unknown) => {
+        setActionError(err instanceof Error ? err.message : 'Could not undo the vendor confirmation')
+      })
+  }, [commit, refetchProgress, setItemState])
+
   // The value goes to the API exactly as typed — a string, never a Number.
   const submitEdit = useCallback((value: string) => {
     actOnCurrent('edited', (item) => postJson(`/api/review/exceptions/${item.id}/edit`, { value }))
@@ -590,7 +619,15 @@ export function ReviewQueue({ docId }: { docId: string }) {
                   Vendor confirmed.{' '}
                   <Link href={`/vendors/${lastConfirmedVendor.vendorId}`} className="underline">
                     View vendor ledger →
-                  </Link>
+                  </Link>{' '}
+                  <button
+                    type="button"
+                    data-testid="undo-vendor-confirmation-banner"
+                    className="underline"
+                    onClick={() => undoConfirmation(lastConfirmedVendor.excId)}
+                  >
+                    Undo
+                  </button>
                 </p>
               )}
 
@@ -654,15 +691,31 @@ export function ReviewQueue({ docId }: { docId: string }) {
                 </li>
               </ul>
 
-              {current.rule_id === 'I2' && (
-                current.state === 'confirmed' && confirmedVendorIds[current.id] ? (
+              {current.rule_id === 'I2' && (() => {
+                // The server's own record (current.vendor_id) is the durable
+                // source — confirmedVendorIds only fills the gap between a
+                // same-session confirm and the next resync, so a reviewer
+                // sees the link immediately without waiting on a round trip.
+                const confirmedVendorId = confirmedVendorIds[current.id] ?? current.vendor_id
+                return current.state === 'confirmed' && confirmedVendorId ? (
                   <p className="mt-3 text-sm">
                     <Link
-                      href={`/vendors/${confirmedVendorIds[current.id]}`}
+                      href={`/vendors/${confirmedVendorId}`}
                       className="underline"
                     >
                       View vendor ledger →
-                    </Link>
+                    </Link>{' '}
+                    {/* Undo stays reachable indefinitely, not just right
+                        after confirming — a wrong link is as likely to be
+                        caught on a later audit as in the moment. */}
+                    <button
+                      type="button"
+                      data-testid="undo-vendor-confirmation"
+                      className="underline"
+                      onClick={() => undoConfirmation(current.id)}
+                    >
+                      Undo
+                    </button>
                   </p>
                 ) : current.state === 'open' ? (
                   <VendorConfirmPanel
@@ -674,7 +727,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
                     onConfirmNew={confirmVendorNew}
                   />
                 ) : null
-              )}
+              })()}
 
               <h3 className="mt-5 text-sm font-semibold">Provenance</h3>
               <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 border-l-2 border-rule pl-3 text-sm">

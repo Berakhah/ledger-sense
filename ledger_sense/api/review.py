@@ -70,6 +70,11 @@ class ReviewException(BaseModel):
     page: int | None
     bbox: tuple[float, float, float, float] | None
     state: ExceptionState
+    # The document's confirmed vendor — present only once an I2 exception is
+    # confirmed, never derived from confirm-vendor's own response alone: a
+    # page reload (or a different reviewer opening the same document later)
+    # has no such response to remember, and "undo" has to keep working then.
+    vendor_id: str | None = None
 
 
 class EditBody(BaseModel):
@@ -119,7 +124,8 @@ def _exception_of(row: sa.Row[Any]) -> ReviewException:
     return ReviewException(
         id=row.id, doc_id=row.document_id, field=row.field, rule_id=row.rule_id,
         message=row.message, expected=row.expected, actual=row.actual,
-        page=row.page, bbox=_bbox(row), state=row.state)
+        page=row.page, bbox=_bbox(row), state=row.state,
+        vendor_id=row.vendor_id if row.rule_id == "I2" and row.state == "confirmed" else None)
 
 
 def _sort_key(row: sa.Row[Any]) -> tuple[bool, int, bool, float, bool, float]:
@@ -141,15 +147,24 @@ def _require_open(row: sa.Row[Any]) -> None:
     """Fast-path check only — not the concurrency guard. Two concurrent
     accept/edit calls on the same finding can both pass this (it reads a row
     fetched before either transaction's write), so it exists purely to skip
-    unnecessary work in the common, non-racing case. `_close` below is what
-    actually prevents a double write."""
+    unnecessary work in the common, non-racing case. `_transition` below is
+    what actually prevents a double write."""
     if row.state != "open":
         raise HTTPException(status_code=409, detail=f"exception already {row.state}")
 
 
-def _close(conn: sa.Connection, exc_id: str, new_state: ExceptionState,
-          **extra: object) -> None:
-    """The compare-and-swap: the UPDATE's own WHERE state='open' is the
+def _require_confirmed(row: sa.Row[Any]) -> None:
+    """`_require_open`'s mirror for undo-confirm-vendor: a fast-path check
+    only, since `_transition` below is what actually prevents a double
+    undo."""
+    if row.state != "confirmed":
+        raise HTTPException(status_code=409,
+                            detail=f"exception is {row.state}, not confirmed")
+
+
+def _transition(conn: sa.Connection, exc_id: str, from_state: ExceptionState,
+                new_state: ExceptionState, **extra: object) -> None:
+    """The compare-and-swap: the UPDATE's own WHERE state=from_state is the
     concurrency guard. Two concurrent requests against the same finding race
     to this UPDATE; the loser's WHERE clause matches zero rows once the
     winner commits, so it gets 409 here rather than both committing a claim
@@ -157,10 +172,15 @@ def _close(conn: sa.Connection, exc_id: str, new_state: ExceptionState,
     this router exists to produce."""
     result = conn.execute(
         findings.update()
-        .where(findings.c.id == exc_id, findings.c.state == "open")
+        .where(findings.c.id == exc_id, findings.c.state == from_state)
         .values(state=new_state, **extra))
     if result.rowcount == 0:
         raise HTTPException(status_code=409, detail="exception already actioned")
+
+
+def _close(conn: sa.Connection, exc_id: str, new_state: ExceptionState,
+          **extra: object) -> None:
+    _transition(conn, exc_id, "open", new_state, **extra)
 
 
 def _value_type_for(conn: sa.Connection, document_id: str, field: str) -> str:
@@ -267,8 +287,9 @@ def list_exceptions(doc_id: str, session: CurrentSession) -> list[ReviewExceptio
     # makes the same choice for the same reason.
     with app_engine().connect() as conn:
         rows = conn.execute(
-            sa.select(findings).where(findings.c.document_id == doc_id,
-                                      findings.c.tenant_id == session.tenant_id)
+            sa.select(findings, documents.c.vendor_id)
+            .select_from(findings.join(documents, findings.c.document_id == documents.c.id))
+            .where(findings.c.document_id == doc_id, findings.c.tenant_id == session.tenant_id)
         ).all()
     return [_exception_of(row) for row in sorted(rows, key=_sort_key)]
 
@@ -377,6 +398,37 @@ def confirm_vendor(exc_id: str, body: ConfirmVendorBody,
                      .values(vendor_id=vendor_id))
         _close(conn, exc_id, "confirmed")
     return {"status": "confirmed", "vendor_id": vendor_id}
+
+
+@router.post("/exceptions/{exc_id}/undo-confirm-vendor")
+def undo_confirm_vendor(exc_id: str, session: CurrentSession) -> dict[str, str | None]:
+    """Reverses confirm_vendor: removes the alias it added (by identity,
+    deleting the vendor entirely if this was its only evidence — B6's
+    "merges are reversible" spirit applied to a single confirmation) and
+    reopens the exception so a wrong confirmation can be corrected, however
+    long after the fact it is caught. No time limit: the mistake may surface
+    on a later audit, not just in the moment.
+    """
+    with app_engine().begin() as conn:
+        row = _get_finding(exc_id, session, conn)
+        _require_confirmed(row)
+
+        doc_row = conn.execute(
+            sa.select(documents.c.vendor_id).where(documents.c.id == row.document_id)
+        ).one()
+        vendor_id = doc_row.vendor_id
+        assert vendor_id is not None  # confirm_vendor always sets this before "confirmed"
+
+        ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
+        alias = ledger.alias_confirmed_from(vendor_id, row.document_id)
+        assert alias is not None  # confirm_vendor always adds one before "confirmed"
+        ledger.undo_confirmation(vendor_id, alias.id)
+        save_vendor_ledger(conn, session.tenant_id, ledger)
+
+        conn.execute(documents.update().where(documents.c.id == row.document_id)
+                     .values(vendor_id=None))
+        _transition(conn, exc_id, "confirmed", "open")
+    return {"status": "open"}
 
 
 @router.get("/documents/{doc_id}/progress")
