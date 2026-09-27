@@ -972,6 +972,7 @@ dependencies = [
     { name = "argon2-cffi" },
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "pdfplumber" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -986,7 +987,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "cyclonedx-bom" },
-    { name = "httpx" },
     { name = "hypothesis" },
     { name = "mypy" },
     { name = "pip-audit" },
@@ -1004,6 +1004,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "cryptography", specifier = ">=50.0.1" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pdfplumber", specifier = ">=0.11.3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "pydantic", specifier = ">=2.4.0" },
@@ -1018,7 +1019,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "cyclonedx-bom", specifier = ">=7.1.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "hypothesis", specifier = ">=6.167.1" },
     { name = "mypy", specifier = ">=2.3.1" },
     { name = "pip-audit", specifier = ">=2.9.0" },
