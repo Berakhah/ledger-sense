@@ -64,9 +64,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
+import sqlalchemy as sa
 from fastapi import HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import Connection
+from sqlalchemy import Connection, Engine
 
 from ledger_sense.api._stub_routes import STUB_METADATA
 from ledger_sense.auth.models import create_tenant, create_user
@@ -143,6 +144,18 @@ def _exception_id(doc_id: str, index: int | str) -> str:
     return f"{doc_id}:exc:{index}"
 
 
+def ensure_stub_tables(engine: Engine) -> None:
+    """create_all(checkfirst=True) is check-then-create: Playwright's parallel
+    workers seeding a fresh demo database all see no table, all CREATE it, and
+    every loser dies on pg_type's unique index. An advisory transaction lock
+    (store/vendors.py's primitive) makes the check see the winner's commit.
+    A no-op lock on SQLite, which serialises writers on its own."""
+    with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            conn.execute(sa.text("SELECT pg_advisory_xact_lock(hashtext('stub_resources'))"))
+        STUB_METADATA.create_all(conn, checkfirst=True)
+
+
 def _i2_for(vendor: VendorScenario) -> Finding:
     """The finding the real pipeline would raise for this scenario — the same
     rule, run against a scratch ledger holding only the known vendor, so the
@@ -203,8 +216,8 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     # _stub_routes.py). checkfirst makes this a no-op under pytest, where
     # conftest has already created it.
     engine = app_engine()
-    STUB_METADATA.create_all(engine, checkfirst=True)
-    i2 = None if body.vendor is None else _i2_for(body.vendor)
+    ensure_stub_tables(engine)
+    i2 =None if body.vendor is None else _i2_for(body.vendor)
 
     # A fresh tenant per seed call, following tests/api/conftest.py's
     # collision-safe naming. The password is random and thrown away: this
