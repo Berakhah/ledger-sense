@@ -1,9 +1,12 @@
+from typing import cast
+
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
+from ledger_sense.api.fixtures import PRIOR_BILL
 from ledger_sense.store import session as store_session
-from ledger_sense.store.retention import documents
+from ledger_sense.store.retention import claims, documents
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, profile: str) -> TestClient:
@@ -70,3 +73,97 @@ def test_a_seeded_document_is_still_refused_to_an_anonymous_caller(
     from ledger_sense.api.app import build_app
     anonymous = TestClient(build_app())
     assert anonymous.get(f"/api/inbox/{doc_id}").status_code == 401
+
+
+# ---- the optional vendor scenario (I2 in front of Playwright) ----
+
+def _exceptions(client: TestClient, doc_id: str) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]],
+                client.get(f"/api/review/documents/{doc_id}/exceptions").json())
+
+
+def test_without_a_vendor_the_seed_mints_no_vendor_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The existing specs depend on this: omitting `vendor` changes nothing."""
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={"doc_id": "doc-nv", "exceptions": 2}).json()
+    assert [e["rule_id"] for e in _exceptions(client, body["doc_id"])] == ["A2", "A2"]
+    with store_session.app_engine().connect() as conn:
+        assert conn.execute(sa.select(claims.c.id)
+                            .where(claims.c.document_id == body["doc_id"])).all() == []
+
+
+def test_a_vendor_scenario_adds_one_i2_after_the_arithmetic_findings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={
+        "doc_id": "doc-v1", "exceptions": 2,
+        "vendor": {"observed_name": "Keystone Framing LLC"}}).json()
+    assert body["exceptions"] == 3
+    listed = _exceptions(client, body["doc_id"])
+    assert [e["rule_id"] for e in listed] == ["A2", "A2", "I2"]
+    assert listed[-1]["field"] == "vendor_name"
+
+    match = client.get(f"/api/review/exceptions/{listed[-1]['id']}/vendor-match").json()
+    assert match == {"observed_name": "Keystone Framing LLC", "candidate": None}
+    # Still synthetic end to end: the document the I2 hangs off is CORPUS.
+    row = client.get(f"/api/inbox/{body['doc_id']}").json()
+    assert row["sensitivity"] == "SYNTHETIC"
+
+
+def test_a_known_vendor_is_offered_as_the_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={
+        "doc_id": "doc-v2", "exceptions": 0,
+        "vendor": {"observed_name": "Acme Steel Company",
+                   "known_vendor": "Acme Steel Co."}}).json()
+    [i2] = _exceptions(client, body["doc_id"])
+    match = client.get(f"/api/review/exceptions/{i2['id']}/vendor-match").json()
+    assert match["candidate"]["name"] == "Acme Steel Co."
+    assert match["candidate"]["vendor_id"] == body["known_vendor_id"]
+
+
+def test_undoing_a_link_to_the_known_vendor_keeps_the_vendor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-seeded vendor's evidence is a prior bill, not this document, so
+    undo removes only this document's alias. Without that separate alias undo
+    would find the vendor evidence-free and delete it."""
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={
+        "doc_id": "doc-v3", "exceptions": 0,
+        "vendor": {"observed_name": "Acme Steel Company",
+                   "known_vendor": "Acme Steel Co."}}).json()
+    [i2] = _exceptions(client, body["doc_id"])
+    vendor_id = body["known_vendor_id"]
+
+    assert client.post(f"/api/review/exceptions/{i2['id']}/confirm-vendor",
+                       json={"vendor_id": vendor_id}).status_code == 200
+    assert client.post(f"/api/review/exceptions/{i2['id']}/undo-confirm-vendor").status_code == 200
+
+    ledger = client.get(f"/api/vendors/{vendor_id}/ledger")
+    assert ledger.status_code == 200
+    assert [a["source_document"] for a in ledger.json()["aliases"]] == [PRIOR_BILL]
+
+
+def test_an_observed_name_that_needs_no_confirmation_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exact match raises no I2, so there is nothing to seed — say so
+    rather than hand back a document with no vendor finding on it."""
+    client = _client(monkeypatch, "demo")
+    response = client.post("/api/fixtures/seed", json={
+        "doc_id": "doc-v4", "exceptions": 0,
+        "vendor": {"observed_name": "Acme Steel Co.", "known_vendor": "Acme Steel Co."}})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("name", ["", " leading-space", "<script>", "x" * 81])
+def test_vendor_names_are_pattern_bounded(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    client = _client(monkeypatch, "demo")
+    for vendor in ({"observed_name": name}, {"observed_name": "Acme", "known_vendor": name}):
+        response = client.post("/api/fixtures/seed",
+                               json={"doc_id": "doc-v5", "vendor": vendor})
+        assert response.status_code == 422, vendor
