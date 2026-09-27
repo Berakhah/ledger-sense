@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { expectNoMouse, forbidMouse } from './keyboard'
 import { API_URL, seedDocument } from './seed'
 
 // DoD 5: fifty exceptions cleared without a mouse. Every test seeds its own
@@ -14,18 +15,6 @@ function docKey(stem: string): string {
   return `${stem}-w${test.info().workerIndex}`
 }
 
-/** Records any mouse event that reaches the page. DoD 5 is "keyboard-only",
- *  not "keyboard also works". */
-async function forbidMouse(page: Page) {
-  await page.addInitScript(() => {
-    for (const type of ['click', 'mousedown', 'mouseup', 'dblclick']) {
-      document.addEventListener(type, () => {
-        ;(window as unknown as { __mouseUsed?: boolean }).__mouseUsed = true
-      }, true)
-    }
-  })
-}
-
 test('clears fifty exceptions without a single mouse event', async ({ page }) => {
   await forbidMouse(page)
   const docId = await seedDocument(page, docKey('doc-50'), 50)
@@ -37,8 +26,7 @@ test('clears fifty exceptions without a single mouse event', async ({ page }) =>
   }
 
   await expect(page.getByTestId('progress')).toHaveText('50 / 50')
-  expect(await page.evaluate(
-    () => (window as unknown as { __mouseUsed?: boolean }).__mouseUsed)).toBeUndefined()
+  await expectNoMouse(page)
 })
 
 test('J and K move through the queue in both directions', async ({ page }) => {
