@@ -11,6 +11,7 @@ import numpy as np
 import pypdfium2 as pdfium
 
 from ledger_sense.extract.textlayer import BBox, Word
+from ledger_sense.pdfium_lock import PDFIUM_LOCK
 
 if TYPE_CHECKING:
     # Type-only: the real import stays lazy, inside _engine(), so importing
@@ -32,6 +33,30 @@ def _engine() -> "RapidOCR":
     ImportError on a machine without the weights."""
     from rapidocr_onnxruntime import RapidOCR
     return RapidOCR()
+
+
+def _render_pages(pdf: bytes) -> list[np.ndarray]:
+    """Every page as an RGB array, rendered under PDFIUM_LOCK
+    (ledger_sense/pdfium_lock.py). Bitmap, page and document are closed inside
+    the lock rather than left to finalisers on another thread, and the lock is
+    released before any OCR runs: inference takes seconds a page and never
+    touches PDFium, so holding it would stall every generate() behind a scan."""
+    images: list[np.ndarray] = []
+    with PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(pdf)
+        try:
+            for page in doc:
+                try:
+                    bitmap = page.render(scale=RENDER_SCALE)
+                    try:
+                        images.append(np.asarray(bitmap.to_pil().convert("RGB")))
+                    finally:
+                        bitmap.close()
+                finally:
+                    page.close()
+        finally:
+            doc.close()
+    return images
 
 
 class CannotExtract(NamedTuple):
@@ -58,12 +83,10 @@ def ocr_words(pdf: bytes) -> OcrResult | CannotExtract:
     exists, every OCR'd field routes to review. That is the honest answer and it
     is what B11 asks for.
     """
-    doc = pdfium.PdfDocument(pdf)
     words: list[Word] = []
     failures: list[CannotExtract] = []
 
-    for page_no, page in enumerate(doc):
-        image = np.asarray(page.render(scale=RENDER_SCALE).to_pil().convert("RGB"))
+    for page_no, image in enumerate(_render_pages(pdf)):
         result, _elapsed = _engine()(image)
         if not result:
             failures.append(
