@@ -41,6 +41,10 @@ RUN chown -R ledger:ledger /app
 # mount.
 RUN mkdir -p /var/lib/ledger-sense/blobs && chown ledger:ledger /var/lib/ledger-sense/blobs
 
+# Same mechanism for the calibration label store (client_calibration volume):
+# one root-owned mountpoint and the first accept on a real document fails.
+RUN mkdir -p /var/lib/ledger-sense/calibration && chown ledger:ledger /var/lib/ledger-sense/calibration
+
 USER ledger
 
 # --frozen --no-dev: the exact flags the two `uv sync` layers above already
