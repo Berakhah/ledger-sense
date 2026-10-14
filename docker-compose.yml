@@ -76,10 +76,18 @@ services:
       # which is a real (if useless) CORS allow-list entry, not "unset".
       LEDGER_SENSE_WEB_ORIGIN: ${LEDGER_SENSE_WEB_ORIGIN:-http://localhost:3000}
       LEDGER_SENSE_BLOB_ROOT: /var/lib/ledger-sense/blobs
+      # Every accept/edit in the review queue writes a calibration label here
+      # (api/review.py). The root filesystem is read-only, so it needs a
+      # mount, and a persistent one: the labels are the training signal the
+      # reliability curves are fitted from.
+      LEDGER_SENSE_CALIBRATION_DIR: /var/lib/ledger-sense/calibration
     volumes:
       # The KEK in .env is what makes this volume ciphertext, not the volume
       # itself — back the two up separately (docs/security.md).
       - client_blobs:/var/lib/ledger-sense/blobs
+      # Not encrypted: field types, confidences and correct/incorrect flags,
+      # never document content. Back it up with the blobs.
+      - client_calibration:/var/lib/ledger-sense/calibration
 
   app-demo:
     <<: *app
@@ -94,6 +102,8 @@ services:
       # Already tmpfs via the x-app anchor's /app/scratch mount — SYNTHETIC
       # data, ephemeral by design, same stance as postgres-demo.
       LEDGER_SENSE_BLOB_ROOT: /app/scratch/blobs
+      # Same tmpfs, same reasoning: synthetic labels, ephemeral by design.
+      LEDGER_SENSE_CALIBRATION_DIR: /app/scratch/calibration
 
   # The Next.js app. Root build context on purpose: one package.json and one
   # lockfile serve the whole node side, and the app directory is passed to
@@ -166,3 +176,4 @@ services:
 volumes:
   client_pgdata:
   client_blobs:
+  client_calibration:
