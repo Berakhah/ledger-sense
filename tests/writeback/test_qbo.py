@@ -15,7 +15,10 @@ PrivateNote client-side in the normal case (QBO cannot query on PrivateNote).
 
 import ast
 import pathlib
+from collections.abc import Iterator
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.fernet import Fernet
@@ -44,13 +47,13 @@ class FakeQBOClient:
 
     def __init__(self, book_close: date | None = None,
                  fail_after_post: bool = False) -> None:
-        self.bills: dict[str, dict] = {}
-        self.payments: list[dict] = []
+        self.bills: dict[str, dict[str, Any]] = {}
+        self.payments: list[dict[str, Any]] = []
         self.book_close = book_close
         self.fail_after_post = fail_after_post
         self._next_id = 100
 
-    def post_bill(self, payload: dict) -> dict:
+    def post_bill(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._next_id += 1
         remote_id = str(self._next_id)
         self.bills[remote_id] = {**payload, "Id": remote_id, "Balance": "1000.00"}
@@ -58,11 +61,11 @@ class FakeQBOClient:
             raise ConnectionError("connection dropped after QBO accepted the bill")
         return {"Id": remote_id}
 
-    def find_bill_by_docnumber(self, doc_number: str) -> dict | None:
+    def find_bill_by_docnumber(self, doc_number: str) -> dict[str, Any] | None:
         return next((b for b in self.bills.values()
                      if b.get("DocNumber") == doc_number), None)
 
-    def find_bills_by_date_and_vendor(self, txn_date: date, vendor_ref: str) -> list[dict]:
+    def find_bills_by_date_and_vendor(self, txn_date: date, vendor_ref: str) -> list[dict[str, Any]]:
         iso = txn_date.isoformat()
         return [b for b in self.bills.values()
                 if b.get("TxnDate") == iso
@@ -74,19 +77,19 @@ class FakeQBOClient:
     def delete_bill(self, remote_id: str) -> None:
         self.bills.pop(remote_id, None)
 
-    def post_bill_payment(self, payload: dict) -> dict:  # must never be called
+    def post_bill_payment(self, payload: dict[str, Any]) -> dict[str, Any]:  # must never be called
         self.payments.append(payload)
         return {"Id": "pay-1"}
 
 
 @pytest.fixture()
-def ledger(tmp_path):
+def ledger(tmp_path: Path) -> Iterator[IdempotencyLedger]:
     led = IdempotencyLedger(str(tmp_path / "writes.db"))
     yield led
     led.close()
 
 
-def _request(application_no=2, txn_date=date(2026, 8, 31), vendor_invoice_number="INV-4471"):
+def _request(application_no: int = 2, txn_date: date = date(2026, 8, 31), vendor_invoice_number: str | None = "INV-4471") -> WriteRequest:
     return WriteRequest(
         idempotency_key=build_idempotency_key("abc123", "C-1", application_no),
         doc_id="doc-1", vendor_ref="V-9", vendor_invoice_number=vendor_invoice_number,
@@ -100,13 +103,13 @@ def _request(application_no=2, txn_date=date(2026, 8, 31), vendor_invoice_number
 # Baseline behavior — unpaid bills only, never a BillPayment
 # ---------------------------------------------------------------------------
 
-def test_a_bill_is_created_unpaid_and_marked_awaiting_review(ledger):
+def test_a_bill_is_created_unpaid_and_marked_awaiting_review(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     result = QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(_request())
     assert AWAITING_REVIEW in client.bills[result.remote_id]["PrivateNote"]
 
 
-def test_qbo_adapter_satisfies_the_writeback_port(ledger):
+def test_qbo_adapter_satisfies_the_writeback_port(ledger: IdempotencyLedger) -> None:
     """I-2. The brief requires QBOAdapter to satisfy WritebackPort; only
     FakeAdapter (test_interface.py) was ever checked against the protocol.
     WritebackPort is @runtime_checkable, so this is a real isinstance check,
@@ -116,14 +119,14 @@ def test_qbo_adapter_satisfies_the_writeback_port(ledger):
     assert isinstance(adapter, WritebackPort)
 
 
-def test_no_bill_payment_is_ever_created(ledger):
+def test_no_bill_payment_is_ever_created(ledger: IdempotencyLedger) -> None:
     """v1 never posts an approved transaction, no matter what the client asks."""
     client = FakeQBOClient()
     QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(_request())
     assert client.payments == []
 
 
-def test_no_code_path_calls_post_bill_payment():
+def test_no_code_path_calls_post_bill_payment() -> None:
     """AST guard. The absence of a call today is not a guarantee tomorrow.
 
     Resolved from __file__ (I-3.2), not cwd, so the scan is not silently
@@ -169,7 +172,7 @@ def test_no_code_path_calls_post_bill_payment():
 # DocNumber / PrivateNote split (F-40)
 # ---------------------------------------------------------------------------
 
-def test_vendor_invoice_number_present_keeps_docnumber_and_keys_privatenote(ledger):
+def test_vendor_invoice_number_present_keeps_docnumber_and_keys_privatenote(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     request = _request(vendor_invoice_number="INV-4471")
     result = QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(request)
@@ -179,7 +182,7 @@ def test_vendor_invoice_number_present_keeps_docnumber_and_keys_privatenote(ledg
     assert extract_key_from_private_note(bill["PrivateNote"]) == request.idempotency_key
 
 
-def test_no_vendor_invoice_number_falls_back_to_key_in_docnumber(ledger):
+def test_no_vendor_invoice_number_falls_back_to_key_in_docnumber(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     request = _request(vendor_invoice_number=None)
     result = QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(request)
@@ -190,7 +193,7 @@ def test_no_vendor_invoice_number_falls_back_to_key_in_docnumber(ledger):
     assert "no vendor invoice number" in bill["PrivateNote"].lower()
 
 
-def test_fallback_privatenote_still_carries_a_recoverable_key(ledger):
+def test_fallback_privatenote_still_carries_a_recoverable_key(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     request = _request(vendor_invoice_number=None)
     result = QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(request)
@@ -203,7 +206,7 @@ def test_fallback_privatenote_still_carries_a_recoverable_key(ledger):
 # (queries by TxnDate + VendorRef, then matches PrivateNote client-side)
 # ---------------------------------------------------------------------------
 
-def test_a_retry_after_success_replays_rather_than_creating_a_second_bill(ledger):
+def test_a_retry_after_success_replays_rather_than_creating_a_second_bill(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     adapter = QBOAdapter(client, ledger, realm_id="r-1")
     request = _request(vendor_invoice_number="INV-4471")
@@ -214,7 +217,7 @@ def test_a_retry_after_success_replays_rather_than_creating_a_second_bill(ledger
     assert len(client.bills) == 1
 
 
-def test_force_failing_mid_write_then_retrying_creates_exactly_one_bill(ledger):
+def test_force_failing_mid_write_then_retrying_creates_exactly_one_bill(ledger: IdempotencyLedger) -> None:
     """THE TEST THIS PHASE EXISTS FOR. QBO accepted the bill; the connection
     died before we recorded it. The retry must find the stamped key via the
     TxnDate+VendorRef scan (DocNumber holds the vendor invoice number, not the
@@ -232,7 +235,7 @@ def test_force_failing_mid_write_then_retrying_creates_exactly_one_bill(ledger):
     assert result.was_replay is True
 
 
-def test_the_bounded_scan_does_not_match_a_different_vendors_bill_same_day(ledger):
+def test_the_bounded_scan_does_not_match_a_different_vendors_bill_same_day(ledger: IdempotencyLedger) -> None:
     """A different vendor's bill on the same date must not be mistaken for a
     match just because it shares TxnDate; VendorRef narrows the scan, and the
     PrivateNote key match is the final word."""
@@ -253,7 +256,7 @@ def test_the_bounded_scan_does_not_match_a_different_vendors_bill_same_day(ledge
     assert result.remote_id != next(iter(client.bills))
 
 
-def test_multiple_same_vendor_same_date_bills_match_by_key_not_position(ledger):
+def test_multiple_same_vendor_same_date_bills_match_by_key_not_position(ledger: IdempotencyLedger) -> None:
     """I-1. The realistic construction-billing case this guard exists for:
     two different applications for the SAME subcontractor, both dated
     month-end (e.g. two contracts, or two applications posted the same day).
@@ -285,8 +288,12 @@ def test_multiple_same_vendor_same_date_bills_match_by_key_not_position(ledger):
         "idempotency key as though it were a replay")
     assert second.remote_id != first.remote_id
     assert len(client.bills) == 2
-    assert ledger.lookup(request_a.idempotency_key).remote_id == first.remote_id
-    assert ledger.lookup(request_b.idempotency_key).remote_id == second.remote_id
+    record = ledger.lookup(request_a.idempotency_key)
+    assert record is not None
+    assert record.remote_id == first.remote_id
+    record = ledger.lookup(request_b.idempotency_key)
+    assert record is not None
+    assert record.remote_id == second.remote_id
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +301,7 @@ def test_multiple_same_vendor_same_date_bills_match_by_key_not_position(ledger):
 # (direct DocNumber query, unchanged from the original design)
 # ---------------------------------------------------------------------------
 
-def test_a_retry_after_success_replays_in_the_no_invoice_number_case(ledger):
+def test_a_retry_after_success_replays_in_the_no_invoice_number_case(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     adapter = QBOAdapter(client, ledger, realm_id="r-1")
     request = _request(vendor_invoice_number=None)
@@ -305,7 +312,7 @@ def test_a_retry_after_success_replays_in_the_no_invoice_number_case(ledger):
     assert len(client.bills) == 1
 
 
-def test_force_failing_mid_write_then_retrying_in_the_no_invoice_number_case(ledger):
+def test_force_failing_mid_write_then_retrying_in_the_no_invoice_number_case(ledger: IdempotencyLedger) -> None:
     request = _request(vendor_invoice_number=None)
     crashing = FakeQBOClient(fail_after_post=True)
     with pytest.raises(ConnectionError):
@@ -323,7 +330,7 @@ def test_force_failing_mid_write_then_retrying_in_the_no_invoice_number_case(led
 # Closed period
 # ---------------------------------------------------------------------------
 
-def test_a_closed_period_is_refused_with_an_explanation(ledger):
+def test_a_closed_period_is_refused_with_an_explanation(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient(book_close=date(2026, 9, 30))
     with pytest.raises(ClosedPeriodError) as exc:
         QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(
@@ -332,7 +339,7 @@ def test_a_closed_period_is_refused_with_an_explanation(ledger):
     assert client.bills == {}, "a bill was created despite the closed period"
 
 
-def test_the_close_date_is_checked_before_anything_is_recorded(ledger):
+def test_the_close_date_is_checked_before_anything_is_recorded(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient(book_close=date(2026, 12, 31))
     request = _request()
     with pytest.raises(ClosedPeriodError):
@@ -340,7 +347,7 @@ def test_the_close_date_is_checked_before_anything_is_recorded(ledger):
     assert ledger.lookup(request.idempotency_key) is None
 
 
-def test_a_date_after_the_close_is_permitted(ledger):
+def test_a_date_after_the_close_is_permitted(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient(book_close=date(2026, 7, 31))
     result = QBOAdapter(client, ledger, realm_id="r-1").create_unapproved_bill(
         _request(txn_date=date(2026, 8, 31)))
@@ -351,7 +358,7 @@ def test_a_date_after_the_close_is_permitted(ledger):
 # Reversal — F-39 regression, both DocNumber paths
 # ---------------------------------------------------------------------------
 
-def test_reversal_deletes_the_bill(ledger):
+def test_reversal_deletes_the_bill(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     adapter = QBOAdapter(client, ledger, realm_id="r-1")
     request = _request()
@@ -361,7 +368,7 @@ def test_reversal_deletes_the_bill(ledger):
     assert result.remote_id not in client.bills
 
 
-def test_a_write_after_a_reversal_creates_a_new_bill_not_a_dead_replay(ledger):
+def test_a_write_after_a_reversal_creates_a_new_bill_not_a_dead_replay(ledger: IdempotencyLedger) -> None:
     """REGRESSION — F-39, the worst defect in this phase.
 
     `reverse` deleted the remote bill and left the ledger row saying `committed`
@@ -387,7 +394,7 @@ def test_a_write_after_a_reversal_creates_a_new_bill_not_a_dead_replay(ledger):
     assert second.remote_id in client.bills
 
 
-def test_a_write_after_a_reversal_creates_a_new_bill_in_the_no_invoice_number_case(ledger):
+def test_a_write_after_a_reversal_creates_a_new_bill_in_the_no_invoice_number_case(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     adapter = QBOAdapter(client, ledger, realm_id="r-1")
     request = _request(vendor_invoice_number=None)
@@ -402,13 +409,14 @@ def test_a_write_after_a_reversal_creates_a_new_bill_in_the_no_invoice_number_ca
     assert second.remote_id in client.bills
 
 
-def test_the_ledger_records_the_reversal(ledger):
+def test_the_ledger_records_the_reversal(ledger: IdempotencyLedger) -> None:
     client = FakeQBOClient()
     adapter = QBOAdapter(client, ledger, realm_id="r-1")
     request = _request()
     result = adapter.create_unapproved_bill(request)
     adapter.reverse(result.remote_id, request.idempotency_key)
     record = ledger.lookup(request.idempotency_key)
+    assert record is not None
     assert record.state == "reversed"
     assert record.remote_id is None
 
@@ -417,28 +425,29 @@ def test_the_ledger_records_the_reversal(ledger):
 # Rejected write — F-44
 # ---------------------------------------------------------------------------
 
-def test_a_rejected_write_records_its_reason_rather_than_sitting_pending(ledger):
+def test_a_rejected_write_records_its_reason_rather_than_sitting_pending(ledger: IdempotencyLedger) -> None:
     """F-44. `fail()` was dead code with a passing test; a QBO 400 looked exactly
     like a crash, so the record sat `pending` forever with no reason."""
     from ledger_sense.writeback.qbo import QBORejected
 
     class Rejecting(FakeQBOClient):
-        def post_bill(self, payload):
+        def post_bill(self, payload: dict[str, Any]) -> dict[str, Any]:
             raise QBORejected("400: VendorRef 9999 does not exist")
 
     request = _request()
     with pytest.raises(QBORejected):
         QBOAdapter(Rejecting(), ledger, realm_id="r-1").create_unapproved_bill(request)
     record = ledger.lookup(request.idempotency_key)
+    assert record is not None
     assert record.state == "failed"
-    assert "VendorRef" in record.reason
+    assert "VendorRef" in (record.reason or "")
 
 
 # ---------------------------------------------------------------------------
 # Concurrent writers, same idempotency key — C-1
 # ---------------------------------------------------------------------------
 
-def test_concurrent_writers_with_the_same_key_create_only_one_bill(ledger):
+def test_concurrent_writers_with_the_same_key_create_only_one_bill(ledger: IdempotencyLedger) -> None:
     """C-1, the critical finding from the final whole-branch review.
 
     `IdempotencyLedger.begin()`'s read-then-insert used to be two separate
@@ -466,7 +475,7 @@ def test_concurrent_writers_with_the_same_key_create_only_one_bill(ledger):
     import time
 
     class SlowFakeQBOClient(FakeQBOClient):
-        def post_bill(self, payload):
+        def post_bill(self, payload: dict[str, Any]) -> dict[str, Any]:
             time.sleep(0.01)
             return super().post_bill(payload)
 
@@ -506,7 +515,7 @@ def test_concurrent_writers_with_the_same_key_create_only_one_bill(ledger):
 # Environment factory
 # ---------------------------------------------------------------------------
 
-def test_qbo_adapter_from_environment_builds_a_real_adapter(tmp_path, monkeypatch, ledger) -> None:
+def test_qbo_adapter_from_environment_builds_a_real_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: IdempotencyLedger) -> None:
     monkeypatch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
     monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
     monkeypatch.setenv("QBO_REALM_ID", "realm-1")
@@ -515,7 +524,7 @@ def test_qbo_adapter_from_environment_builds_a_real_adapter(tmp_path, monkeypatc
     assert adapter.name == "qbo"
 
 
-def test_qbo_adapter_from_environment_raises_when_realm_unset(tmp_path, monkeypatch, ledger) -> None:
+def test_qbo_adapter_from_environment_raises_when_realm_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: IdempotencyLedger) -> None:
     monkeypatch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
     monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
     monkeypatch.delenv("QBO_REALM_ID", raising=False)
@@ -523,16 +532,16 @@ def test_qbo_adapter_from_environment_raises_when_realm_unset(tmp_path, monkeypa
         qbo_adapter_from_environment(ledger)
 
 
-def test_extract_key_from_private_note_is_robust_to_surrounding_text():
+def test_extract_key_from_private_note_is_robust_to_surrounding_text() -> None:
     note = f"{AWAITING_REVIEW} key=LSabcdef1234567890abc Application 2"
     assert extract_key_from_private_note(note) == "LSabcdef1234567890abc"
 
 
-def test_extract_key_from_private_note_returns_none_when_absent():
+def test_extract_key_from_private_note_returns_none_when_absent() -> None:
     assert extract_key_from_private_note("no key here") is None
 
 
-def test_extract_key_from_private_note_does_not_match_a_word_containing_key(ledger):
+def test_extract_key_from_private_note_does_not_match_a_word_containing_key(ledger: IdempotencyLedger) -> None:
     """M-1. `extract_key_from_private_note("turnkey=YES job")` used to return
     "YES" because the pattern matched `key=` as a substring of `turnkey=`.
     Anchored on whitespace/string boundaries now. Exercised both directly

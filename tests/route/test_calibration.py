@@ -1,5 +1,7 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from itertools import pairwise
+from pathlib import Path
 
 import pytest
 
@@ -7,13 +9,14 @@ from ledger_sense.route.calibration import (
     CalibrationCurve,
     CalibrationStore,
     Label,
+    LabelBasis,
     UnknownBasisError,
     clopper_pearson_lower,
     fit_isotonic,
 )
 
 
-def _labels(pairs, basis="synthetic"):
+def _labels(pairs: Sequence[tuple[float, bool]], basis: LabelBasis = "synthetic") -> list[Label]:
     return [Label(field_type="retainage_rate", predicted_confidence=c, was_correct=ok,
                   observed_at=datetime(2026, 8, 1, tzinfo=UTC),
                   source_claim_id=f"c{i}", basis=basis)
@@ -22,49 +25,49 @@ def _labels(pairs, basis="synthetic"):
 
 # --- the maths -------------------------------------------------------------
 
-def test_fit_isotonic_on_already_monotone_input_returns_it_unchanged():
+def test_fit_isotonic_on_already_monotone_input_returns_it_unchanged() -> None:
     xs = [0.1, 0.4, 0.7, 0.9]
     ys = [0.1, 0.4, 0.7, 0.9]
     assert fit_isotonic(xs, ys) == pytest.approx(ys)
 
 
-def test_fit_isotonic_pools_a_single_violation():
+def test_fit_isotonic_pools_a_single_violation() -> None:
     # 0.8 followed by 0.2 violates monotonicity; PAVA pools them to their mean.
     out = fit_isotonic([0.1, 0.2, 0.3], [0.1, 0.8, 0.2])
     assert out == pytest.approx([0.1, 0.5, 0.5])
 
 
-def test_fit_isotonic_output_is_non_decreasing_on_adversarial_input():
+def test_fit_isotonic_output_is_non_decreasing_on_adversarial_input() -> None:
     ys = [0.9, 0.1, 0.8, 0.2, 0.7, 0.3]
     out = fit_isotonic([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], ys)
     assert all(a <= b + 1e-12 for a, b in pairwise(out))
 
 
-def test_fit_isotonic_preserves_the_mean():
+def test_fit_isotonic_preserves_the_mean() -> None:
     ys = [0.9, 0.1, 0.8, 0.2]
     out = fit_isotonic([0.1, 0.2, 0.3, 0.4], ys)
     assert sum(out) == pytest.approx(sum(ys))
 
 
-def test_fit_isotonic_on_empty_input_returns_empty():
+def test_fit_isotonic_on_empty_input_returns_empty() -> None:
     assert fit_isotonic([], []) == []
 
 
 # --- the refusal, which is the point of this task --------------------------
 
-def test_a_synthetic_curve_refuses_to_yield_a_threshold():
+def test_a_synthetic_curve_refuses_to_yield_a_threshold() -> None:
     curve = CalibrationCurve.fit(_labels([(0.9, True)] * 2000, basis="synthetic"))
     assert curve.state == "calibrated:synthetic"
     assert curve.threshold_for(target_accuracy=0.995) is None
 
 
-def test_an_uncalibrated_curve_refuses_to_yield_a_threshold():
+def test_an_uncalibrated_curve_refuses_to_yield_a_threshold() -> None:
     curve = CalibrationCurve.fit(_labels([(0.9, True)] * 10, basis="field"))
     assert curve.state == "uncalibrated"
     assert curve.threshold_for(target_accuracy=0.995) is None
 
 
-def test_a_field_curve_with_enough_labels_yields_a_threshold():
+def test_a_field_curve_with_enough_labels_yields_a_threshold() -> None:
     pairs = [(0.99, True)] * 4000 + [(0.30, False)] * 600
     curve = CalibrationCurve.fit(_labels(pairs, basis="field"))
     assert curve.state == "calibrated:field"
@@ -72,7 +75,7 @@ def test_a_field_curve_with_enough_labels_yields_a_threshold():
     assert t is not None and 0.0 < t <= 1.0
 
 
-def test_a_field_curve_that_never_reaches_the_target_yields_no_threshold():
+def test_a_field_curve_that_never_reaches_the_target_yields_no_threshold() -> None:
     # Nothing in this population is ever 99.5% reliable.
     pairs = [(c / 300, (i % 4) != 0) for i, c in enumerate(range(1, 301))]
     curve = CalibrationCurve.fit(_labels(pairs, basis="field"))
@@ -80,7 +83,7 @@ def test_a_field_curve_that_never_reaches_the_target_yields_no_threshold():
     assert curve.threshold_for(target_accuracy=0.995) is None
 
 
-def test_mixed_basis_labels_are_treated_as_synthetic():
+def test_mixed_basis_labels_are_treated_as_synthetic() -> None:
     """One synthetic label contaminates the curve. Weakest link wins, deliberately."""
     pairs = [(0.9, True)] * 2000
     labels = _labels(pairs, basis="field")
@@ -89,38 +92,40 @@ def test_mixed_basis_labels_are_treated_as_synthetic():
     assert curve.state == "calibrated:synthetic"
 
 
-def test_an_unknown_basis_is_rejected_rather_than_defaulted():
+def test_an_unknown_basis_is_rejected_rather_than_defaulted() -> None:
     with pytest.raises(UnknownBasisError):
-        CalibrationCurve.fit(_labels([(0.9, True)] * 300, basis="probably-real"))
+        CalibrationCurve.fit(_labels(
+            [(0.9, True)] * 300,
+            basis="probably-real"))  # type: ignore[arg-type]  # the invalid basis IS the test
 
 
-def test_two_hundred_labels_cannot_support_the_target_accuracy():
+def test_two_hundred_labels_cannot_support_the_target_accuracy() -> None:
     """REGRESSION — F-47, VERIFIED. MIN_LABELS_FOR_FIELD = 200 was asserted by a
     test and traced to nothing. By the rule of three a 95% lower bound at 99.5%
     needs n >= 600; with 200 the finest resolvable accuracy is 0.5%, the entire
     error budget. This phase was doing the thing it exists to prevent."""
     curve = CalibrationCurve.fit(_labels([(0.99, True)] * 200, basis="field"))
     assert curve.threshold_for(target_accuracy=0.995) is None
-    assert "600" in curve.refusal_reason(0.995)
+    assert "600" in (curve.refusal_reason(0.995) or "")
 
 
-def test_six_hundred_clean_labels_do_support_it():
+def test_six_hundred_clean_labels_do_support_it() -> None:
     curve = CalibrationCurve.fit(_labels([(0.99, True)] * 2200, basis="field"))
     assert curve.threshold_for(target_accuracy=0.995) is not None
 
 
-def test_no_min_labels_constant_survives_anywhere_in_the_module():
+def test_no_min_labels_constant_survives_anywhere_in_the_module() -> None:
     """A derived requirement, not a number somebody picked."""
     from ledger_sense.route import calibration
     assert not hasattr(calibration, "MIN_LABELS_FOR_FIELD")
 
 
-def test_the_clopper_pearson_bound_matches_the_rule_of_three():
+def test_the_clopper_pearson_bound_matches_the_rule_of_three() -> None:
     assert clopper_pearson_lower(200, 200) < 0.995
     assert clopper_pearson_lower(600, 600) >= 0.994
 
 
-def test_clopper_pearson_lower_regression_large_parameters():
+def test_clopper_pearson_lower_regression_large_parameters() -> None:
     """F-48 / Fix Round 2: Verify log-space computation avoids overestimate.
 
     When beta function underflows (common at large a, b), incorrect handling
@@ -136,7 +141,7 @@ def test_clopper_pearson_lower_regression_large_parameters():
     assert 0.541 <= result <= 0.545, f"Expected ~0.543, got {result}"
 
 
-def test_the_threshold_is_derived_on_held_out_data():
+def test_the_threshold_is_derived_on_held_out_data() -> None:
     """F-48. Isotonic with one knot per observation interpolates its training
     data, so a threshold read off the fit is optimistically biased — and the
     reliability diagram built from it ships in docs/methodology.md as evidence."""
@@ -145,7 +150,7 @@ def test_the_threshold_is_derived_on_held_out_data():
     assert curve.fit_n + curve.holdout_n == curve.n
 
 
-def test_a_curve_fitted_on_noise_yields_no_threshold():
+def test_a_curve_fitted_on_noise_yields_no_threshold() -> None:
     import random
     rng = random.Random(7)
     pairs = [(rng.random(), rng.random() < 0.5) for _ in range(900)]
@@ -153,21 +158,21 @@ def test_a_curve_fitted_on_noise_yields_no_threshold():
     assert curve.threshold_for(target_accuracy=0.995) is None
 
 
-def test_the_refusal_says_why_in_words():
+def test_the_refusal_says_why_in_words() -> None:
     """A greyed-out meter with no explanation is the thing this programme exists
     to correct. The UI renders this string verbatim."""
     curve = CalibrationCurve.fit(_labels([(0.9, True)] * 2000, basis="synthetic"))
-    assert "synthetic" in curve.refusal_reason(0.995)
+    assert "synthetic" in (curve.refusal_reason(0.995) or "")
 
 
-def test_a_confidence_outside_zero_to_one_is_rejected():
+def test_a_confidence_outside_zero_to_one_is_rejected() -> None:
     """F-50. test_a_field_curve_that_never_reaches_the_target generated scores up
     to 3.0 and nothing validated the range."""
     with pytest.raises(ValueError):
         CalibrationCurve.fit(_labels([(1.5, True)] * 900, basis="field"))
 
 
-def test_the_stored_curve_collapses_to_unique_blocks():
+def test_the_stored_curve_collapses_to_unique_blocks() -> None:
     """F-51. 900 labels produced 900 xs and 900 knots, JSON-serialised into
     SQLite and linear-scanned by calibrated(). PAVA output has few distinct
     values by construction."""
@@ -177,7 +182,7 @@ def test_the_stored_curve_collapses_to_unique_blocks():
 
 # --- calibrated probability ------------------------------------------------
 
-def test_calibrated_probability_is_monotone_between_knots():
+def test_calibrated_probability_is_monotone_between_knots() -> None:
     pairs = [(0.2, False)] * 100 + [(0.8, True)] * 210
     curve = CalibrationCurve.fit(_labels(pairs, basis="field"))
     low, high = curve.calibrated(0.2), curve.calibrated(0.8)
@@ -185,7 +190,7 @@ def test_calibrated_probability_is_monotone_between_knots():
     assert low <= mid <= high
 
 
-def test_calibrated_probability_clamps_outside_the_observed_range():
+def test_calibrated_probability_clamps_outside_the_observed_range() -> None:
     curve = CalibrationCurve.fit(_labels([(0.5, True)] * 300, basis="field"))
     assert curve.calibrated(0.0) == curve.calibrated(0.5)
     assert curve.calibrated(1.0) == curve.calibrated(0.5)
@@ -193,7 +198,7 @@ def test_calibrated_probability_clamps_outside_the_observed_range():
 
 # --- storage ---------------------------------------------------------------
 
-def test_store_round_trips_a_curve(tmp_path):
+def test_store_round_trips_a_curve(tmp_path: Path) -> None:
     store = CalibrationStore(tmp_path / "cal.db")
     curve = CalibrationCurve.fit(_labels([(0.9, True)] * 300, basis="field"))
     store.save_curve(curve)
@@ -203,19 +208,19 @@ def test_store_round_trips_a_curve(tmp_path):
     assert list(back.knots) == pytest.approx(list(curve.knots))
 
 
-def test_store_returns_none_for_a_field_type_it_has_never_seen(tmp_path):
+def test_store_returns_none_for_a_field_type_it_has_never_seen(tmp_path: Path) -> None:
     store = CalibrationStore(tmp_path / "cal.db")
     assert store.load_curve("never_heard_of_it") is None
 
 
-def test_store_appends_labels_and_counts_them_by_basis(tmp_path):
+def test_store_appends_labels_and_counts_them_by_basis(tmp_path: Path) -> None:
     store = CalibrationStore(tmp_path / "cal.db")
     store.add_labels(_labels([(0.9, True)] * 5, basis="synthetic"))
     store.add_labels(_labels([(0.9, True)] * 3, basis="field"))
     assert store.count("retainage_rate") == {"synthetic": 5, "field": 3}
 
 
-def test_saving_a_curve_twice_replaces_rather_than_duplicates(tmp_path):
+def test_saving_a_curve_twice_replaces_rather_than_duplicates(tmp_path: Path) -> None:
     store = CalibrationStore(tmp_path / "cal.db")
     store.save_curve(CalibrationCurve.fit(_labels([(0.9, True)] * 300, basis="field")))
     store.save_curve(CalibrationCurve.fit(_labels([(0.4, False)] * 300, basis="field")))

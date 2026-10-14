@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from ledger_sense.corpus.generate import generate
+from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.run.document import run_document, run_in_background, run_pending
 from ledger_sense.store.retention import documents
 from tests.run.conftest import RunDb, _ledger_sense_loggers_enabled
@@ -43,7 +44,7 @@ def test_one_failing_document_does_not_stop_the_batch(
     import ledger_sense.run.document as run_module
     bad = db.store_pdf(_pdf(), received_at=datetime(2026, 1, 1, tzinfo=UTC))
     good = db.store_pdf(_pdf(2), received_at=datetime(2026, 1, 2, tzinfo=UTC))
-    real = run_module.assemble_pay_application
+    real = assemble_pay_application
 
     def _fail_bad(pdf: bytes, source_path: str) -> object:
         if source_path == bad:
@@ -64,7 +65,7 @@ def test_two_runners_on_one_document_write_exactly_one_result(
     claims exists and the row was never `failed`."""
     import ledger_sense.run.document as run_module
     document_id = db.store_pdf(_pdf())
-    real = run_module.assemble_pay_application
+    real = assemble_pay_application
     entered = threading.Event()
 
     def _slow(pdf: bytes, source_path: str) -> object:

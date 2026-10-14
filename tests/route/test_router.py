@@ -1,20 +1,28 @@
 import ast
 import pathlib
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
-from ledger_sense.route.calibration import CalibrationCurve, CalibrationStore, Label
+from ledger_sense.route.calibration import (
+    Basis,
+    CalibrationCurve,
+    CalibrationStore,
+    Label,
+    LabelBasis,
+)
 from ledger_sense.route.router import AUDIT_FRACTION_DEFAULT, TARGET_ACCURACY_DEFAULT, Router
 
 
-def _curve(basis, pairs):
+def _curve(basis: Basis, pairs: Sequence[tuple[float, bool]]) -> CalibrationCurve:
     labels = [Label("retainage_rate", c, ok, datetime(2026, 8, 1, tzinfo=UTC),
                     f"c{i}", basis) for i, (c, ok) in enumerate(pairs)]
     return CalibrationCurve.fit(labels)
 
 
-def _labels(pairs, basis="synthetic"):
+def _labels(pairs: Sequence[tuple[float, bool]], basis: LabelBasis = "synthetic") -> list[Label]:
     return [Label(field_type="retainage_rate", predicted_confidence=c, was_correct=ok,
                   observed_at=datetime(2026, 8, 1, tzinfo=UTC),
                   source_claim_id=f"c{i}", basis=basis)
@@ -22,15 +30,15 @@ def _labels(pairs, basis="synthetic"):
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path: Path) -> CalibrationStore:
     return CalibrationStore(tmp_path / "cal.db")
 
 
-def test_the_target_accuracy_default_is_the_brief_figure():
+def test_the_target_accuracy_default_is_the_brief_figure() -> None:
     assert TARGET_ACCURACY_DEFAULT == 0.995
 
 
-def test_with_no_curve_at_all_everything_routes_to_review(store):
+def test_with_no_curve_at_all_everything_routes_to_review(store: CalibrationStore) -> None:
     d = Router(store).decide("retainage_rate", confidence=0.999)
     assert d.route == "review"
     assert d.calibration_state == "uncalibrated"
@@ -38,7 +46,7 @@ def test_with_no_curve_at_all_everything_routes_to_review(store):
     assert "no calibration curve" in d.reason
 
 
-def test_a_synthetic_curve_still_routes_everything_to_review(store):
+def test_a_synthetic_curve_still_routes_everything_to_review(store: CalibrationStore) -> None:
     """The single most important test in the phase.
 
     2200 labels, not the brief's original 300: F-47/F-48 (already merged,
@@ -69,7 +77,7 @@ _FIELD_CURVE_HIGH_N = 8000
 _FIELD_CURVE_LOW_N = 2000
 
 
-def test_a_field_curve_routes_a_high_confidence_field_automatically(store):
+def test_a_field_curve_routes_a_high_confidence_field_automatically(store: CalibrationStore) -> None:
     store.save_curve(_curve("field", [(0.99, True)] * _FIELD_CURVE_HIGH_N
                              + [(0.20, False)] * _FIELD_CURVE_LOW_N))
     d = Router(store).decide("retainage_rate", confidence=0.999)
@@ -78,7 +86,7 @@ def test_a_field_curve_routes_a_high_confidence_field_automatically(store):
     assert d.threshold is not None
 
 
-def test_a_field_curve_still_reviews_a_low_confidence_field(store):
+def test_a_field_curve_still_reviews_a_low_confidence_field(store: CalibrationStore) -> None:
     store.save_curve(_curve("field", [(0.99, True)] * _FIELD_CURVE_HIGH_N
                              + [(0.20, False)] * _FIELD_CURVE_LOW_N))
     d = Router(store).decide("retainage_rate", confidence=0.25)
@@ -86,35 +94,35 @@ def test_a_field_curve_still_reviews_a_low_confidence_field(store):
     assert "below threshold" in d.reason
 
 
-def test_the_decision_reports_a_calibrated_probability(store):
+def test_the_decision_reports_a_calibrated_probability(store: CalibrationStore) -> None:
     store.save_curve(_curve("field", [(0.90, True)] * 200 + [(0.30, False)] * 110))
     d = Router(store).decide("retainage_rate", confidence=0.30)
     assert d.calibrated_confidence is not None
     assert 0.0 <= d.calibrated_confidence <= 1.0
 
 
-def test_a_failed_rule_forces_review_even_at_a_perfect_confidence(store):
+def test_a_failed_rule_forces_review_even_at_a_perfect_confidence(store: CalibrationStore) -> None:
     store.save_curve(_curve("field", [(0.99, True)] * 250 + [(0.20, False)] * 60))
     d = Router(store).decide("retainage_rate", confidence=1.0, rule_failures=("C1",))
     assert d.route == "review"
     assert "C1" in d.reason
 
 
-def test_a_model_sourced_claim_never_routes_automatically(store):
+def test_a_model_sourced_claim_never_routes_automatically(store: CalibrationStore) -> None:
     store.save_curve(_curve("field", [(0.99, True)] * 250 + [(0.20, False)] * 60))
     d = Router(store).decide("retainage_rate", confidence=0.999, method="MODEL")
     assert d.route == "review"
     assert "MODEL" in d.reason
 
 
-def test_the_decision_is_serialisable_for_the_audit_trail(store):
+def test_the_decision_is_serialisable_for_the_audit_trail(store: CalibrationStore) -> None:
     d = Router(store).decide("retainage_rate", confidence=0.5)
     payload = d.as_dict()
     assert set(payload) >= {"field", "route", "calibration_state", "basis",
                             "threshold", "calibrated_confidence", "reason"}
 
 
-def test_no_derived_threshold_is_hard_coded_anywhere_in_the_router():
+def test_no_derived_threshold_is_hard_coded_anywhere_in_the_router() -> None:
     """A stray 0.9 in this file would silently undo the whole phase.
 
     TARGET_ACCURACY_DEFAULT is permitted: a *target* is a policy figure that the
@@ -154,7 +162,7 @@ _EXTRACT_FLOAT_ALLOWLIST: frozenset[tuple[str, int, float]] = frozenset({
 })
 
 
-def test_the_same_guard_covers_extract_where_a_floor_was_hiding():
+def test_the_same_guard_covers_extract_where_a_floor_was_hiding() -> None:
     """F-24. The principle was right and its SCOPE was wrong: extract/ocr.py
     carried MIN_CONFIDENCE = 0.5, an uncalibrated cut-off written by feel, on
     the noisiest path in the product, with no equivalent guard.
@@ -187,7 +195,7 @@ def test_the_same_guard_covers_extract_where_a_floor_was_hiding():
 
 # ---- Hold-back audit: F-49 ----
 
-def test_a_fraction_of_auto_eligible_fields_is_held_back_for_audit(store):
+def test_a_fraction_of_auto_eligible_fields_is_held_back_for_audit(store: CalibrationStore) -> None:
     """Without it, a field type that crosses its threshold stops producing labels
     entirely, and the curve can never see that extraction has degraded.
 
@@ -205,16 +213,16 @@ def test_a_fraction_of_auto_eligible_fields_is_held_back_for_audit(store):
     assert 5 <= held <= 45, f"held back {held} of 400 at a 5% fraction"
 
 
-def test_a_held_back_decision_says_why():
+def test_a_held_back_decision_says_why() -> None:
     """It is not a low-confidence review and must not read like one to the
     reviewer, or they will 'fix' an extraction that was right."""
-    store = CalibrationStore(":memory:")
+    store = CalibrationStore(pathlib.Path(":memory:"))
     store.save_curve(_curve("field", [(0.99, True)] * 2200))
     router = Router(store, audit_fraction=1.0)
     assert "audit" in router.decide("retainage_rate", confidence=0.999).reason
 
 
-def test_a_drifted_field_has_its_threshold_withdrawn_automatically(store):
+def test_a_drifted_field_has_its_threshold_withdrawn_automatically(store: CalibrationStore) -> None:
     """Seeded degradation. A human who has to notice is a human who will not.
 
     2200, not 900, for the field curve so it starts genuinely
@@ -228,7 +236,7 @@ def test_a_drifted_field_has_its_threshold_withdrawn_automatically(store):
     assert Router(store).decide("retainage_rate", confidence=0.999).route == "review"
 
 
-def test_audit_labels_never_promote_a_synthetic_curve(store):
+def test_audit_labels_never_promote_a_synthetic_curve(store: CalibrationStore) -> None:
     """basis='audit' is field evidence. basis='synthetic' contaminates. Neither
     rule may leak into the other.
 
