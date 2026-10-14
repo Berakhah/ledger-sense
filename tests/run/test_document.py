@@ -3,6 +3,7 @@
 import io
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import cast
 
 import pypdfium2 as pdfium
 import pytest
@@ -13,7 +14,7 @@ from ledger_sense.corpus.generate import generate
 from ledger_sense.domain.money import money
 from ledger_sense.domain.vendor import VendorLedger as _VendorLedger
 from ledger_sense.extract.assemble import UnextractableField, assemble_pay_application
-from ledger_sense.provenance import Claim
+from ledger_sense.provenance import Claim, FileSource
 from ledger_sense.run.document import RunOutcome, run_document
 from ledger_sense.store.retention import documents, findings
 from ledger_sense.store.vendors import save_vendor_ledger
@@ -234,6 +235,7 @@ def test_a_clean_document_is_extracted_with_one_claim_per_provenance_entry(db: R
         s = stored[field]
         assert s.tenant_id == db.tenant_id
         assert s.method == "deterministic"
+        assert isinstance(claim.source, FileSource)
         assert s.page == claim.source.page
         assert (s.x0, s.top, s.x1, s.bottom) == claim.source.bbox
         if isinstance(claim.value, Decimal):
@@ -254,12 +256,12 @@ def test_an_unextractable_field_becomes_an_x0_finding_without_a_box(
 ) -> None:
     import ledger_sense.run.document as run_module
 
-    real = run_module.assemble_pay_application
+    real = assemble_pay_application
 
     def _drop_previous_payments(pdf: bytes, source_path: str) -> object:
         app = real(pdf, source_path)
         app.provenance.pop("previous_payments")
-        app.provenance["_unextractable"].append(
+        cast(list[UnextractableField], app.provenance["_unextractable"]).append(
             UnextractableField("previous_payments", "label not found on page"))
         return app
     monkeypatch.setattr(run_module, "assemble_pay_application", _drop_previous_payments)
@@ -339,12 +341,12 @@ def test_arithmetic_is_not_run_on_a_field_that_could_not_be_extracted(
     a footing rule run on that zero is a confident lie. X0 says the truth."""
     import ledger_sense.run.document as run_module
 
-    real = run_module.assemble_pay_application
+    real = assemble_pay_application
 
     def _scrub_total(pdf: bytes, source_path: str) -> object:
         app = real(pdf, source_path)
         app.provenance.pop("total_completed_and_stored")
-        app.provenance["_unextractable"].append(
+        cast(list[UnextractableField], app.provenance["_unextractable"]).append(
             UnextractableField("total_completed_and_stored", "label not found on page"))
         return app.model_copy(update={"total_completed_and_stored": money("0.00")})
     monkeypatch.setattr(run_module, "assemble_pay_application", _scrub_total)
@@ -409,7 +411,7 @@ def test_a7_never_fires_because_no_uploaded_document_has_a_contract(
 ) -> None:
     import ledger_sense.run.document as run_module
 
-    real = run_module.assemble_pay_application
+    real = assemble_pay_application
 
     def _negative_change_orders(pdf: bytes, source_path: str) -> object:
         return real(pdf, source_path).model_copy(update={"change_orders_net": money("-1.00")})

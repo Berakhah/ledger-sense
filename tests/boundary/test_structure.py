@@ -334,5 +334,5 @@ def test_the_runner_imports_nothing_that_could_reach_a_provider() -> None:
                 names += [f"{node.module}.{alias.name}" for alias in node.names]
             for name in names:
                 if any(name == f or name.startswith(f + ".") for f in _RUNNER_FORBIDDEN):
-                    offenders.append(f"{path}:{node.lineno} imports {name}")
+                    offenders.append(f"{path}:{getattr(node, 'lineno', 0)} imports {name}")
     assert offenders == [], offenders
