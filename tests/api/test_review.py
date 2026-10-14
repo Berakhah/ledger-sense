@@ -29,7 +29,7 @@ from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
-from ledger_sense.store.vendors import load_vendor_ledger
+from ledger_sense.store.vendors import load_vendor_ledger, load_vendor_ledger_for_update
 
 app = FastAPI()
 app.include_router(router)
@@ -444,7 +444,7 @@ def test_confirm_vendor_loads_the_ledger_through_the_concurrency_guard(
     loader fails this test even though store/vendors.py itself is untouched.
     """
     calls: list[str] = []
-    real = review.load_vendor_ledger_for_update
+    real = load_vendor_ledger_for_update
 
     def spy(conn: Any, tenant_id: str) -> Any:
         calls.append(tenant_id)

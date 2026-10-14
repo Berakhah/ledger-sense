@@ -24,11 +24,14 @@ against a fake transport.
 """
 
 import pathlib
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
-import vcr
+import vcr  # type: ignore[import-untyped]  # vcrpy ships no stubs
 
 from ledger_sense.domain.money import money
 from ledger_sense.writeback.idempotency import IdempotencyLedger
@@ -37,10 +40,11 @@ from ledger_sense.writeback.interface import (
     WriteRequest,
     build_idempotency_key,
 )
-from ledger_sense.writeback.qbo import QBOAdapter
+from ledger_sense.writeback.qbo import HttpQBOClient, QBOAdapter
+from ledger_sense.writeback.tokens import TokenStore
 
 
-def _scrub_response(response):
+def _scrub_response(response: dict[str, Any]) -> dict[str, Any]:
     """REVISED (F-28). `filter_headers` scrubs the REQUEST header and
     `filter_post_data_parameters` the REQUEST body. NEITHER touches the response
     body — and the OAuth token endpoint returns access_token and refresh_token
@@ -80,13 +84,13 @@ qbo_vcr = vcr.VCR(
 
 
 @pytest.fixture()
-def ledger(tmp_path):
+def ledger(tmp_path: Path) -> Iterator[IdempotencyLedger]:
     led = IdempotencyLedger(str(tmp_path / "writes.db"))
     yield led
     led.close()
 
 
-def _request(application_no):
+def _request(application_no: int) -> WriteRequest:
     return WriteRequest(
         idempotency_key=build_idempotency_key("sandbox", "C-SANDBOX", application_no),
         doc_id="doc-sandbox", vendor_ref="1", vendor_invoice_number=None,
@@ -102,28 +106,28 @@ def _request(application_no):
 # before any of these ever touch the network.
 # ---------------------------------------------------------------------------
 
-@qbo_vcr.use_cassette("create_bill.yaml")
-def test_a_bill_can_be_created_in_the_sandbox(ledger, sandbox_client):
+@qbo_vcr.use_cassette("create_bill.yaml")  # type: ignore[untyped-decorator]
+def test_a_bill_can_be_created_in_the_sandbox(ledger: IdempotencyLedger, sandbox_client: HttpQBOClient) -> None:
     result = QBOAdapter(sandbox_client, ledger,
                         realm_id="sandbox").create_unapproved_bill(_request(901))
     assert result.remote_id
 
 
-@qbo_vcr.use_cassette("find_bill_by_docnumber.yaml")
-def test_a_created_bill_can_be_found_by_its_stamped_key(ledger, sandbox_client):
+@qbo_vcr.use_cassette("find_bill_by_docnumber.yaml")  # type: ignore[untyped-decorator]
+def test_a_created_bill_can_be_found_by_its_stamped_key(ledger: IdempotencyLedger, sandbox_client: HttpQBOClient) -> None:
     request = _request(902)
     QBOAdapter(sandbox_client, ledger, realm_id="sandbox").create_unapproved_bill(request)
     assert sandbox_client.find_bill_by_docnumber(request.idempotency_key) is not None
 
 
-@qbo_vcr.use_cassette("book_close_date.yaml")
-def test_the_book_close_date_can_be_read(sandbox_client):
+@qbo_vcr.use_cassette("book_close_date.yaml")  # type: ignore[untyped-decorator]
+def test_the_book_close_date_can_be_read(sandbox_client: HttpQBOClient) -> None:
     close_date = sandbox_client.get_book_close_date()
     assert close_date is None or isinstance(close_date, date)
 
 
-@qbo_vcr.use_cassette("delete_bill.yaml")
-def test_a_bill_can_be_deleted_for_reversal(ledger, sandbox_client):
+@qbo_vcr.use_cassette("delete_bill.yaml")  # type: ignore[untyped-decorator]
+def test_a_bill_can_be_deleted_for_reversal(ledger: IdempotencyLedger, sandbox_client: HttpQBOClient) -> None:
     request = _request(903)
     adapter = QBOAdapter(sandbox_client, ledger, realm_id="sandbox")
     result = adapter.create_unapproved_bill(request)
@@ -135,7 +139,7 @@ def test_a_bill_can_be_deleted_for_reversal(ledger, sandbox_client):
 # vcr configuration — run today, with zero cassette files present (F-28/F-29)
 # ---------------------------------------------------------------------------
 
-def test_no_cassette_contains_a_token():
+def test_no_cassette_contains_a_token() -> None:
     """A secret in a test fixture is still a secret in the repo (00 §3.4).
 
     F-28: the original scrubbed request headers and request bodies only. The
@@ -159,7 +163,7 @@ def test_no_cassette_contains_a_token():
                     f"{cassette.name} contains an unscrubbed token value"
 
 
-def test_different_queries_do_not_replay_each_others_responses():
+def test_different_queries_do_not_replay_each_others_responses() -> None:
     """F-29. match_on omitted "query", so every GET /query?query=… matched every
     other one — the contract test proving our fake matches the real sandbox was
     itself replaying the wrong thing."""
@@ -186,8 +190,8 @@ class _RefreshTestTransport(httpx.BaseTransport):
     already invalidated.
     """
 
-    def __init__(self, token_store, realm_id, new_refresh="rt-2",
-                 crash_after_refresh=False):
+    def __init__(self, token_store: TokenStore, realm_id: str, new_refresh: str = "rt-2",
+                 crash_after_refresh: bool = False):
         self._token_store = token_store
         self._realm_id = realm_id
         self._new_refresh = new_refresh
@@ -223,16 +227,16 @@ class _RefreshTestTransport(httpx.BaseTransport):
             200, json={"Preferences": {"AccountingInfoPrefs": {"BookCloseDate": None}}})
 
 
-def _transport_returning_401_then_200(token_store, realm_id, new_refresh="rt-2"):
+def _transport_returning_401_then_200(token_store: TokenStore, realm_id: str, new_refresh: str = "rt-2") -> _RefreshTestTransport:
     return _RefreshTestTransport(token_store, realm_id, new_refresh=new_refresh)
 
 
-def _transport_crashing_after_refresh(token_store, realm_id, new_refresh="rt-2"):
+def _transport_crashing_after_refresh(token_store: TokenStore, realm_id: str, new_refresh: str = "rt-2") -> _RefreshTestTransport:
     return _RefreshTestTransport(token_store, realm_id, new_refresh=new_refresh,
                                  crash_after_refresh=True)
 
 
-def test_a_401_triggers_a_refresh_and_retries_once(tmp_path):
+def test_a_401_triggers_a_refresh_and_retries_once(tmp_path: Path) -> None:
     """Nothing tested refresh. The plan said "refreshed on 401" in prose."""
     from cryptography.fernet import Fernet
 
@@ -246,10 +250,11 @@ def test_a_401_triggers_a_refresh_and_retries_once(tmp_path):
                            realm_id="r-1", token_store=store,
                            transport=_transport_returning_401_then_200(store, "r-1"))
     assert client.get_book_close_date() is None
-    assert store.load("r-1").access != "expired"
+    tokens = store.load("r-1")
+    assert tokens is not None and tokens.access != "expired"
 
 
-def test_the_rotated_refresh_token_is_persisted_before_the_retry(tmp_path):
+def test_the_rotated_refresh_token_is_persisted_before_the_retry(tmp_path: Path) -> None:
     """Intuit ROTATES the refresh token on every refresh and expires it after
     ~100 days. Failing to persist the new one locks the integration out
     permanently, and it surfaces as a nightly smoke failure with no obvious
@@ -266,11 +271,12 @@ def test_the_rotated_refresh_token_is_persisted_before_the_retry(tmp_path):
     client = HttpQBOClient(base_url="https://sandbox.example.test",
                            realm_id="r-1", token_store=store, transport=transport)
     client.get_book_close_date()
-    assert store.load("r-1").refresh == "rt-2"
+    tokens = store.load("r-1")
+    assert tokens is not None and tokens.refresh == "rt-2"
     assert transport.refresh_persisted_before_retry is True
 
 
-def test_a_crash_between_refresh_and_retry_leaves_a_usable_token(tmp_path):
+def test_a_crash_between_refresh_and_retry_leaves_a_usable_token(tmp_path: Path) -> None:
     """The one that bites at 2am: the refresh succeeded, the retry died, and the
     old refresh token is already dead upstream."""
     from cryptography.fernet import Fernet
@@ -286,10 +292,11 @@ def test_a_crash_between_refresh_and_retry_leaves_a_usable_token(tmp_path):
         transport=_transport_crashing_after_refresh(store, "r-1", new_refresh="rt-2"))
     with pytest.raises(ConnectionError):
         client.get_book_close_date()
-    assert store.load("r-1").refresh == "rt-2", "the rotated token was lost"
+    tokens = store.load("r-1")
+    assert tokens is not None and tokens.refresh == "rt-2", "the rotated token was lost"
 
 
-def test_no_token_value_is_ever_logged(caplog, tmp_path):
+def test_no_token_value_is_ever_logged(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     from cryptography.fernet import Fernet
 
     from ledger_sense.writeback.tokens import TokenStore
@@ -301,7 +308,7 @@ def test_no_token_value_is_ever_logged(caplog, tmp_path):
     assert "at-secret" not in caplog.text and "rt-secret" not in caplog.text
 
 
-def test_get_book_close_date_unwraps_the_real_preferences_envelope(tmp_path):
+def test_get_book_close_date_unwraps_the_real_preferences_envelope(tmp_path: Path) -> None:
     """I-2 (Task 37 review). QBO's real GET /preferences response is
     {"Preferences": {"AccountingInfoPrefs": {...}}} — a "Preferences"
     envelope get_book_close_date originally skipped, silently reading a real
