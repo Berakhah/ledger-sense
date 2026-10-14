@@ -15,9 +15,48 @@ function docKey(stem: string): string {
   return `${stem}-w${test.info().workerIndex}`
 }
 
+/** How long the server's own count may take to reach 50 / 50. One reviewer's
+ *  fifty accepts were measured landing in under a second; under fullyParallel
+ *  several workers each fire fifty at the one API process at once, and with
+ *  ten workers draining them was measured at 10-28s, every write a 200 and
+ *  none lost. The keyboard's speed is asserted separately, on the writes, not
+ *  on this count. */
+const SERVER_CONFIRM_MS = 60_000
+
+/** Seeding renders a PDF under the process-wide PDFium lock, so parallel
+ *  workers queue for it (measured up to ~20s at ten workers), and that wait
+ *  comes out of this test's budget. The budget must outlast seed plus the
+ *  confirm wait, or a genuine stall hits the test timeout first and the
+ *  failure evidence below is never attached. */
+const FIFTY_TEST_MS = 30_000 + SERVER_CONFIRM_MS
+
 test('clears fifty exceptions without a single mouse event', async ({ page }) => {
+  test.setTimeout(FIFTY_TEST_MS)
   await forbidMouse(page)
   const docId = await seedDocument(page, docKey('doc-50'), 50)
+  let accepts = 0
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && r.url().endsWith('/accept')) accepts++
+  })
+  // Evidence for the one failure this test has shown that is not a budget:
+  // once in ~440 parallel runs the count stopped at 49 / 50 with that item
+  // really open in the database, while every request the API logged was a
+  // 200. Unreproduced since, so recorded and attached on failure rather than
+  // guessed at. pdf.js aborting its own PDF fetch is routine and not recorded.
+  const evidence: string[] = []
+  const t0 = Date.now()
+  const note = (line: string) => evidence.push(`${Date.now() - t0}ms ${line}`)
+  page.on('requestfailed', (r) => {
+    if (!r.url().endsWith('/pdf')) note(`FAILED ${r.method()} ${r.url()} ${r.failure()?.errorText ?? ''}`)
+  })
+  page.on('response', (r) => {
+    const url = r.url()
+    if (r.request().method() === 'POST' && url.endsWith('/accept')) note(`${r.status()} POST ${url}`)
+    else if (r.status() >= 400) note(`${r.status()} ${r.request().method()} ${url}`)
+    else if (url.endsWith('/progress')) void r.text().then((body) => note(`200 progress ${body}`), () => undefined)
+  })
+  page.on('pageerror', (err) => note(`pageerror ${err.message}`))
+  page.on('console', (m) => { if (m.type() === 'error') note(`console ${m.text()}`) })
   await page.goto(`/review/${docId}`)
   await expect(page.getByTestId('progress')).toHaveText('0 / 50')
 
@@ -25,7 +64,27 @@ test('clears fifty exceptions without a single mouse event', async ({ page }) =>
     await page.keyboard.press('Enter')
   }
 
-  await expect(page.getByTestId('progress')).toHaveText('50 / 50')
+  // Every keystroke became its own write, on the keystroke (optimistic, see
+  // ReviewQueue's actOnCurrent): a dropped Enter fails here, fast.
+  await expect.poll(() => accepts).toBe(50)
+  try {
+    await expect(page.getByTestId('progress'))
+      .toHaveText('50 / 50', { timeout: SERVER_CONFIRM_MS })
+  } catch (error) {
+    // Best effort: a closed page must not replace the assertion's own error.
+    const markers: string[] = []
+    for (const id of ['progress', 'failed-count', 'unverified-count', 'action-error']) {
+      const text = await page.getByTestId(id).textContent({ timeout: 1_000 }).catch(() => null)
+      if (text !== null) markers.push(`${id}: ${text}`)
+    }
+    await test.info().attach('fifty-exception failure evidence', {
+      body: ['page markers:', ...markers, 'network, in order:', ...evidence].join('\n'),
+      contentType: 'text/plain',
+    }).catch(() => undefined)
+    throw error
+  }
+  // Exactly fifty: a duplicate write fired after the poll above saw 50 fails here.
+  expect(accepts).toBe(50)
   await expectNoMouse(page)
 })
 
