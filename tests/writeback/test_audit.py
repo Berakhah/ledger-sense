@@ -1,4 +1,6 @@
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 
@@ -17,7 +19,7 @@ from ledger_sense.writeback.qbo import QBOAdapter
 from tests.writeback.test_qbo import FakeQBOClient
 
 
-def _request():
+def _request() -> WriteRequest:
     return WriteRequest(
         idempotency_key=build_idempotency_key("abc123", "C-1", 2),
         doc_id="doc-1", vendor_ref="V-9", vendor_invoice_number=None,
@@ -28,7 +30,7 @@ def _request():
 
 
 @pytest.fixture()
-def audited(tmp_path):
+def audited(tmp_path: Path) -> Iterator[tuple[AuditedAdapter, AuditLog, FakeQBOClient]]:
     ledger = IdempotencyLedger(str(tmp_path / "writes.db"))
     audit = AuditLog(str(tmp_path / "audit.db"))
     client = FakeQBOClient()
@@ -39,7 +41,7 @@ def audited(tmp_path):
     audit.close()
 
 
-def test_a_write_records_document_approver_and_remote_id(audited):
+def test_a_write_records_document_approver_and_remote_id(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     adapter, audit, _client = audited
     request = _request()
     result = adapter.create_unapproved_bill(request)
@@ -49,7 +51,7 @@ def test_a_write_records_document_approver_and_remote_id(audited):
     assert entry.remote_id == result.remote_id
 
 
-def test_a_reversal_is_recorded_against_the_same_document(audited):
+def test_a_reversal_is_recorded_against_the_same_document(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     adapter, audit, _client = audited
     request = _request()
     result = adapter.create_unapproved_bill(request)
@@ -57,7 +59,7 @@ def test_a_reversal_is_recorded_against_the_same_document(audited):
     assert [e.action for e in audit.for_document("doc-1")] == ["write", "reversal"]
 
 
-def test_reversal_removes_the_bill_from_the_accounting_system(audited):
+def test_reversal_removes_the_bill_from_the_accounting_system(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     adapter, _audit, client = audited
     request = _request()
     result = adapter.create_unapproved_bill(request)
@@ -65,7 +67,7 @@ def test_reversal_removes_the_bill_from_the_accounting_system(audited):
     assert result.remote_id not in client.bills
 
 
-def test_reversal_restores_the_prior_state_exactly(audited):
+def test_reversal_restores_the_prior_state_exactly(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     adapter, _audit, client = audited
     before = dict(client.bills)
     request = _request()
@@ -74,7 +76,7 @@ def test_reversal_restores_the_prior_state_exactly(audited):
     assert client.bills == before
 
 
-def test_a_write_without_a_named_approver_is_refused(tmp_path):
+def test_a_write_without_a_named_approver_is_refused(tmp_path: Path) -> None:
     ledger = IdempotencyLedger(str(tmp_path / "w.db"))
     audit = AuditLog(str(tmp_path / "a.db"))
     adapter = AuditedAdapter(QBOAdapter(FakeQBOClient(), ledger, realm_id="r-1"),
@@ -85,14 +87,14 @@ def test_a_write_without_a_named_approver_is_refused(tmp_path):
     audit.close()
 
 
-def test_the_audit_trail_has_no_delete_or_update_method(audited):
+def test_the_audit_trail_has_no_delete_or_update_method(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     """An audit log you can edit is not an audit log."""
     _adapter, audit, _client = audited
     for forbidden in ("delete_entry", "update_entry", "purge", "clear"):
         assert not hasattr(audit, forbidden)
 
 
-def test_an_unmodified_chain_verifies(audited):
+def test_an_unmodified_chain_verifies(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     """F-43. The test above asserts four method names are absent from a Python
     class, while the SQLite file is writable by the same process. What the client
     hears — "full audit trail" — implies tamper evidence."""
@@ -101,7 +103,7 @@ def test_an_unmodified_chain_verifies(audited):
     assert audit.verify_chain() == []
 
 
-def test_an_edited_entry_is_detected_and_named(audited, tmp_path):
+def test_an_edited_entry_is_detected_and_named(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient], tmp_path: Path) -> None:
     adapter, audit, _client = audited
     request = _request()
     result = adapter.create_unapproved_bill(request)
@@ -115,7 +117,7 @@ def test_an_edited_entry_is_detected_and_named(audited, tmp_path):
     assert result.remote_id in str(broken)
 
 
-def test_an_edited_approved_by_is_detected_and_named(audited, tmp_path):
+def test_an_edited_approved_by_is_detected_and_named(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient], tmp_path: Path) -> None:
     """I-3. The only prior tamper test edits `detail`, so a hash function
     that (by bug) only ever covered `detail` would still pass the whole
     suite. `approved_by` is literally "the named human on the record" that
@@ -140,7 +142,7 @@ def test_an_edited_approved_by_is_detected_and_named(audited, tmp_path):
     assert result.remote_id in str(broken)
 
 
-def test_a_reversal_after_a_restart_still_names_the_document(tmp_path):
+def test_a_reversal_after_a_restart_still_names_the_document(tmp_path: Path) -> None:
     """F-42. `_doc_by_remote` was an in-memory dict, so a reversal after a
     process restart audited doc_id='unknown' — and a reversal is exactly the
     operation most likely to happen a day later."""
@@ -164,7 +166,7 @@ def test_a_reversal_after_a_restart_still_names_the_document(tmp_path):
     ledger.close()
 
 
-def test_reversing_an_unaudited_remote_id_is_refused(audited):
+def test_reversing_an_unaudited_remote_id_is_refused(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     """We do not delete objects in a client's books that we have no record of
     creating."""
     adapter, _audit, _client = audited
@@ -172,7 +174,7 @@ def test_reversing_an_unaudited_remote_id_is_refused(audited):
         adapter.reverse("999", "LSsomekeywedidnotwrite")
 
 
-def test_a_replayed_write_is_audited_as_a_replay_not_a_second_write(audited):
+def test_a_replayed_write_is_audited_as_a_replay_not_a_second_write(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     adapter, audit, _client = audited
     adapter.create_unapproved_bill(_request())
     adapter.create_unapproved_bill(_request())
@@ -184,13 +186,13 @@ def test_a_replayed_write_is_audited_as_a_replay_not_a_second_write(audited):
 # --- Additional tests beyond the brief: hash chain internals ---
 
 
-def test_verify_chain_is_empty_on_a_fresh_empty_log(tmp_path):
+def test_verify_chain_is_empty_on_a_fresh_empty_log(tmp_path: Path) -> None:
     audit = AuditLog(str(tmp_path / "audit.db"))
     assert audit.verify_chain() == []
     audit.close()
 
 
-def test_entries_carry_a_populated_hash_chain(audited):
+def test_entries_carry_a_populated_hash_chain(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     """Each row must have prev_hash/entry_hash populated by _append — not left
     to a schema default — since verify_chain's correctness depends on the
     chain actually being computed, not merely declared in the schema."""
@@ -203,7 +205,7 @@ def test_entries_carry_a_populated_hash_chain(audited):
     assert len(row[1]) == 64
 
 
-def test_second_entry_chains_from_the_first(audited):
+def test_second_entry_chains_from_the_first(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     adapter, audit, _client = audited
     request = _request()
     result = adapter.create_unapproved_bill(request)
@@ -214,20 +216,20 @@ def test_second_entry_chains_from_the_first(audited):
     assert rows[1][0] == rows[0][1]
 
 
-def test_document_for_remote_returns_none_when_unknown(tmp_path):
+def test_document_for_remote_returns_none_when_unknown(tmp_path: Path) -> None:
     audit = AuditLog(str(tmp_path / "audit.db"))
     assert audit.document_for_remote("nope") is None
     audit.close()
 
 
-def test_document_for_remote_finds_the_write_entry(audited):
+def test_document_for_remote_finds_the_write_entry(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     adapter, audit, _client = audited
     request = _request()
     result = adapter.create_unapproved_bill(request)
     assert audit.document_for_remote(result.remote_id) == "doc-1"
 
 
-def test_concurrent_appends_do_not_fork_the_chain(tmp_path):
+def test_concurrent_appends_do_not_fork_the_chain(tmp_path: Path) -> None:
     """I-1. `_last_hash` (a SELECT) and the following INSERT used to be two
     separate implicit transactions, so two threads could both read the same
     chain tip and append from it — corrupting the chain and making
@@ -270,7 +272,7 @@ def test_concurrent_appends_do_not_fork_the_chain(tmp_path):
 # Final whole-branch review findings
 # ---------------------------------------------------------------------------
 
-def test_audited_adapter_satisfies_the_writeback_port(audited):
+def test_audited_adapter_satisfies_the_writeback_port(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     """I-1. QBOAdapter and ExportAdapter both had this isinstance check
     (plus a mypy-time static counterpart in their own modules); AuditedAdapter
     — the composition root production code would actually inject — had
@@ -282,7 +284,7 @@ def test_audited_adapter_satisfies_the_writeback_port(audited):
     assert isinstance(adapter, WritebackPort)
 
 
-def test_reversal_audit_entry_records_the_actual_idempotency_key(audited):
+def test_reversal_audit_entry_records_the_actual_idempotency_key(audited: tuple[AuditedAdapter, AuditLog, FakeQBOClient]) -> None:
     """M-C. `record_reversal` used to hardcode `idempotency_key=None` even
     though `AuditedAdapter.reverse` already has the key on hand — dropping
     it from the reversal's own audit row is an unnecessary omission in a
@@ -296,7 +298,7 @@ def test_reversal_audit_entry_records_the_actual_idempotency_key(audited):
     assert reversal_entry.idempotency_key == request.idempotency_key
 
 
-def test_write_reverse_write_through_audited_qbo_adapter_produces_a_new_bill(tmp_path):
+def test_write_reverse_write_through_audited_qbo_adapter_produces_a_new_bill(tmp_path: Path) -> None:
     """I-2. The reviewer manually verified this path (AuditedAdapter wrapping
     QBOAdapter) outside the test suite; it had zero committed coverage
     despite being the exact composition production code would inject.
@@ -323,7 +325,7 @@ def test_write_reverse_write_through_audited_qbo_adapter_produces_a_new_bill(tmp
     audit.close()
 
 
-def test_record_write_carries_the_requests_vendor_fields(tmp_path) -> None:
+def test_record_write_carries_the_requests_vendor_fields(tmp_path: Path) -> None:
     """F-40's DocNumber/PrivateNote split lives in qbo.py; this is the
     audit-side half — the vendor identity a bill was posted under must be
     recoverable later without re-deriving it, because the idempotency key
@@ -347,7 +349,7 @@ def test_record_write_carries_the_requests_vendor_fields(tmp_path) -> None:
     audit.close()
 
 
-def test_record_reversal_carries_no_vendor_fields(tmp_path) -> None:
+def test_record_reversal_carries_no_vendor_fields(tmp_path: Path) -> None:
     """A reversal call (remote_id + idempotency_key only) has no vendor data
     of its own to record — None, not a stale copy of the original write's."""
     audit = AuditLog(str(tmp_path / "audit.db"))
@@ -368,7 +370,7 @@ def test_record_reversal_carries_no_vendor_fields(tmp_path) -> None:
     audit.close()
 
 
-def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(tmp_path):
+def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(tmp_path: Path) -> None:
     """I-2, the ExportAdapter composition. Not the QBO adapter — the export
     peer adapter, which reuses the idempotency key itself as the remote id."""
     audit = AuditLog(str(tmp_path / "audit.db"))
@@ -388,7 +390,7 @@ def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(
     audit.close()
 
 
-def test_audit_log_from_environment_builds_a_log_under_the_configured_dir(tmp_path, monkeypatch) -> None:
+def test_audit_log_from_environment_builds_a_log_under_the_configured_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from ledger_sense.writeback.audit import audit_log_from_environment
     monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
     audit = audit_log_from_environment()
@@ -396,7 +398,7 @@ def test_audit_log_from_environment_builds_a_log_under_the_configured_dir(tmp_pa
     assert (tmp_path / "audit.db").exists()
 
 
-def test_audit_log_from_environment_raises_when_unset(monkeypatch) -> None:
+def test_audit_log_from_environment_raises_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     from ledger_sense.writeback.audit import audit_log_from_environment
     monkeypatch.delenv("LEDGER_SENSE_WRITEBACK_DIR", raising=False)
     with pytest.raises(RuntimeError, match="LEDGER_SENSE_WRITEBACK_DIR"):

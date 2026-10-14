@@ -131,7 +131,7 @@ def _seed_complete_document(conn: sa.Connection, tenant_id: str) -> str:
     return document_id
 
 
-def test_build_write_request_assembles_a_complete_request(tenant_id: str, monkeypatch) -> None:
+def test_build_write_request_assembles_a_complete_request(tenant_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEDGER_SENSE_DEFAULT_ACCOUNT_REF", "54")
     with store_session.app_engine().begin() as conn:
         document_id = _seed_complete_document(conn, tenant_id)
@@ -152,7 +152,7 @@ def test_build_write_request_assembles_a_complete_request(tenant_id: str, monkey
     assert request.idempotency_key == build_idempotency_key("abc123", "C-1", 2)
 
 
-def test_build_write_request_picks_the_latest_claim_for_a_line(tenant_id: str, monkeypatch) -> None:
+def test_build_write_request_picks_the_latest_claim_for_a_line(tenant_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A reviewer's edit to this_period must be what actually bills, not the
     original extraction — the same latest-by-observed_at rule as every other
     field."""
@@ -171,7 +171,7 @@ def test_build_write_request_picks_the_latest_claim_for_a_line(tenant_id: str, m
     assert request.line_items[0].amount == money("750.00")
 
 
-def test_build_write_request_refuses_a_line_missing_description(tenant_id: str, monkeypatch) -> None:
+def test_build_write_request_refuses_a_line_missing_description(tenant_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEDGER_SENSE_DEFAULT_ACCOUNT_REF", "54")
     with store_session.app_engine().begin() as conn:
         document_id = _insert_document(conn, tenant_id)
@@ -190,7 +190,7 @@ def test_build_write_request_refuses_a_line_missing_description(tenant_id: str, 
                                 vendor_ref="V-9", vendor_invoice_number=None)
 
 
-def test_build_write_request_refuses_a_missing_summary_field(tenant_id: str, monkeypatch) -> None:
+def test_build_write_request_refuses_a_missing_summary_field(tenant_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEDGER_SENSE_DEFAULT_ACCOUNT_REF", "54")
     with store_session.app_engine().begin() as conn:
         document_id = _insert_document(conn, tenant_id)
@@ -211,7 +211,7 @@ def test_build_write_request_refuses_a_missing_summary_field(tenant_id: str, mon
                                 vendor_ref="V-9", vendor_invoice_number=None)
 
 
-def test_build_write_request_refuses_a_document_with_no_lines(tenant_id: str, monkeypatch) -> None:
+def test_build_write_request_refuses_a_document_with_no_lines(tenant_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEDGER_SENSE_DEFAULT_ACCOUNT_REF", "54")
     with store_session.app_engine().begin() as conn:
         document_id = _insert_document(conn, tenant_id)
@@ -228,7 +228,7 @@ def test_build_write_request_refuses_a_document_with_no_lines(tenant_id: str, mo
                                 vendor_ref="V-9", vendor_invoice_number=None)
 
 
-def test_build_write_request_raises_when_default_account_ref_unset(tenant_id: str, monkeypatch) -> None:
+def test_build_write_request_raises_when_default_account_ref_unset(tenant_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEDGER_SENSE_DEFAULT_ACCOUNT_REF", raising=False)
     with store_session.app_engine().begin() as conn:
         document_id = _seed_complete_document(conn, tenant_id)
