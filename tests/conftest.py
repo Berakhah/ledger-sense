@@ -13,9 +13,11 @@ import os
 
 import pytest
 
+from ledger_sense.writeback.qbo import HttpQBOClient
+
 
 @pytest.fixture()
-def sandbox_client():
+def sandbox_client() -> HttpQBOClient:
     """Real sandbox client, or skip. A fresh clone replays cassettes without
     credentials; only re-recording needs them.
 
