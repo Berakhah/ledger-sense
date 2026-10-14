@@ -12,19 +12,19 @@ from ledger_sense.writeback.interface import (
 )
 
 
-def test_idempotency_key_is_deterministic():
+def test_idempotency_key_is_deterministic() -> None:
     a = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2)
     b = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2)
     assert a == b
 
 
-def test_idempotency_key_changes_with_the_application_number():
+def test_idempotency_key_changes_with_the_application_number() -> None:
     a = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2)
     b = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=3)
     assert a != b
 
 
-def test_idempotency_key_fits_a_qbo_docnumber_field():
+def test_idempotency_key_fits_a_qbo_docnumber_field() -> None:
     """QBO DocNumber is capped at 21 characters. A key that will not fit cannot
     be stamped, and an unstamped key cannot be queried back after a crash."""
     key = build_idempotency_key(document_hash="a" * 64, contract_id="C-1",
@@ -32,11 +32,11 @@ def test_idempotency_key_fits_a_qbo_docnumber_field():
     assert len(key) <= 21
 
 
-def test_line_item_rejects_a_float_amount():
+def test_line_item_rejects_a_float_amount() -> None:
     """VERIFIED FAILING as originally written (F-01). Pydantic 2.13 in lax mode
     accepts a float into a Decimal field and coerces it:
 
-        LineItem(description="x", amount=1000.0, account_ref="54")
+        LineItem(description="x", amount=1000.0, account_ref="54")  # type: ignore[arg-type]
         -> LineItem(amount=Decimal('1000.0'))    # no exception
 
     `Money` now carries `Strict()` and `LineItem` sets `strict=True`, which is
@@ -45,18 +45,18 @@ def test_line_item_rejects_a_float_amount():
     missing argument, which is how a test can be green and prove nothing."""
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
-        LineItem(description="x", amount=1000.0, account_ref="54")
+        LineItem(description="x", amount=1000.0, account_ref="54")  # type: ignore[arg-type]
 
 
-def test_line_item_rejects_a_float_that_is_exact_in_binary_too():
+def test_line_item_rejects_a_float_that_is_exact_in_binary_too() -> None:
     """0.5 and 1024.0 are exactly representable, so a "does it round-trip" check
     would pass them. The rule is no float, not no lossy float."""
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
-        LineItem(description="x", amount=1024.0, account_ref="54")
+        LineItem(description="x", amount=1024.0, account_ref="54")  # type: ignore[arg-type]
 
 
-def test_a_conforming_adapter_satisfies_the_protocol():
+def test_a_conforming_adapter_satisfies_the_protocol() -> None:
     class FakeAdapter:
         name = "fake"
 
@@ -76,17 +76,17 @@ def test_a_conforming_adapter_satisfies_the_protocol():
     assert isinstance(FakeAdapter(), WritebackPort)
 
 
-def test_a_missing_method_fails_the_protocol():
+def test_a_missing_method_fails_the_protocol() -> None:
     class Incomplete:
         name = "incomplete"
 
-        def create_unapproved_bill(self, request):
+        def create_unapproved_bill(self, request: WriteRequest) -> WriteResult:
             raise NotImplementedError
 
     assert not isinstance(Incomplete(), WritebackPort)
 
 
-def test_write_request_carries_an_optional_vendor_invoice_number():
+def test_write_request_carries_an_optional_vendor_invoice_number() -> None:
     """DocNumber on a QBO Bill is the vendor's own invoice number — the field
     bookkeepers reconcile against paper. Ledger Sense's idempotency key must
     NOT overwrite it when a vendor invoice number was actually extracted; the

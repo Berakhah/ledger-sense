@@ -17,6 +17,9 @@ from typing import Literal, NamedTuple
 from ledger_sense.store.sqlite import connect as _connect
 
 Basis = Literal["synthetic", "field"]
+# What a Label may carry. "audit" is field evidence sampled from the auto-accepted
+# stream (see router.py); a fitted curve collapses it to "field", hence two types.
+LabelBasis = Literal["synthetic", "field", "audit"]
 CalibrationState = Literal["uncalibrated", "calibrated:synthetic", "calibrated:field"]
 
 # MIN_LABELS_FOR_FIELD IS GONE — REVISED (F-47).
@@ -142,7 +145,7 @@ class Label(NamedTuple):
     was_correct: bool
     observed_at: datetime
     source_claim_id: str
-    basis: Basis
+    basis: LabelBasis
 
 
 def fit_isotonic(xs: Sequence[float], ys: Sequence[float]) -> list[float]:
