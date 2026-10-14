@@ -22,8 +22,12 @@
   --color-rule: oklch(0.90 0.004 250);
 
   /* An exception's own state. Deliberately not the accent: the accent means
-     "accepted", and one colour must not carry two meanings. */
-  --color-flag: oklch(0.62 0.15 45);
+     "accepted", and one colour must not carry two meanings. It sets small
+     text on every screen, so it must clear WCAG AA (4.5:1) on paper AND on
+     its own bg-flag/10 tint, the darker of the two: 0.53 gives 5.5:1 and
+     4.7:1. At 0.62 it was 3.75:1 and 3.35:1. lib/contrast.css.test.ts holds
+     it there. */
+  --color-flag: oklch(0.53 0.15 45);
 
   /* Uncalibrated confidence renders grey and labelled, never on this ramp —
      see CLAUDE.md, "Confidence routing". The ramp exists for the day a
