@@ -36,6 +36,54 @@ def test_the_client_profile_uses_no_third_party_processor() -> None:
             assert not any(h in image for h in ("supabase", "planetscale", "neon")), name
 
 
+def _writable_mount_covering(svc: dict[str, object], path: str) -> str | None:
+    """'tmpfs' or 'volume' if `path` is under a writable mount (the API
+    containers run read_only), else None."""
+    for target in svc.get("tmpfs", []):  # type: ignore[attr-defined]
+        if path == target or path.startswith(target.rstrip("/") + "/"):
+            return "tmpfs"
+    for volume in svc.get("volumes", []):  # type: ignore[attr-defined]
+        target = volume.split(":")[1]
+        if path == target or path.startswith(target.rstrip("/") + "/"):
+            return "volume"
+    return None
+
+
+def test_every_api_service_has_a_writable_calibration_dir() -> None:
+    """api/review.py writes a calibration label on every accept/edit of a
+    finding whose field has a match score, and route/deps.py raises when
+    LEDGER_SENSE_CALIBRATION_DIR is unset. The compose file once set neither
+    the variable nor a mount, so on any real document every accept in the
+    containers would have returned 500 — and the e2e seed, whose claims carry
+    no match score, never reaches that line to say so."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    for name in ("app", "app-demo"):
+        svc = compose["services"][name]
+        path = svc["environment"].get("LEDGER_SENSE_CALIBRATION_DIR")
+        assert path, f"{name}: LEDGER_SENSE_CALIBRATION_DIR is not set"
+        assert _writable_mount_covering(svc, path), f"{name}: {path} is on a read-only filesystem"
+
+
+def test_client_calibration_labels_survive_a_restart() -> None:
+    """The labels are the review queue's training signal; on tmpfs they would
+    be gone at the next restart. Only the demo (SYNTHETIC, ephemeral by
+    design) may keep them there."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    client = compose["services"]["app"]
+    path = client["environment"]["LEDGER_SENSE_CALIBRATION_DIR"]
+    assert _writable_mount_covering(client, path) == "volume"
+
+
+def test_the_image_hands_the_client_calibration_dir_to_the_app_user() -> None:
+    """A fresh named volume takes its ownership from the image's directory at
+    the mount point; without this chown the non-root app user gets a
+    PermissionError on the first label (same reason the blob dir has one)."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    path = compose["services"]["app"]["environment"]["LEDGER_SENSE_CALIBRATION_DIR"]
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert f"chown ledger:ledger {path}" in dockerfile
+
+
 def test_env_example_contains_no_real_secret() -> None:
     for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
         if "=" not in line or line.startswith("#"):
