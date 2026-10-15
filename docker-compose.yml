@@ -109,7 +109,8 @@ services:
       # Not encrypted: field types, confidences and correct/incorrect flags,
       # never document content. Back it up with the blobs.
       - client_calibration:/var/lib/ledger-sense/calibration
-      # Holds OAuth tokens (encrypted under the same KEK) and the audit log.
+      # Holds OAuth tokens (encrypted under LEDGER_SENSE_TOKEN_KEY, not the
+      # KEK) and the audit log.
       - client_writeback:/var/lib/ledger-sense/writeback
 
   app-demo:

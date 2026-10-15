@@ -40,7 +40,6 @@ from typing import TYPE_CHECKING, Protocol
 
 import httpx
 
-from ledger_sense.store.blobs import kek_from_environment
 from ledger_sense.writeback.idempotency import IdempotencyLedger
 from ledger_sense.writeback.interface import (
     ClosedPeriodError,
@@ -48,7 +47,7 @@ from ledger_sense.writeback.interface import (
     WriteRequest,
     WriteResult,
 )
-from ledger_sense.writeback.tokens import TokenStore
+from ledger_sense.writeback.tokens import TokenStore, token_key_from_environment
 
 if TYPE_CHECKING:
     from ledger_sense.writeback.interface import WritebackPort
@@ -434,10 +433,10 @@ def qbo_adapter_from_environment(ledger: IdempotencyLedger) -> QBOAdapter:
     """The deployment's QBO adapter: HttpQBOClient against the sandbox,
     backed by an encrypted-at-rest TokenStore, wrapping `ledger`.
 
-    Mirrors store/blobs.py's factory pattern. Reuses the deployment KEK
-    (store.blobs.kek_from_environment) for the token store rather than
-    inventing a second secret to manage — both protect at-rest client data
-    the same way.
+    Mirrors store/blobs.py's factory pattern. The token store is encrypted
+    under its own key (`LEDGER_SENSE_TOKEN_KEY`), not the document KEK: one
+    key over both would make the loss or exposure of either compromise the
+    other.
     """
     root = os.environ.get(_WRITEBACK_DIR_ENV)
     if not root:
@@ -451,7 +450,7 @@ def qbo_adapter_from_environment(ledger: IdempotencyLedger) -> QBOAdapter:
             f"before writing.")
     os.makedirs(root, exist_ok=True)
     token_store = TokenStore(os.path.join(root, "tokens.db"),
-                             fernet_key=kek_from_environment())
+                             fernet_key=token_key_from_environment())
     client = HttpQBOClient(_QBO_SANDBOX_BASE_URL, realm_id, token_store)
     return QBOAdapter(client, ledger, realm_id=realm_id)
 
