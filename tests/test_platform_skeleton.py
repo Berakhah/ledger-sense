@@ -145,3 +145,51 @@ def test_ledger_sense_runs_as_a_single_process() -> None:
     an unenforced comment."""
     from ledger_sense.__main__ import WORKERS
     assert WORKERS == 1
+
+
+def test_every_api_service_has_a_writable_writeback_dir() -> None:
+    """The idempotency ledger, audit log, export files and OAuth token store
+    all resolve their path from LEDGER_SENSE_WRITEBACK_DIR and raise when it is
+    unset. Compose set neither the variable nor a mount, so on the read-only
+    containers the first draft write would have failed — the calibration
+    directory's bug, one subsystem over."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    for name in ("app", "app-demo"):
+        svc = compose["services"][name]
+        path = svc["environment"].get("LEDGER_SENSE_WRITEBACK_DIR")
+        assert path, f"{name}: LEDGER_SENSE_WRITEBACK_DIR is not set"
+        assert _writable_mount_covering(svc, path), f"{name}: {path} is on a read-only filesystem"
+
+
+def test_client_writeback_state_survives_a_restart() -> None:
+    """The idempotency ledger is what stops a retried write posting twice, and
+    the audit log is the reversal record; on tmpfs both would vanish."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    client = compose["services"]["app"]
+    path = client["environment"]["LEDGER_SENSE_WRITEBACK_DIR"]
+    assert _writable_mount_covering(client, path) == "volume"
+
+
+def test_the_image_hands_the_client_writeback_dir_to_the_app_user() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    path = compose["services"]["app"]["environment"]["LEDGER_SENSE_WRITEBACK_DIR"]
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert f"chown ledger:ledger {path}" in dockerfile
+
+
+def test_env_example_documents_the_payment_hmac_key() -> None:
+    """domain/vendor.py reads LEDGER_SENSE_PAYMENT_HMAC_KEY and nothing told a
+    deployer it exists."""
+    assert "LEDGER_SENSE_PAYMENT_HMAC_KEY=" in (ROOT / ".env.example").read_text(encoding="utf-8")
+
+
+def test_a_retention_service_runs_the_purge_on_a_schedule() -> None:
+    """security.md must not say 'a deployment must invoke it'. The client
+    profile runs the purge itself, against the same blob volume and KEK."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    svc = compose["services"]["retention"]
+    assert svc["profiles"] == ["client"]
+    assert "ledger_sense purge" in " ".join(svc["command"])
+    blobs = compose["services"]["app"]["environment"]["LEDGER_SENSE_BLOB_ROOT"]
+    assert _writable_mount_covering(svc, blobs) == "volume"
+    assert svc["environment"]["LEDGER_SENSE_BLOB_ROOT"] == blobs

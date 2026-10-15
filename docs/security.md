@@ -175,14 +175,42 @@ the same purge routine so the same audit entries are written. Deletion of the
 tenant's account data (users, sessions, tenant row) follows once no document
 rows remain.
 
-**What deletion does not yet cover, stated plainly.** Database backups and
-filesystem snapshots taken before a purge still contain the deleted rows until
-those backups age out; a deployment's backup retention must therefore be set
-no longer than the shortest client retention term it holds, and that is an
-operator decision the compose file does not make. The purge itself is a
-library function today — the schedule that calls it nightly is not yet wired
-into `docker-compose.yml`, so a deployment must invoke it until that lands.
+**The schedule.** The `retention` service in `docker-compose.yml` (client
+profile) runs `python -m ledger_sense purge` once a day, in the same image and
+against the same blob volume and KEK as the API, and logs the JSON report. A
+failed run is retried at the next cycle; the purge is idempotent. The demo
+profile has no such job — it holds synthetic data on tmpfs.
+
+**What deletion does not yet cover, stated plainly.**
+
+- Database backups and filesystem snapshots taken before a purge still contain
+  the deleted rows until those backups age out; a deployment's backup retention
+  must be set no longer than the shortest client retention term it holds, and
+  that is an operator decision the compose file does not make.
+- The vendor ledger (`vendors`, `vendor_aliases`, `payment_details`) is not
+  touched by the purge. `payment_details` carries the last four digits of the
+  account and routing numbers, an HMAC of the full numbers, and the id of the
+  document each came from. Until the data agreement settles whether payment
+  history may outlive its source document, that data survives a document's
+  deletion.
+- The erasure-request path described above is a procedure, not a command: there
+  is no operator entry point for it yet.
+
 Nothing in this section is claimed to run automatically that does not.
+
+## Other secrets and stores
+
+- **`LEDGER_SENSE_PAYMENT_HMAC_KEY`** keys the HMAC that fingerprints vendor
+  bank details. Account and routing numbers are low-entropy, so the digest is
+  only as strong as this key: keep it out of database backups. The API refuses
+  to start if it is empty.
+- **Accounting OAuth tokens** are stored encrypted (Fernet) under the same
+  `LEDGER_SENSE_KEK` as the documents, in the `client_writeback` volume with the
+  idempotency ledger and audit log. One key protecting both means its loss or
+  exposure affects both; a separate token key is a decision for the first
+  accounting integration to drive.
+- **The calibration store** (`client_calibration`) is not encrypted. It holds
+  field types, confidences and correct/incorrect flags, never document content.
 
 ## The extraction run
 
