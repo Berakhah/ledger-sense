@@ -181,11 +181,23 @@ what lets us answer a client asking what happened to a specific document
 months later, and it is deliberately not itself deletable by the purge. It
 names identifiers and dates, never document content.
 
-**A client erasure request** is the same code path with a different actor and
-without waiting for the term to expire: delete the documents in scope through
-the same purge routine so the same audit entries are written. Deletion of the
-tenant's account data (users, sessions, tenant row) follows once no document
-rows remain.
+**A client erasure request** runs the same deletion without waiting for the
+term, through an operator command:
+
+    python -m ledger_sense erase --tenant ID --actor NAME --reason TEXT \
+        [--document ID ...] [--execute]
+
+It is a **dry run unless `--execute` is given**, because the deletion cannot be
+undone; the dry run reports the real counts (documents, claims, findings,
+payment details, vendors, originals) and changes nothing, audits nothing. `--actor`
+and `--reason` are required, so every audit row records the named operator and
+`erasure request: <reason>`, with `action = erasure` to tell it from a scheduled
+`purge`. It deletes all of the tenant's documents, or only those named with
+`--document`; a document id that is not that tenant's, or an unknown tenant,
+refuses the whole run before anything is touched. It shares one deletion routine
+with the nightly purge, so what "deleted" means cannot drift between the two.
+Deletion of the tenant's account data (users, sessions, tenant row) follows once
+no document rows remain and is not done by this command.
 
 **The schedule.** The `retention` service in `docker-compose.yml` (client
 profile) runs `python -m ledger_sense purge` once a day, in the same image and
@@ -199,8 +211,9 @@ profile has no such job — it holds synthetic data on tmpfs.
   the deleted rows until those backups age out; a deployment's backup retention
   must be set no longer than the shortest client retention term it holds, and
   that is an operator decision the compose file does not make.
-- The erasure-request path described above is a procedure, not a command: there
-  is no operator entry point for it yet.
+- Erasing a tenant's account data (users, sessions, the tenant row) is still a
+  manual step after `erase`; the command deletes documents and what derives
+  from them, not the tenant.
 
 Nothing in this section is claimed to run automatically that does not.
 
