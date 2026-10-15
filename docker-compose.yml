@@ -50,6 +50,23 @@ x-app: &app
     retries: 30
     start_period: 5s
 
+# The same container hardening as the API, without its port or healthcheck:
+# a scheduled job is not a server. `app` gates it on health, so migrations have
+# already run when it first touches the schema.
+x-job: &job
+  build:
+    context: .
+  read_only: true
+  tmpfs:
+    - /tmp
+  mem_limit: 512m
+  cpus: "0.5"
+  security_opt:
+    - no-new-privileges:true
+  env_file:
+    - .env
+  restart: unless-stopped
+
 x-postgres-env: &postgres-env
   POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
   POSTGRES_PORT: ${POSTGRES_PORT:-5432}
@@ -81,6 +98,10 @@ services:
       # mount, and a persistent one: the labels are the training signal the
       # reliability curves are fitted from.
       LEDGER_SENSE_CALIBRATION_DIR: /var/lib/ledger-sense/calibration
+      # Idempotency ledger, audit log, OAuth tokens, CSV/IIF exports. The
+      # ledger is what stops a retried write posting twice and the audit log
+      # is the reversal record, so this must outlive the container.
+      LEDGER_SENSE_WRITEBACK_DIR: /var/lib/ledger-sense/writeback
     volumes:
       # The KEK in .env is what makes this volume ciphertext, not the volume
       # itself — back the two up separately (docs/security.md).
@@ -88,6 +109,8 @@ services:
       # Not encrypted: field types, confidences and correct/incorrect flags,
       # never document content. Back it up with the blobs.
       - client_calibration:/var/lib/ledger-sense/calibration
+      # Holds OAuth tokens (encrypted under the same KEK) and the audit log.
+      - client_writeback:/var/lib/ledger-sense/writeback
 
   app-demo:
     <<: *app
@@ -104,6 +127,27 @@ services:
       LEDGER_SENSE_BLOB_ROOT: /app/scratch/blobs
       # Same tmpfs, same reasoning: synthetic labels, ephemeral by design.
       LEDGER_SENSE_CALIBRATION_DIR: /app/scratch/calibration
+      # Same tmpfs: synthetic drafts against a sandbox, ephemeral by design.
+      LEDGER_SENSE_WRITEBACK_DIR: /app/scratch/writeback
+
+  # Retention (docs/security.md): runs `purge` once a day so a signed data
+  # agreement's retention term is honoured by a process, not by someone
+  # remembering. Same image, KEK and blob volume as `app`, so it can delete the
+  # ciphertext as well as the rows. Client profile only: the demo holds no
+  # client data and its tmpfs is gone at the next restart anyway.
+  retention:
+    <<: *job
+    profiles: ["client"]
+    environment:
+      <<: *postgres-env
+      LEDGER_SENSE_PROFILE: client
+      LEDGER_SENSE_BLOB_ROOT: /var/lib/ledger-sense/blobs
+    volumes:
+      - client_blobs:/var/lib/ledger-sense/blobs
+    command: ["sh", "-c", "while true; do python -m ledger_sense purge || echo 'purge failed; retrying next cycle' >&2; sleep 86400; done"]
+    depends_on:
+      app:
+        condition: service_healthy
 
   # The Next.js app. Root build context on purpose: one package.json and one
   # lockfile serve the whole node side, and the app directory is passed to
@@ -177,3 +221,4 @@ volumes:
   client_pgdata:
   client_blobs:
   client_calibration:
+  client_writeback:
