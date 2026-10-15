@@ -8,7 +8,8 @@ code, and it exists before the first document arrives rather than after.
 (`python -m ledger_sense purge`). For each document whose
 tenant's retention term has run out it deletes, in this order:
 
-    the encrypted original  ->  the claims and findings derived from it  ->  the row itself
+    the encrypted original  ->  the claims and findings derived from it
+        ->  the vendor-ledger history it contributed  ->  the row itself
 
 then writes one `retention_audit_log` entry recording what went and why. The
 blob goes first deliberately: if the run dies halfway, the ciphertext is
@@ -236,6 +237,8 @@ class PurgeReport:
     claims_purged: int = 0
     blobs_deleted: int = 0
     findings_purged: int = 0
+    payment_details_purged: int = 0
+    vendors_purged: int = 0
 
 
 def _aware(value: datetime) -> datetime:
@@ -283,6 +286,10 @@ def purge_expired(
     """
     now = _aware(now)
     purged = claims_purged = blobs_deleted = findings_purged = 0
+    details_purged = 0
+    # (tenant, vendor) pairs a purged document touched: the only vendors that
+    # can have just lost their last reason to exist.
+    touched_vendors: set[tuple[str, str]] = set()
 
     with app_engine().begin() as conn:
         # ponytail: whole-table scan with the date arithmetic done in Python,
@@ -295,6 +302,7 @@ def purge_expired(
                 documents.c.tenant_id,
                 documents.c.blob_id,
                 documents.c.received_at,
+                documents.c.vendor_id,
                 tenants.c.retention_days,
             ).join_from(documents, tenants, documents.c.tenant_id == tenants.c.id)
         ).all()
@@ -327,6 +335,20 @@ def purge_expired(
             deleted_claims = conn.execute(
                 claims.delete().where(claims.c.document_id == row.id)
             ).rowcount
+            # The vendor ledger's bank-detail history is derived from the
+            # document too. Scoped by tenant as well as source: a document id
+            # is never trusted to be unique across tenants.
+            for ledger in (payment_details, vendor_aliases):
+                scope = sa.and_(ledger.c.tenant_id == row.tenant_id,
+                                ledger.c.source_document == row.id)
+                touched_vendors.update(
+                    (str(row.tenant_id), str(v))
+                    for v in conn.execute(sa.select(ledger.c.vendor_id).where(scope)).scalars())
+                removed = conn.execute(ledger.delete().where(scope)).rowcount
+                if ledger is payment_details:
+                    details_purged += removed
+            if row.vendor_id:
+                touched_vendors.add((str(row.tenant_id), str(row.vendor_id)))
             conn.execute(documents.delete().where(documents.c.id == row.id))
             conn.execute(retention_audit_log.insert().values(
                 id=uuid.uuid4().hex,
@@ -347,5 +369,20 @@ def purge_expired(
             findings_purged += deleted_findings
             blobs_deleted += int(blob_deleted)
 
+        # Last, once every expired document is gone (documents.vendor_id is a
+        # foreign key): a vendor with no remaining bank-detail history, no
+        # alias, and no surviving document pointing at it has nothing left to
+        # be a vendor of. One that still has any is kept whole.
+        vendors_purged = 0
+        for tenant_id, vendor_id in touched_vendors:
+            still_used = any(
+                conn.execute(sa.select(sa.exists().where(sa.and_(
+                    table.c.tenant_id == tenant_id, table.c.vendor_id == vendor_id)))).scalar()
+                for table in (payment_details, vendor_aliases, documents))
+            if not still_used:
+                vendors_purged += conn.execute(vendors.delete().where(sa.and_(
+                    vendors.c.tenant_id == tenant_id, vendors.c.id == vendor_id))).rowcount
+
     return PurgeReport(documents_purged=purged, claims_purged=claims_purged,
-                       blobs_deleted=blobs_deleted, findings_purged=findings_purged)
+                       blobs_deleted=blobs_deleted, findings_purged=findings_purged,
+                       payment_details_purged=details_purged, vendors_purged=vendors_purged)
