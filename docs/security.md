@@ -150,7 +150,19 @@ each one deletes, in this order:
 1. the encrypted original from the blob store,
 2. every `Claim` derived from it — the extracted bank details live there, and
    a deletion that leaves them behind is not a deletion,
-3. the document row itself.
+3. the vendor-ledger history it contributed — every `payment_details` and
+   `vendor_aliases` row whose `source_document` is that document (account and
+   routing last-4, the HMAC of the full numbers), and then any vendor left with
+   no remaining payment details, aliases, or document pointing at it,
+4. the document row itself.
+
+**A consequence worth stating to a client.** Bank-detail history lives only as
+long as the documents that evidenced it. The bank-detail-change hard stop
+compares a document against that history, so after a vendor's last document
+expires, their next bank details are indistinguishable from a first sighting
+rather than flagged as a change. Retention is the client's term, so this is the
+trade they have chosen; a client who wants change detection across a longer
+horizon must set a longer term.
 
 The blob is deleted first on purpose. If a run dies halfway, the ciphertext is
 already gone and the surviving row is purged on the next pass; the opposite
@@ -187,12 +199,6 @@ profile has no such job — it holds synthetic data on tmpfs.
   the deleted rows until those backups age out; a deployment's backup retention
   must be set no longer than the shortest client retention term it holds, and
   that is an operator decision the compose file does not make.
-- The vendor ledger (`vendors`, `vendor_aliases`, `payment_details`) is not
-  touched by the purge. `payment_details` carries the last four digits of the
-  account and routing numbers, an HMAC of the full numbers, and the id of the
-  document each came from. Until the data agreement settles whether payment
-  history may outlive its source document, that data survives a document's
-  deletion.
 - The erasure-request path described above is a procedure, not a command: there
   is no operator entry point for it yet.
 
