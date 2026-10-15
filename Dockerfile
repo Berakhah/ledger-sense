@@ -45,6 +45,10 @@ RUN mkdir -p /var/lib/ledger-sense/blobs && chown ledger:ledger /var/lib/ledger-
 # one root-owned mountpoint and the first accept on a real document fails.
 RUN mkdir -p /var/lib/ledger-sense/calibration && chown ledger:ledger /var/lib/ledger-sense/calibration
 
+# And for the writeback state (idempotency ledger, audit log, OAuth tokens,
+# CSV/IIF exports): client_writeback volume.
+RUN mkdir -p /var/lib/ledger-sense/writeback && chown ledger:ledger /var/lib/ledger-sense/writeback
+
 USER ledger
 
 # --frozen --no-dev: the exact flags the two `uv sync` layers above already

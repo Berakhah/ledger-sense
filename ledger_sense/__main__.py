@@ -15,8 +15,11 @@ is the one place `docker compose up` on a clean machine gets a schema, so the
 """
 
 import json
+import os
 import pathlib
 import sys
+from dataclasses import asdict
+from datetime import UTC, datetime
 
 import uvicorn
 from alembic import command
@@ -26,6 +29,7 @@ from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.ingest.classify import classify
 from ledger_sense.run.document import run_document, run_pending
 from ledger_sense.store.blobs import blob_store_from_environment
+from ledger_sense.store.retention import purge_expired
 from ledger_sense.store.session import app_engine
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -60,6 +64,30 @@ def _probe_blob_store() -> None:
     store = blob_store_from_environment()
     blob_id = store.put(_STARTUP_PROBE_TENANT_ID, b"startup probe")
     store.delete(_STARTUP_PROBE_TENANT_ID, blob_id)
+
+
+def _probe_payment_hmac_key() -> None:
+    """Fail at boot, not mid-request, when the vendor payment-detail HMAC key
+    is missing. `domain.vendor.payment_hmac` indexes the environment directly,
+    so an unset key surfaced as a bare KeyError on the first document that
+    carried bank details."""
+    if not os.environ.get("LEDGER_SENSE_PAYMENT_HMAC_KEY"):
+        raise RuntimeError(
+            "LEDGER_SENSE_PAYMENT_HMAC_KEY is unset: refusing to start without "
+            "the key that fingerprints vendor bank details (see docs/security.md)."
+        )
+
+
+def _purge(argv: list[str]) -> int:
+    """`purge` — delete every document past its tenant's retention term, its
+    encrypted original and derived rows included, and print the report as one
+    JSON line. The compose `retention` service runs this nightly."""
+    if len(argv) != 2:
+        print("usage: python -m ledger_sense purge", file=sys.stderr)
+        return 2
+    report = purge_expired(datetime.now(UTC), blobs=blob_store_from_environment())
+    print(json.dumps(asdict(report)))
+    return 0
 
 
 def _extract(argv: list[str]) -> int:
@@ -121,8 +149,11 @@ def main() -> None:
     argv = sys.argv
     if len(argv) > 1 and argv[1] == "extract":
         raise SystemExit(_extract(argv))
+    if len(argv) > 1 and argv[1] == "purge":
+        raise SystemExit(_purge(argv))
     _migrate()
     _probe_blob_store()
+    _probe_payment_hmac_key()
     # 0.0.0.0: this process IS the container's edge for port 8000
     # (docker-compose.yml maps "8000:8000") — binding to localhost only would
     # make it unreachable from the host or from `web`.

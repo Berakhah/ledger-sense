@@ -150,7 +150,19 @@ each one deletes, in this order:
 1. the encrypted original from the blob store,
 2. every `Claim` derived from it — the extracted bank details live there, and
    a deletion that leaves them behind is not a deletion,
-3. the document row itself.
+3. the vendor-ledger history it contributed — every `payment_details` and
+   `vendor_aliases` row whose `source_document` is that document (account and
+   routing last-4, the HMAC of the full numbers), and then any vendor left with
+   no remaining payment details, aliases, or document pointing at it,
+4. the document row itself.
+
+**A consequence worth stating to a client.** Bank-detail history lives only as
+long as the documents that evidenced it. The bank-detail-change hard stop
+compares a document against that history, so after a vendor's last document
+expires, their next bank details are indistinguishable from a first sighting
+rather than flagged as a change. Retention is the client's term, so this is the
+trade they have chosen; a client who wants change detection across a longer
+horizon must set a longer term.
 
 The blob is deleted first on purpose. If a run dies halfway, the ciphertext is
 already gone and the surviving row is purged on the next pass; the opposite
@@ -175,14 +187,36 @@ the same purge routine so the same audit entries are written. Deletion of the
 tenant's account data (users, sessions, tenant row) follows once no document
 rows remain.
 
-**What deletion does not yet cover, stated plainly.** Database backups and
-filesystem snapshots taken before a purge still contain the deleted rows until
-those backups age out; a deployment's backup retention must therefore be set
-no longer than the shortest client retention term it holds, and that is an
-operator decision the compose file does not make. The purge itself is a
-library function today — the schedule that calls it nightly is not yet wired
-into `docker-compose.yml`, so a deployment must invoke it until that lands.
+**The schedule.** The `retention` service in `docker-compose.yml` (client
+profile) runs `python -m ledger_sense purge` once a day, in the same image and
+against the same blob volume and KEK as the API, and logs the JSON report. A
+failed run is retried at the next cycle; the purge is idempotent. The demo
+profile has no such job — it holds synthetic data on tmpfs.
+
+**What deletion does not yet cover, stated plainly.**
+
+- Database backups and filesystem snapshots taken before a purge still contain
+  the deleted rows until those backups age out; a deployment's backup retention
+  must be set no longer than the shortest client retention term it holds, and
+  that is an operator decision the compose file does not make.
+- The erasure-request path described above is a procedure, not a command: there
+  is no operator entry point for it yet.
+
 Nothing in this section is claimed to run automatically that does not.
+
+## Other secrets and stores
+
+- **`LEDGER_SENSE_PAYMENT_HMAC_KEY`** keys the HMAC that fingerprints vendor
+  bank details. Account and routing numbers are low-entropy, so the digest is
+  only as strong as this key: keep it out of database backups. The API refuses
+  to start if it is empty.
+- **Accounting OAuth tokens** are stored encrypted (Fernet) under the same
+  `LEDGER_SENSE_KEK` as the documents, in the `client_writeback` volume with the
+  idempotency ledger and audit log. One key protecting both means its loss or
+  exposure affects both; a separate token key is a decision for the first
+  accounting integration to drive.
+- **The calibration store** (`client_calibration`) is not encrypted. It holds
+  field types, confidences and correct/incorrect flags, never document content.
 
 ## The extraction run
 
