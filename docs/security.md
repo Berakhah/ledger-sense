@@ -210,11 +210,19 @@ Nothing in this section is claimed to run automatically that does not.
   bank details. Account and routing numbers are low-entropy, so the digest is
   only as strong as this key: keep it out of database backups. The API refuses
   to start if it is empty.
-- **Accounting OAuth tokens** are stored encrypted (Fernet) under the same
-  `LEDGER_SENSE_KEK` as the documents, in the `client_writeback` volume with the
-  idempotency ledger and audit log. One key protecting both means its loss or
-  exposure affects both; a separate token key is a decision for the first
-  accounting integration to drive.
+- **Accounting OAuth tokens** are stored encrypted (Fernet) under their own
+  `LEDGER_SENSE_TOKEN_KEY`, in the `client_writeback` volume with the
+  idempotency ledger and audit log. It is deliberately not the document KEK:
+  one key over both would make the loss or exposure of either compromise the
+  other, and a KEK rotation would have to reach a store it has no business
+  knowing about. `token_key_from_environment()` raises when the variable is
+  unset (no fallback to the KEK), when it is not a valid Fernet key, and when
+  it equals the KEK. The API checks it at boot whenever `QBO_REALM_ID` is set,
+  so a missing key stops the deployment rather than the first writeback; the
+  demo, which has no realm, does not need one. Back it up separately from the
+  `client_writeback` volume. Moving from the old shared-KEK arrangement means
+  reconnecting the accounting sandbox once: tokens written under the KEK are not
+  readable under the new key (only sandbox tokens existed when this changed).
 - **The calibration store** (`client_calibration`) is not encrypted. It holds
   field types, confidences and correct/incorrect flags, never document content.
 

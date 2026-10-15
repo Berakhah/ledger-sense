@@ -7,12 +7,56 @@ this codebase (enforced by
 tests/test_platform_skeleton.py::test_no_module_opens_a_database_connection_directly).
 """
 
+import base64
+import os
 from datetime import datetime
 
 from cryptography.fernet import Fernet
 from pydantic import BaseModel
 
 from ledger_sense.store.sqlite import connect
+
+_TOKEN_KEY_ENV = "LEDGER_SENSE_TOKEN_KEY"
+
+
+def _decoded(key: str) -> bytes:
+    """The raw bytes a Fernet key stands for, decoded the way Fernet decodes it."""
+    try:
+        return base64.urlsafe_b64decode(key.encode("utf-8"))
+    except ValueError:  # binascii.Error is a ValueError: a malformed KEK
+        return key.encode("utf-8")
+
+
+def token_key_from_environment() -> bytes:
+    """The key the OAuth token store is encrypted under, from `LEDGER_SENSE_TOKEN_KEY`.
+
+    Its own key, never the document KEK: one key over both would make the loss
+    or exposure of either compromise the other. Raises when unset (no fallback
+    to the KEK), when it is not a valid Fernet key (the `.env.example`
+    placeholder), or when it equals the KEK — the separation has to be a fact,
+    not a label.
+    """
+    key = os.environ.get(_TOKEN_KEY_ENV)
+    if not key:
+        raise RuntimeError(
+            f"{_TOKEN_KEY_ENV} is unset: refusing to store accounting OAuth "
+            f"tokens under the document KEK. Generate one with "
+            f"Fernet.generate_key() (see docs/security.md).")
+    try:
+        Fernet(key.encode("utf-8"))
+    except ValueError as error:
+        raise RuntimeError(
+            f"{_TOKEN_KEY_ENV} is not a valid Fernet key; generate one with "
+            f"Fernet.generate_key().") from error
+    # Compare the decoded keys, not the strings: Fernet's decoder ignores
+    # whitespace and accepts +/ for -_, so a pasted KEK with a trailing newline
+    # is textually different and cryptographically identical.
+    kek = os.environ.get("LEDGER_SENSE_KEK", "")
+    if kek and _decoded(kek) == _decoded(key):
+        raise RuntimeError(
+            f"{_TOKEN_KEY_ENV} must differ from LEDGER_SENSE_KEK: a shared key "
+            f"is the coupling this variable exists to remove.")
+    return key.encode("utf-8")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tokens (

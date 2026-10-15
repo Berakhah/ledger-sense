@@ -31,6 +31,7 @@ from ledger_sense.run.document import run_document, run_pending
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.retention import purge_expired
 from ledger_sense.store.session import app_engine
+from ledger_sense.writeback.tokens import token_key_from_environment
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -76,6 +77,15 @@ def _probe_payment_hmac_key() -> None:
             "LEDGER_SENSE_PAYMENT_HMAC_KEY is unset: refusing to start without "
             "the key that fingerprints vendor bank details (see docs/security.md)."
         )
+
+
+def _probe_token_key() -> None:
+    """Fail at boot, not on the first writeback, when an accounting realm is
+    configured but the OAuth token key is missing, malformed, or the KEK.
+    Silent without a realm: the demo has no accounting connection and must
+    still start."""
+    if os.environ.get("QBO_REALM_ID"):
+        token_key_from_environment()
 
 
 def _purge(argv: list[str]) -> int:
@@ -154,6 +164,7 @@ def main() -> None:
     _migrate()
     _probe_blob_store()
     _probe_payment_hmac_key()
+    _probe_token_key()
     # 0.0.0.0: this process IS the container's edge for port 8000
     # (docker-compose.yml maps "8000:8000") — binding to localhost only would
     # make it unreachable from the host or from `web`.

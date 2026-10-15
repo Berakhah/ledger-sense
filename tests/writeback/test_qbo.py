@@ -517,6 +517,7 @@ def test_concurrent_writers_with_the_same_key_create_only_one_bill(ledger: Idemp
 
 def test_qbo_adapter_from_environment_builds_a_real_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: IdempotencyLedger) -> None:
     monkeypatch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
+    monkeypatch.setenv("LEDGER_SENSE_TOKEN_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
     monkeypatch.setenv("QBO_REALM_ID", "realm-1")
     adapter = qbo_adapter_from_environment(ledger)
