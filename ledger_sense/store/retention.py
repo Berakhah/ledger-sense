@@ -4,7 +4,8 @@ A design partner's data agreement names a period. Until there is code that
 honours one, that clause is a promise with nothing behind it — so this is the
 code, and it exists before the first document arrives rather than after.
 
-`purge_expired` runs from a compose-scheduled job. For each document whose
+`purge_expired` runs nightly from the compose `retention` service
+(`python -m ledger_sense purge`). For each document whose
 tenant's retention term has run out it deletes, in this order:
 
     the encrypted original  ->  the claims and findings derived from it  ->  the row itself

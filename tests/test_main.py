@@ -66,3 +66,23 @@ def test_extract_document_runs_exactly_one(db: RunDb, capsys: pytest.CaptureFixt
 def test_extract_usage_is_still_an_error(capsys: pytest.CaptureFixture[str]) -> None:
     assert _extract(["ledger_sense", "extract"]) == 2
     assert "usage" in capsys.readouterr().err
+
+
+def test_an_unset_payment_hmac_key_fails_the_boot_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """domain/vendor.py's payment_hmac raised a bare KeyError mid-request."""
+    from ledger_sense.__main__ import _probe_payment_hmac_key
+
+    monkeypatch.delenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="LEDGER_SENSE_PAYMENT_HMAC_KEY"):
+        _probe_payment_hmac_key()
+
+
+def test_a_set_payment_hmac_key_passes_the_boot_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ledger_sense.__main__ import _probe_payment_hmac_key
+
+    monkeypatch.setenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", "k" * 32)
+    _probe_payment_hmac_key()
