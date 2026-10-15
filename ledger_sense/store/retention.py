@@ -33,10 +33,13 @@ rather than to fork it.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy import Row
 
 from ledger_sense.auth.models import metadata, tenants
 from ledger_sense.boundary import Origin, Sensitivity
@@ -268,6 +271,117 @@ def retention_days(tenant_id: str) -> int:
     return int(row.retention_days)
 
 
+def _remove_documents(
+    conn: sa.Connection,
+    targets: list[tuple[Row[Any], str]],
+    *,
+    blobs: BlobStore | None,
+    delete_blobs: bool,
+    action: str,
+    actor: str,
+    now: datetime,
+) -> PurgeReport:
+    """The one deletion both the retention purge and a client erasure run.
+
+    Order matters and is shared on purpose: ciphertext first, then the derived
+    rows, then the document, then a vendor left with nothing — so the two paths
+    cannot drift apart on what "deleted" means. Each target carries the reason
+    its audit row will state.
+
+    `delete_blobs=False` is the dry run: the database work happens (so the
+    counts are real) and the caller rolls it back, but the ciphertext, which no
+    rollback can restore, is only counted.
+    """
+    # Refuse the whole run rather than delete the rows and strand the
+    # ciphertext: a document nobody can find is a document nobody can
+    # delete. Checked before anything is removed, so this changes nothing.
+    if blobs is None and any(row.blob_id for row, _ in targets):
+        raise RuntimeError(
+            "deletion needs the BlobStore: these documents hold encrypted "
+            "originals, and deleting their rows without deleting the "
+            "ciphertext is not a deletion."
+        )
+
+    purged = claims_purged = blobs_deleted = findings_purged = 0
+    details_purged = 0
+    # (tenant, vendor) pairs a deleted document touched: the only vendors that
+    # can have just lost their last reason to exist.
+    touched_vendors: set[tuple[str, str]] = set()
+
+    for row, reason in targets:
+        if delete_blobs:
+            blob_deleted = bool(
+                blobs is not None
+                and row.blob_id
+                and blobs.delete(str(row.tenant_id), str(row.blob_id))
+            )
+        else:
+            blob_deleted = bool(row.blob_id)
+        deleted_findings = conn.execute(
+            findings.delete().where(findings.c.document_id == row.id)
+        ).rowcount
+        deleted_claims = conn.execute(
+            claims.delete().where(claims.c.document_id == row.id)
+        ).rowcount
+        # The vendor ledger's bank-detail history is derived from the
+        # document too. Scoped by tenant as well as source: a document id
+        # is never trusted to be unique across tenants.
+        for ledger in (payment_details, vendor_aliases):
+            scope = sa.and_(ledger.c.tenant_id == row.tenant_id,
+                            ledger.c.source_document == row.id)
+            touched_vendors.update(
+                (str(row.tenant_id), str(v))
+                for v in conn.execute(sa.select(ledger.c.vendor_id).where(scope)).scalars())
+            removed = conn.execute(ledger.delete().where(scope)).rowcount
+            if ledger is payment_details:
+                details_purged += removed
+        if row.vendor_id:
+            touched_vendors.add((str(row.tenant_id), str(row.vendor_id)))
+        conn.execute(documents.delete().where(documents.c.id == row.id))
+        conn.execute(retention_audit_log.insert().values(
+            id=uuid.uuid4().hex,
+            tenant_id=row.tenant_id,
+            document_id=row.id,
+            action=action,
+            actor=actor,
+            reason=reason,
+            claims_purged=deleted_claims,
+            blob_deleted=blob_deleted,
+            occurred_at=now,
+        ))
+        purged += 1
+        claims_purged += deleted_claims
+        findings_purged += deleted_findings
+        blobs_deleted += int(blob_deleted)
+
+    # Last, once every document is gone (documents.vendor_id is a foreign
+    # key): a vendor with no remaining bank-detail history, no alias, and no
+    # surviving document pointing at it has nothing left to be a vendor of.
+    # One that still has any is kept whole.
+    vendors_purged = 0
+    for tenant_id, vendor_id in touched_vendors:
+        still_used = any(
+            conn.execute(sa.select(sa.exists().where(sa.and_(
+                table.c.tenant_id == tenant_id, table.c.vendor_id == vendor_id)))).scalar()
+            for table in (payment_details, vendor_aliases, documents))
+        if not still_used:
+            vendors_purged += conn.execute(vendors.delete().where(sa.and_(
+                vendors.c.tenant_id == tenant_id, vendors.c.id == vendor_id))).rowcount
+
+    return PurgeReport(documents_purged=purged, claims_purged=claims_purged,
+                       blobs_deleted=blobs_deleted, findings_purged=findings_purged,
+                       payment_details_purged=details_purged, vendors_purged=vendors_purged)
+
+
+_DOCUMENT_COLUMNS = (
+    documents.c.id,
+    documents.c.tenant_id,
+    documents.c.blob_id,
+    documents.c.received_at,
+    documents.c.vendor_id,
+)
+
+
 def purge_expired(
     now: datetime,
     blobs: BlobStore | None = None,
@@ -278,18 +392,13 @@ def purge_expired(
     `now` is the run's evaluation time, passed in rather than read from the
     clock so the job is testable and so a dry run at a chosen date is possible.
     `blobs` is the store holding the encrypted originals; `actor` names who
-    ordered the deletion — the schedule, or an operator acting on a client's
-    erasure request.
+    ordered the deletion — normally the schedule. A client's erasure request
+    does not wait for the term: it goes through `erase_documents`.
 
     Idempotent: a document already gone is not re-purged, and a re-run after a
     partial failure completes the job rather than double-counting it.
     """
     now = _aware(now)
-    purged = claims_purged = blobs_deleted = findings_purged = 0
-    details_purged = 0
-    # (tenant, vendor) pairs a purged document touched: the only vendors that
-    # can have just lost their last reason to exist.
-    touched_vendors: set[tuple[str, str]] = set()
 
     with app_engine().begin() as conn:
         # ponytail: whole-table scan with the date arithmetic done in Python,
@@ -297,92 +406,75 @@ def purge_expired(
         # query. Push the comparison into SQL behind a received_at index when
         # a tenant's document count makes a nightly scan hurt.
         rows = conn.execute(
-            sa.select(
-                documents.c.id,
-                documents.c.tenant_id,
-                documents.c.blob_id,
-                documents.c.received_at,
-                documents.c.vendor_id,
-                tenants.c.retention_days,
-            ).join_from(documents, tenants, documents.c.tenant_id == tenants.c.id)
+            sa.select(*_DOCUMENT_COLUMNS, tenants.c.retention_days)
+            .join_from(documents, tenants, documents.c.tenant_id == tenants.c.id)
         ).all()
 
-        expired = []
+        expired: list[tuple[Row[Any], str]] = []
         for row in rows:
             expires_at = _aware(row.received_at) + timedelta(days=int(row.retention_days))
             if expires_at <= now:
-                expired.append((row, expires_at))
-
-        # Refuse the whole run rather than delete the rows and strand the
-        # ciphertext: a document nobody can find is a document nobody can
-        # delete. Checked before anything is removed, so this changes nothing.
-        if blobs is None and any(row.blob_id for row, _ in expired):
-            raise RuntimeError(
-                "purge_expired needs the BlobStore: expired documents hold "
-                "encrypted originals, and deleting their rows without deleting "
-                "the ciphertext is not a deletion."
-            )
-
-        for row, expires_at in expired:
-            blob_deleted = bool(
-                blobs is not None
-                and row.blob_id
-                and blobs.delete(str(row.tenant_id), str(row.blob_id))
-            )
-            deleted_findings = conn.execute(
-                findings.delete().where(findings.c.document_id == row.id)
-            ).rowcount
-            deleted_claims = conn.execute(
-                claims.delete().where(claims.c.document_id == row.id)
-            ).rowcount
-            # The vendor ledger's bank-detail history is derived from the
-            # document too. Scoped by tenant as well as source: a document id
-            # is never trusted to be unique across tenants.
-            for ledger in (payment_details, vendor_aliases):
-                scope = sa.and_(ledger.c.tenant_id == row.tenant_id,
-                                ledger.c.source_document == row.id)
-                touched_vendors.update(
-                    (str(row.tenant_id), str(v))
-                    for v in conn.execute(sa.select(ledger.c.vendor_id).where(scope)).scalars())
-                removed = conn.execute(ledger.delete().where(scope)).rowcount
-                if ledger is payment_details:
-                    details_purged += removed
-            if row.vendor_id:
-                touched_vendors.add((str(row.tenant_id), str(row.vendor_id)))
-            conn.execute(documents.delete().where(documents.c.id == row.id))
-            conn.execute(retention_audit_log.insert().values(
-                id=uuid.uuid4().hex,
-                tenant_id=row.tenant_id,
-                document_id=row.id,
-                action="purge",
-                actor=actor,
-                reason=(
+                expired.append((row, (
                     f"retention term of {int(row.retention_days)} days expired "
                     f"{expires_at.isoformat()} (received {_aware(row.received_at).isoformat()})"
-                ),
-                claims_purged=deleted_claims,
-                blob_deleted=blob_deleted,
-                occurred_at=now,
-            ))
-            purged += 1
-            claims_purged += deleted_claims
-            findings_purged += deleted_findings
-            blobs_deleted += int(blob_deleted)
+                )))
 
-        # Last, once every expired document is gone (documents.vendor_id is a
-        # foreign key): a vendor with no remaining bank-detail history, no
-        # alias, and no surviving document pointing at it has nothing left to
-        # be a vendor of. One that still has any is kept whole.
-        vendors_purged = 0
-        for tenant_id, vendor_id in touched_vendors:
-            still_used = any(
-                conn.execute(sa.select(sa.exists().where(sa.and_(
-                    table.c.tenant_id == tenant_id, table.c.vendor_id == vendor_id)))).scalar()
-                for table in (payment_details, vendor_aliases, documents))
-            if not still_used:
-                vendors_purged += conn.execute(vendors.delete().where(sa.and_(
-                    vendors.c.tenant_id == tenant_id, vendors.c.id == vendor_id))).rowcount
+        return _remove_documents(conn, expired, blobs=blobs, delete_blobs=True,
+                                 action="purge", actor=actor, now=now)
 
-    return PurgeReport(documents_purged=purged, claims_purged=claims_purged,
-                       blobs_deleted=blobs_deleted, findings_purged=findings_purged,
-                       payment_details_purged=details_purged, vendors_purged=vendors_purged)
+
+def erase_documents(
+    tenant_id: str,
+    *,
+    actor: str,
+    reason: str,
+    document_ids: Sequence[str] | None = None,
+    blobs: BlobStore | None = None,
+    execute: bool = False,
+    now: datetime | None = None,
+) -> PurgeReport:
+    """Delete a tenant's documents on a client's erasure request, term or not.
+
+    All of the tenant's documents, or only `document_ids`. `actor` is the named
+    operator and `reason` the request, both written to the audit trail. A
+    document id that is not this tenant's raises before anything is touched —
+    an operator's typo must not erase, or even reveal, another tenant's data.
+
+    `execute=False` (the default) is a dry run: the report is real, nothing is
+    deleted, nothing is audited. The ciphertext cannot be restored, so a dry
+    run only counts it.
+    """
+    now = _aware(now or datetime.now(UTC))
+
+    with app_engine().connect() as conn:
+        # One transaction from the first read, so a dry run can roll back
+        # everything it did and a refusal leaves nothing behind.
+        transaction = conn.begin()
+        try:
+            if conn.execute(sa.select(tenants.c.id).where(
+                    tenants.c.id == tenant_id)).one_or_none() is None:
+                raise LookupError(f"no such tenant: {tenant_id!r}")
+
+            statement = sa.select(*_DOCUMENT_COLUMNS).where(documents.c.tenant_id == tenant_id)
+            if document_ids is not None:
+                statement = statement.where(documents.c.id.in_(document_ids))
+            rows = conn.execute(statement).all()
+
+            if document_ids is not None:
+                missing = sorted(set(document_ids) - {str(row.id) for row in rows})
+                if missing:
+                    raise LookupError(
+                        f"no such document for tenant {tenant_id!r}: {', '.join(missing)}")
+
+            report = _remove_documents(
+                conn, [(row, f"erasure request: {reason}") for row in rows],
+                blobs=blobs, delete_blobs=execute,
+                action="erasure", actor=actor, now=now)
+        except BaseException:
+            transaction.rollback()
+            raise
+        if execute:
+            transaction.commit()
+        else:
+            transaction.rollback()
+        return report

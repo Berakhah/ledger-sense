@@ -7,6 +7,8 @@ surface (the buyer entrypoint is the web UI); no CLI framework, no
 
     python -m ledger_sense               # migrate, then serve (container CMD)
     python -m ledger_sense extract PATH  # read a PDF, assemble, print JSON
+    python -m ledger_sense purge         # delete documents past their retention term
+    python -m ledger_sense erase ...     # a client's erasure request (dry run by default)
 
 Nothing else in the stack runs `alembic upgrade head` against the real
 Postgres (tests/api/conftest.py does it for the SQLite fixture only) — this
@@ -29,7 +31,7 @@ from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.ingest.classify import classify
 from ledger_sense.run.document import run_document, run_pending
 from ledger_sense.store.blobs import blob_store_from_environment
-from ledger_sense.store.retention import purge_expired
+from ledger_sense.store.retention import erase_documents, purge_expired
 from ledger_sense.store.session import app_engine
 from ledger_sense.writeback.tokens import token_key_from_environment
 
@@ -100,8 +102,54 @@ def _purge(argv: list[str]) -> int:
     return 0
 
 
+_ERASE_USAGE = ("usage: python -m ledger_sense erase --tenant ID --actor NAME --reason TEXT "
+                "[--document ID ...] [--execute]")
+
+
+def _erase(argv: list[str]) -> int:
+    """`erase` — a client's erasure request: delete a tenant's documents now,
+    without waiting for the retention term, and print the report as one JSON line.
+
+    A dry run unless `--execute` is given, because the deletion cannot be
+    undone. `--actor` and `--reason` are required so the audit trail names the
+    operator and the request behind every document it records.
+    """
+    args = argv[2:]
+    options: dict[str, str] = {}
+    document_ids: list[str] = []
+    execute = False
+    i = 0
+    while i < len(args):
+        flag = args[i]
+        if flag == "--execute":
+            execute = True
+            i += 1
+        elif flag in ("--tenant", "--actor", "--reason", "--document") and i + 1 < len(args):
+            if flag == "--document":
+                document_ids.append(args[i + 1])
+            else:
+                options[flag] = args[i + 1]
+            i += 2
+        else:
+            print(_ERASE_USAGE, file=sys.stderr)
+            return 2
+    if not all(options.get(required) for required in ("--tenant", "--actor", "--reason")):
+        print(_ERASE_USAGE, file=sys.stderr)
+        return 2
+    try:
+        report = erase_documents(
+            options["--tenant"], actor=options["--actor"], reason=options["--reason"],
+            document_ids=document_ids or None, blobs=blob_store_from_environment(),
+            execute=execute)
+    except (LookupError, RuntimeError) as error:
+        print(f"erase refused: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps({**asdict(report), "executed": execute}))
+    return 0
+
+
 def _extract(argv: list[str]) -> int:
-    """`extract <path>`                — stateless probe: parse a file, print a summary.
+    """`extract <path>`              — stateless probe: parse a file, print a summary.
     `extract --pending [--limit N]`   — run every received/failed document, oldest first.
     `extract --document <id>`        — run one stored document."""
     usage = ("usage: python -m ledger_sense extract <path> | --pending [--limit N] "
@@ -161,6 +209,8 @@ def main() -> None:
         raise SystemExit(_extract(argv))
     if len(argv) > 1 and argv[1] == "purge":
         raise SystemExit(_purge(argv))
+    if len(argv) > 1 and argv[1] == "erase":
+        raise SystemExit(_erase(argv))
     _migrate()
     _probe_blob_store()
     _probe_payment_hmac_key()
