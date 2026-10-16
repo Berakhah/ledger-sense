@@ -156,9 +156,16 @@ def _summary_values(app: PayApplication, contract: Contract) -> dict[str, Money]
         "adjusted_contract_sum": app.adjusted_contract_sum(contract),
         "total_completed_and_stored": app.total_completed_and_stored,
         "retainage_total": app.retainage_total,
-        "total_earned_less_retainage": earned,
+        # A model that carries a REPORTED total prints it, so an error class can
+        # render a figure the components do not support (LS-06); otherwise the
+        # chain's own value is printed.
+        "total_earned_less_retainage": (app.reported_total_earned_less_retainage
+                                        if app.reported_total_earned_less_retainage is not None
+                                        else earned),
         "previous_payments": app.previous_payments,
-        "current_payment_due": money(earned - app.previous_payments),
+        "current_payment_due": (app.reported_current_payment_due
+                                if app.reported_current_payment_due is not None
+                                else money(earned - app.previous_payments)),
     }
 
 
