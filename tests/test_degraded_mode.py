@@ -119,7 +119,8 @@ def test_clean_documents_extract_and_validate_with_no_model(seed: int) -> None:
 
 
 @pytest.mark.parametrize("error,expected_rule", [
-    ("A1_footing", "A1"), ("A2_line_sum", "A2"), ("A8_retainage", "A8")])
+    ("A1_footing", "A1"), ("A2_line_sum", "A2"), ("A8_retainage", "A8"),
+    ("A5b_earned_misprinted", "A5b"), ("A6b_payment_due_misprinted", "A6b")])
 def test_injected_errors_are_caught_with_no_model(error: ErrorClass, expected_rule: str) -> None:
     contract, _app, pdf = generate(seed=1, error=error)
     built = assemble_pay_application(pdf, "corpus://seed-1")
