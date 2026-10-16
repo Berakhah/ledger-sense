@@ -268,6 +268,35 @@ def test_reverse_a_remote_id_belonging_to_a_different_document_same_tenant_is_40
     assert response.status_code == 404, response.text
 
 
+def test_reverse_with_another_documents_idempotency_key_is_refused_and_deletes_nothing(
+        two_tenants: tuple[TenantClient, TenantClient], tmp_path: Path) -> None:
+    """LS-01. The ownership check covers `remote_id`, but the export adapter
+    deletes by `idempotency_key`. A caller who owns document A must not be able
+    to pair A's remote_id with B's key and delete B's export. The key to reverse
+    is the one recorded by the audited write for that remote_id, never the
+    caller's."""
+    alice, bob = two_tenants
+    doc_a = alice.seed_postable_document()
+    doc_b = bob.seed_postable_document(content_sha256="def456")
+    posted_a = alice.post_json(f"/api/writeback/documents/{doc_a}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"}).json()
+    posted_b = bob.post_json(f"/api/writeback/documents/{doc_b}/post",
+                             {"adapter": "export", "vendor_ref": "V-9"}).json()
+    assert posted_a["idempotency_key"] != posted_b["idempotency_key"]
+
+    export_file = next((tmp_path / "writeback").rglob("*.csv"))
+    rows_before = export_file.read_text(encoding="utf-8")
+
+    response = alice.post_json(f"/api/writeback/documents/{doc_a}/reverse",
+                               {"adapter": "export", "remote_id": posted_a["remote_id"],
+                                "idempotency_key": posted_b["idempotency_key"]})
+
+    assert response.status_code == 422, response.text
+    assert export_file.read_text(encoding="utf-8") == rows_before
+    assert bob.get(f"/api/writeback/documents/{doc_b}/status").json()["state"] == "posted"
+    assert alice.get(f"/api/writeback/documents/{doc_a}/status").json()["state"] == "posted"
+
+
 def test_reverse_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
         two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch) -> None:
     """Final whole-branch review, I-2. `reverse()` used to catch only
