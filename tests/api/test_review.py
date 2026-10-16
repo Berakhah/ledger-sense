@@ -714,3 +714,32 @@ def test_no_review_route_accepts_a_caller_supplied_basis() -> None:
     for handler in (review.accept, review.edit, review.reject):
         sig = inspect.signature(handler)
         assert "basis" not in sig.parameters
+
+
+@pytest.mark.parametrize("bad", ["not money", "", "NaN", "Infinity", "1e400", "12,5"])
+def test_editing_a_money_field_to_a_non_money_value_is_refused_without_state_change(
+        bad: str) -> None:
+    """LS-05. An edit is typed by the claim it judges. A money field must stay
+    a finite decimal: otherwise writeback later fails on InvalidOperation. The
+    refusal leaves the finding open and writes no claim."""
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id)
+    exc_id = _finding(tenant_id, doc_id)
+    field = "line[000].total_completed_and_stored"
+    with app_engine().begin() as conn:
+        conn.execute(claims.insert().values(
+            id=uuid.uuid4().hex, tenant_id=tenant_id, document_id=doc_id,
+            field=field, value="1000.00", value_type="money", method="deterministic",
+            confidence=0.9, match_quality=0.9, page=0, x0=288.0, top=100.0,
+            x1=368.0, bottom=112.0, caveat=None, observed_at=datetime.now(UTC)))
+
+    resp = client.post(f"/api/review/exceptions/{exc_id}/edit",
+                       json={"value": bad}, cookies=cookies)
+
+    assert resp.status_code == 422, resp.text
+    with app_engine().connect() as conn:
+        state = conn.execute(sa.select(findings.c.state).where(findings.c.id == exc_id)).scalar_one()
+        human = conn.execute(sa.select(sa.func.count()).select_from(claims).where(
+            claims.c.document_id == doc_id, claims.c.method == "human")).scalar_one()
+    assert state == "open"
+    assert human == 0

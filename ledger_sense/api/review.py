@@ -22,8 +22,9 @@ coerced — the money path (Never-rule #2) never sees one.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 import sqlalchemy as sa
@@ -204,6 +205,32 @@ def _value_type_for(conn: sa.Connection, document_id: str, field: str) -> str:
     return row.value_type if row is not None else "str"
 
 
+_MONEY_EDIT = re.compile(r"-?\d{1,15}(\.\d{1,2})?")
+_INT_EDIT = re.compile(r"-?\d{1,15}")
+
+
+def _validate_edit_value(value_type: str, value: str) -> None:
+    """LS-05: an edit is typed by the claim it judges, and must parse as that
+    type BEFORE the finding is closed. Otherwise a reviewer's `not money` is
+    stored as the effective value and writeback later fails on
+    InvalidOperation. Money is plain decimal notation, at most two places:
+    `money()` itself accepts NaN, Infinity and exponents, so it cannot be the
+    gate. `str` claims are free text and unchanged."""
+    ok = True
+    if value_type == "money":
+        ok = _MONEY_EDIT.fullmatch(value) is not None
+    elif value_type == "int":
+        ok = _INT_EDIT.fullmatch(value) is not None
+    elif value_type == "date":
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            ok = False
+    if not ok:
+        raise HTTPException(status_code=422,
+                            detail=f"{value!r} is not a valid {value_type} value")
+
+
 def _match_quality_for(conn: sa.Connection, document_id: str, field: str) -> float | None:
     """The extraction's own quality score for the value a reviewer is now
     judging — the prior DETERMINISTIC claim for this (document_id, field),
@@ -320,8 +347,9 @@ def edit(exc_id: str, body: EditBody, session: CurrentSession) -> dict[str, str 
         _require_open(row)
         if _bbox(row) is None:
             raise HTTPException(status_code=422, detail=_NO_GEOMETRY_DETAIL)
-        _close(conn, exc_id, "edited")
         value_type = _value_type_for(conn, row.document_id, row.field)
+        _validate_edit_value(value_type, body.value)
+        _close(conn, exc_id, "edited")
         match_quality = _match_quality_for(conn, row.document_id, row.field)
         claim_id = _write_claim(conn, row, value=body.value, value_type=value_type,
                                 session=session)

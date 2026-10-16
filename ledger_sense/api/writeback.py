@@ -156,16 +156,32 @@ class PostResponse(BaseModel):
 
 
 def _require_cleared(conn: sa.Connection, document_id: str, tenant_id: str) -> None:
+    """LS-05. Writeback needs (1) a document whose extraction succeeded (read
+    from its own run status, so a clean document with zero findings is fine and
+    a never-run or failed one is not), (2) no open exceptions, and (3) no
+    rejected ones: rejecting a finding records that something is wrong, it is
+    not approval to pay."""
+    status = conn.execute(
+        sa.select(documents.c.status)
+        .where(documents.c.id == document_id, documents.c.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+    if status != "extracted":
+        raise HTTPException(
+            status_code=422,
+            detail=f"document has not been successfully extracted (status: {status})")
     rows = conn.execute(
         sa.select(findings.c.state)
         .where(findings.c.document_id == document_id, findings.c.tenant_id == tenant_id)
     ).all()
-    if not rows:
-        raise HTTPException(status_code=422,
-                            detail="document has never been run: no exceptions recorded")
     remaining = sum(1 for row in rows if row.state == "open")
     if remaining:
         raise HTTPException(status_code=422, detail=f"{remaining} exceptions still open")
+    rejected = sum(1 for row in rows if row.state == "rejected")
+    if rejected:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"{rejected} rejected exceptions: a rejection is not approval to "
+                    f"post; resolve each by accepting or correcting it"))
 
 
 def _approved_by(conn: sa.Connection, session: Session) -> str:
