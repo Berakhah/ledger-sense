@@ -415,3 +415,45 @@ def test_preview_on_a_document_with_no_claims_is_422(
     alice, _bob = two_tenants
     doc_id = alice.seed_unrun_document()
     assert alice.get(f"/api/writeback/documents/{doc_id}/preview").status_code == 422
+
+
+# --- LS-05: what counts as cleared for writeback ---------------------------------
+
+
+def test_post_accepts_an_extracted_document_that_raised_no_exceptions(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-05. A clean document has zero findings. That is a successful run, not
+    'never run': the gate must read the document's own run status."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document(with_finding=False)
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 200, response.text
+
+
+def test_post_refuses_a_document_whose_extraction_did_not_succeed(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document(with_finding=False)
+    with store_session.app_engine().begin() as conn:
+        conn.execute(sa.text("UPDATE documents SET status = 'cannot_extract' WHERE id = :i"),
+                     {"i": doc_id})
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 422, response.text
+    assert "cannot_extract" in response.json()["detail"]
+
+
+def test_post_refuses_a_document_with_a_rejected_exception(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-05. Rejecting a finding is not approval to pay: it must not count as
+    cleared."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    with store_session.app_engine().begin() as conn:
+        conn.execute(sa.text("UPDATE findings SET state = 'rejected', reason = 'wrong' "
+                             "WHERE document_id = :i"), {"i": doc_id})
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 422, response.text
+    assert "rejected" in response.json()["detail"]
