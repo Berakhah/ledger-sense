@@ -268,6 +268,19 @@ class AuditLog:
             (self._tenant_id, remote_id)).fetchone()
         return cast(str, row[0]) if row else None
 
+    def idempotency_key_for_remote(self, remote_id: str) -> str | None:
+        """The idempotency key recorded by the audited *write* of `remote_id`.
+
+        LS-01: a reversal must delete what that write created, so the key
+        comes from the audit record, never from the caller. Same lookup rules
+        as `document_for_remote`.
+        """
+        row = self._conn.execute(
+            "SELECT idempotency_key FROM audit WHERE tenant_id = ? AND remote_id = ? "
+            "AND action = 'write' ORDER BY rowid DESC LIMIT 1",
+            (self._tenant_id, remote_id)).fetchone()
+        return cast("str | None", row[0]) if row else None
+
     def verify_chain(self) -> list[str]:
         """Walk every entry in insertion order (rowid, not occurred_at — two
         entries can share a timestamp) and recompute each expected hash from
@@ -365,9 +378,17 @@ class AuditedAdapter:
             raise ValueError(
                 f"no audited write for remote id {remote_id!r}; refusing to "
                 f"reverse an object this system has no record of creating")
-        result = self._inner.reverse(remote_id, idempotency_key)
+        # LS-01: the key that drives deletion is the one the audited write
+        # recorded. A caller-supplied key that disagrees is refused rather than
+        # trusted, so it cannot point the deletion at a different transaction.
+        recorded_key = self._audit.idempotency_key_for_remote(remote_id)
+        if recorded_key is None or recorded_key != idempotency_key:
+            raise ValueError(
+                f"idempotency key does not match the audited write of remote id "
+                f"{remote_id!r}; refusing to reverse")
+        result = self._inner.reverse(remote_id, recorded_key)
         self._audit.record_reversal(doc_id, self.name, result, self._approved_by,
-                                    idempotency_key=idempotency_key)
+                                    idempotency_key=recorded_key)
         return result
 
 
