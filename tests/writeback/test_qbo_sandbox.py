@@ -92,7 +92,7 @@ def ledger(tmp_path: Path) -> Iterator[IdempotencyLedger]:
 
 def _request(application_no: int) -> WriteRequest:
     return WriteRequest(
-        idempotency_key=build_idempotency_key("sandbox", "C-SANDBOX", application_no),
+        idempotency_key=build_idempotency_key("sandbox", "C-SANDBOX", application_no, tenant_id="t-test"),
         doc_id="doc-sandbox", vendor_ref="1", vendor_invoice_number=None,
         txn_date=date(2026, 8, 31),
         line_items=[LineItem(description="Sitework", amount=money("100.00"),

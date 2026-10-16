@@ -410,7 +410,7 @@ if TYPE_CHECKING:
 _WRITEBACK_DIR_ENV = "LEDGER_SENSE_WRITEBACK_DIR"
 
 
-def audit_log_from_environment() -> AuditLog:
+def audit_log_from_environment(tenant_id: str) -> AuditLog:
     """The deployment's audit log, at `<LEDGER_SENSE_WRITEBACK_DIR>/audit.db`.
     See idempotency.py::ledger_from_environment for the pattern this mirrors."""
     root = os.environ.get(_WRITEBACK_DIR_ENV)
@@ -419,4 +419,4 @@ def audit_log_from_environment() -> AuditLog:
             f"{_WRITEBACK_DIR_ENV} is unset: refusing to guess where the "
             f"writeback audit log lives.")
     os.makedirs(root, exist_ok=True)
-    return AuditLog(os.path.join(root, "audit.db"))
+    return AuditLog(os.path.join(root, "audit.db"), tenant_id=tenant_id)
