@@ -32,6 +32,7 @@ from ledger_sense.extract.tables import (
     AmbiguousColumnError,
     MissingColumnError,
     find_headers,
+    partial_rows,
     reconstruct_rows,
 )
 from ledger_sense.extract.textlayer import BBox, Word, extract_words
@@ -210,6 +211,15 @@ def assemble_pay_application(
         if not rows:
             unextractable.append(UnextractableField(
                 "lines", "continuation grid produced no data rows"))
+        # LS-07: an item row with a missing or unreadable cell used to vanish
+        # without a trace, so the schedule read as complete. Each missing cell is
+        # recorded exactly like a cell that did not parse as money: line-scoped,
+        # which also keeps the footing rules from running on a partial schedule.
+        for partial in partial_rows(words, headers):
+            for missing_field in partial.missing:
+                unextractable.append(UnextractableField(
+                    f"line[{partial.item_no}].{missing_field}",
+                    "cell not found in the row"))
 
     grid_bottom = max((c.bbox.bottom for row in rows for c in row.values()),
                       default=None)
