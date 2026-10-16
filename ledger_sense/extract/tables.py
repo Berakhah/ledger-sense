@@ -8,6 +8,7 @@ A missing column RAISES. Silently dropping the retainage column produces a
 plausible bill that is wrong, which is worse than a loud failure.
 """
 
+import re
 from typing import NamedTuple
 
 # EXTRACTION OWNS ITS OWN SCHEMA — REVISED (F-14).
@@ -56,6 +57,25 @@ class Cell(NamedTuple):
     text: str
     bbox: BBox
     page: int
+
+
+class PartialRow(NamedTuple):
+    """A band that looks like an item row but lacks one or more required cells
+    (LS-07). Reported, never silently dropped: a missing cell is evidence, and a
+    schedule with a row quietly removed must not read as complete."""
+    item_no: str
+    cells: dict[str, Cell]
+    missing: tuple[str, ...]
+
+
+# A probable item row: an all-digit item number AND at least two money-shaped
+# cells. Summary lines, headers, page numbers and notes have neither, so they stay
+# silently skipped; a real row with one unreadable cell has five or more.
+_ITEM_NO_TOKEN = re.compile(r"\d+")
+_MONEY_SHAPED = re.compile(r"\(?-?\$?\d[\d,]*(\.\d+)?\)?")
+_MONEY_COLUMNS = frozenset({"scheduled_value", "previous", "this_period", "stored",
+                            "total_completed_and_stored", "retainage"})
+_MIN_MONEY_CELLS_FOR_AN_ITEM_ROW = 2
 
 
 def _merge(words: list[Word]) -> tuple[str, BBox]:
@@ -174,6 +194,33 @@ def _column_for(word: Word, headers: HeaderMap) -> str | None:
 
 
 def reconstruct_rows(words: list[Word], headers: HeaderMap) -> list[dict[str, Cell]]:
+    return _scan(words, headers)[0]
+
+
+def partial_rows(words: list[Word], headers: HeaderMap) -> list[PartialRow]:
+    """Item rows that `reconstruct_rows` could not return because a required
+    cell is missing or unreadable (LS-07)."""
+    return _scan(words, headers)[1]
+
+
+def _partial_of(grouped: dict[str, list[Word]]) -> PartialRow | None:
+    cells: dict[str, Cell] = {}
+    for field, group in grouped.items():
+        text, bbox = _merge(group)
+        cells[field] = Cell(field=field, text=text, bbox=bbox, page=group[0].page)
+    item = cells.get("item_no")
+    if item is None or _ITEM_NO_TOKEN.fullmatch(item.text.strip()) is None:
+        return None
+    money_cells = sum(1 for field, cell in cells.items()
+                      if field in _MONEY_COLUMNS
+                      and _MONEY_SHAPED.fullmatch(cell.text.strip()) is not None)
+    if money_cells < _MIN_MONEY_CELLS_FOR_AN_ITEM_ROW:
+        return None
+    return PartialRow(item_no=item.text.strip(), cells=cells,
+                      missing=tuple(sorted(REQUIRED_FIELDS - set(cells))))
+
+
+def _scan(words: list[Word], headers: HeaderMap) -> tuple[list[dict[str, Cell]], list[PartialRow]]:
     missing = REQUIRED_FIELDS - set(headers)
     if missing:
         raise MissingColumnError(
@@ -187,6 +234,7 @@ def reconstruct_rows(words: list[Word], headers: HeaderMap) -> list[dict[str, Ce
     bands = _band(body)
 
     rows: list[dict[str, Cell]] = []
+    partials: list[PartialRow] = []
     for band_top in sorted(bands):
         grouped: dict[str, list[Word]] = {}
         # F-17 (revising the earlier, unsound version of this same guard). Two
@@ -220,7 +268,13 @@ def reconstruct_rows(words: list[Word], headers: HeaderMap) -> list[dict[str, Ce
             elif hits:
                 grouped.setdefault(hits[0], []).append(word)
         if not REQUIRED_FIELDS <= (set(grouped) | possible_fields):
-            continue  # not a data row even best-case: footer, page number, continuation note
+            # Not a complete row even best-case. Footer, page number and
+            # continuation note stay skipped; a probable ITEM row is reported
+            # (LS-07) instead of vanishing.
+            partial = _partial_of(grouped)
+            if partial is not None:
+                partials.append(partial)
+            continue
         if ambiguous_words:
             _column_for(ambiguous_words[0], headers)  # re-raises with the formatted message
         row: dict[str, Cell] = {}
@@ -228,4 +282,4 @@ def reconstruct_rows(words: list[Word], headers: HeaderMap) -> list[dict[str, Ce
             text, bbox = _merge(group)
             row[field] = Cell(field=field, text=text, bbox=bbox, page=group[0].page)
         rows.append(row)
-    return rows
+    return rows, partials
