@@ -1,3 +1,4 @@
+import os
 import pathlib
 from datetime import date
 from pathlib import Path
@@ -190,3 +191,120 @@ def test_export_adapter_from_environment_raises_when_unset(monkeypatch: pytest.M
     monkeypatch.delenv("LEDGER_SENSE_WRITEBACK_DIR", raising=False)
     with pytest.raises(RuntimeError, match="LEDGER_SENSE_WRITEBACK_DIR"):
         export_adapter_from_environment()
+
+
+# --- LS-03: atomic, concurrency-safe export -------------------------------------
+
+
+def _rows(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").strip().splitlines()
+
+
+def test_concurrent_same_key_posts_write_the_bill_once(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """LS-03. Two threads post the same key at once. Without a lock both pass
+    the key check before either writes, giving four rows for a two-line bill.
+    The key scan is slowed so the race is deterministic, not timing luck."""
+    import threading
+    import time
+
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
+    real_scan = adapter._existing_keys
+
+    def slow_scan() -> set[str]:
+        keys = real_scan()
+        time.sleep(0.15)
+        return keys
+
+    monkeypatch.setattr(adapter, "_existing_keys", slow_scan)
+    results: list[bool] = []
+
+    def post() -> None:
+        results.append(adapter.create_unapproved_bill(_request()).was_replay)
+
+    threads = [threading.Thread(target=post) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == [False, True]
+    assert len(_rows(tmp_path / "bills.csv")) == 3   # header + two lines, once
+
+
+@pytest.mark.parametrize("fmt", ["csv", "iif"])
+def test_a_partially_exported_bill_is_completed_on_retry(tmp_path: Path, fmt: str) -> None:
+    """LS-03. A file left holding only the first line of a two-line bill (a
+    crash under the old append-in-place writer) must not make the retry look
+    like a completed replay with a row missing."""
+    complete = tmp_path / "complete"
+    ExportAdapter(out_dir=str(complete), fmt=fmt).create_unapproved_bill(_request())  # type: ignore[arg-type]
+    whole = (complete / f"bills.{fmt}").read_text(encoding="utf-8").splitlines(keepends=True)
+    # csv: header + first line only.  iif: 2 header lines + TRNS + first SPL, no ENDTRNS.
+    cut = 2 if fmt == "csv" else 4
+    (tmp_path / f"bills.{fmt}").write_text("".join(whole[:cut]), encoding="utf-8")
+
+    result = ExportAdapter(out_dir=str(tmp_path), fmt=fmt).create_unapproved_bill(_request())  # type: ignore[arg-type]
+
+    assert result.was_replay is False
+    assert (tmp_path / f"bills.{fmt}").read_text(encoding="utf-8") == \
+        (GOLDENS / f"bills.{fmt}").read_text(encoding="utf-8")
+
+
+def test_an_interrupted_write_leaves_the_existing_file_intact_and_retry_succeeds(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """LS-03. The file is replaced atomically: a failure at the moment of
+    replacement leaves the previous contents untouched, never a half-bill."""
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
+    adapter.create_unapproved_bill(_request(application_no=1))
+    before = (tmp_path / "bills.csv").read_text(encoding="utf-8")
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def failing_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("simulated crash during replacement")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        adapter.create_unapproved_bill(_request(application_no=2))
+    assert (tmp_path / "bills.csv").read_text(encoding="utf-8") == before
+
+    retry = adapter.create_unapproved_bill(_request(application_no=2))
+    assert retry.was_replay is False
+    assert len(_rows(tmp_path / "bills.csv")) == 5   # header + 2 bills x 2 lines
+    assert not [p for p in tmp_path.iterdir() if p.name not in ("bills.csv",)]  # no stray temp file
+
+
+def test_concurrent_create_and_reverse_do_not_lose_either_write(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """LS-03. A reversal rewriting the file while another bill is being
+    appended must not drop the new bill."""
+    import threading
+    import time
+
+    adapter = ExportAdapter(out_dir=str(tmp_path), fmt="csv")
+    first = _request(application_no=1)
+    adapter.create_unapproved_bill(first)
+
+    real_scan = adapter._existing_keys
+
+    def slow_scan() -> set[str]:
+        keys = real_scan()
+        time.sleep(0.15)
+        return keys
+
+    monkeypatch.setattr(adapter, "_existing_keys", slow_scan)
+    second = _request(application_no=2)
+    writer = threading.Thread(target=lambda: adapter.create_unapproved_bill(second))
+    writer.start()
+    time.sleep(0.05)
+    adapter.reverse(first.idempotency_key, first.idempotency_key)
+    writer.join()
+
+    rows = _rows(tmp_path / "bills.csv")
+    assert len(rows) == 3                                  # header + the second bill's two lines
+    assert all(r.startswith(second.idempotency_key) for r in rows[1:])
