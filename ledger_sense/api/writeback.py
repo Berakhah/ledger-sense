@@ -41,6 +41,7 @@ from ledger_sense.writeback.audit import (
 from ledger_sense.writeback.export import export_adapter_from_environment
 from ledger_sense.writeback.idempotency import IdempotencyLedger, ledger_from_environment
 from ledger_sense.writeback.interface import ClosedPeriodError, WritebackPort, WriteResult
+from ledger_sense.writeback.preview import build_posting_preview
 from ledger_sense.writeback.qbo import (
     ConcurrentWriteInProgressError,
     QBORejected,
@@ -107,6 +108,38 @@ def status(doc_id: str, session: CurrentSession) -> StatusResponse:
         return StatusResponse(state="not_posted", remote_id=None)
     entry = next(iter(live.values()))
     return StatusResponse(state="posted", remote_id=entry.remote_id)
+
+
+class PreviewResponse(BaseModel):
+    amount_to_write: str
+    total_completed_and_stored: str
+    retainage_total: str
+    previous_payments: str
+    expected_payable: str
+    difference: str
+    reconciles: bool
+
+
+@router.get("/documents/{doc_id}/preview")
+def preview(doc_id: str, session: CurrentSession) -> PreviewResponse:
+    """LS-04: what a post would write, beside the payable the payment chain
+    (A5/A6) implies, and whether they agree. Read-only; decides nothing."""
+    with app_engine().connect() as conn:
+        _get_document(doc_id, session, conn)
+        try:
+            result = build_posting_preview(
+                conn, tenant_id=session.tenant_id, document_id=doc_id)
+        except MissingClaimError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"cannot preview: no claim for {exc.field!r}") from exc
+    return PreviewResponse(
+        amount_to_write=str(result.amount_to_write),
+        total_completed_and_stored=str(result.total_completed_and_stored),
+        retainage_total=str(result.retainage_total),
+        previous_payments=str(result.previous_payments),
+        expected_payable=str(result.expected_payable),
+        difference=str(result.difference), reconciles=result.reconciles)
 
 
 class PostBody(BaseModel):

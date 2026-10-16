@@ -385,3 +385,33 @@ def test_post_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
                                {"adapter": "qbo", "vendor_ref": "V-9"})
     assert response.status_code == 502, response.text
     assert "CLIENT_CONFIDENTIAL" not in response.text
+
+
+def test_preview_shows_the_write_amount_beside_the_expected_payable(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-04. The seeded document writes 500.00 (its one line's this_period)
+    while completed 1000.00 less retainage 50.00 less previous 0.00 is 950.00.
+    The preview exposes both and says they do not reconcile; it writes nothing."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    response = alice.get(f"/api/writeback/documents/{doc_id}/preview")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "amount_to_write": "500.00", "total_completed_and_stored": "1000.00",
+        "retainage_total": "50.00", "previous_payments": "0.00",
+        "expected_payable": "950.00", "difference": "-450.00", "reconciles": False}
+    assert alice.get(f"/api/writeback/documents/{doc_id}/status").json()["state"] == "not_posted"
+
+
+def test_preview_on_a_cross_tenant_document_is_404(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    assert bob.get(f"/api/writeback/documents/{doc_id}/preview").status_code == 404
+
+
+def test_preview_on_a_document_with_no_claims_is_422(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, _bob = two_tenants
+    doc_id = alice.seed_unrun_document()
+    assert alice.get(f"/api/writeback/documents/{doc_id}/preview").status_code == 422
