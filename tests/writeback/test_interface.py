@@ -13,14 +13,14 @@ from ledger_sense.writeback.interface import (
 
 
 def test_idempotency_key_is_deterministic() -> None:
-    a = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2)
-    b = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2)
+    a = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2, tenant_id="t-test")
+    b = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2, tenant_id="t-test")
     assert a == b
 
 
 def test_idempotency_key_changes_with_the_application_number() -> None:
-    a = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2)
-    b = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=3)
+    a = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2, tenant_id="t-test")
+    b = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=3, tenant_id="t-test")
     assert a != b
 
 
@@ -28,8 +28,16 @@ def test_idempotency_key_fits_a_qbo_docnumber_field() -> None:
     """QBO DocNumber is capped at 21 characters. A key that will not fit cannot
     be stamped, and an unstamped key cannot be queried back after a crash."""
     key = build_idempotency_key(document_hash="a" * 64, contract_id="C-1",
-                                application_no=2)
+                                application_no=2, tenant_id="t-test")
     assert len(key) <= 21
+
+
+def test_idempotency_key_differs_between_tenants() -> None:
+    """LS-02: identical document, contract and application number in two
+    tenants must not share a key."""
+    a = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2, tenant_id="alice")
+    b = build_idempotency_key(document_hash="abc123", contract_id="C-1", application_no=2, tenant_id="bob")
+    assert a != b
 
 
 def test_line_item_rejects_a_float_amount() -> None:

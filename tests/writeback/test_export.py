@@ -18,7 +18,7 @@ GOLDENS = pathlib.Path("tests/writeback/goldens")
 
 def _request(application_no: int = 2) -> WriteRequest:
     return WriteRequest(
-        idempotency_key=build_idempotency_key("abc123", "C-1", application_no),
+        idempotency_key=build_idempotency_key("abc123", "C-1", application_no, tenant_id="t-test"),
         doc_id="doc-1", vendor_ref="Acme Steel Company", vendor_invoice_number=None,
         txn_date=date(2026, 8, 31),
         line_items=[

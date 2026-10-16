@@ -101,7 +101,7 @@ def status(doc_id: str, session: CurrentSession) -> StatusResponse:
                 status_code=422,
                 detail=f"cannot check status: no claim for {exc.field!r}") from exc
 
-    audit = audit_log_from_environment()
+    audit = audit_log_from_environment(session.tenant_id)
     live = _live_write_entries(audit, doc_id)
     if not live:
         return StatusResponse(state="not_posted", remote_id=None)
@@ -168,7 +168,7 @@ def post(doc_id: str, body: PostBody, session: CurrentSession) -> PostResponse:
                 status_code=422,
                 detail=f"cannot post: no claim for {exc.field!r}") from exc
 
-    audit = audit_log_from_environment()
+    audit = audit_log_from_environment(session.tenant_id)
     live = _live_write_entries(audit, doc_id).get(body.adapter)
     if live is not None and (live.vendor_ref != body.vendor_ref
                              or live.vendor_invoice_number != body.vendor_invoice_number):
@@ -209,7 +209,7 @@ def reverse(doc_id: str, body: ReverseBody, session: CurrentSession) -> ReverseR
         _get_document(doc_id, session, conn)
         approved_by = _approved_by(conn, session)
 
-    audit = audit_log_from_environment()
+    audit = audit_log_from_environment(session.tenant_id)
     # I-1: `doc_id` (the path parameter) is tenancy-checked above, but
     # `body.remote_id` — which actually drives the reversal — was not tied
     # to that document at all. Any caller who owns SOME document could
