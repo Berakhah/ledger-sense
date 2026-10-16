@@ -1,5 +1,5 @@
 """Writeback API — the human-triggered seam from a cleared review queue to a
-draft bill in the client's accounting system.
+unpaid bill in the client's accounting system (QBO has no draft state).
 
 Never-rule #3: posting is a separate, later, human-triggered action, never a
 step ledger_sense.run.document takes automatically. This router is the only
