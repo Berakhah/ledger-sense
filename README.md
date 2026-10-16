@@ -51,8 +51,11 @@ application tells someone else's server which document is being read.
 - `CLIENT_CONFIDENTIAL` documents never reach a free-tier or third-party
   model. The optional model-escalation lane accepts `SYNTHETIC` or
   `REDACTED` input only.
-- Writeback is draft-only. A human approves every bill inside the accounting
-  system; Ledger Sense never posts an approved transaction.
+- Writeback never approves or pays. QuickBooks Online has no draft state for
+  Bills, so a QBO write creates an **unpaid** Bill, stamped `AWAITING REVIEW`,
+  that posts to Accounts Payable at once. Ledger Sense never creates a
+  BillPayment; a human approves by paying the Bill inside QuickBooks. The CSV/IIF
+  export is the staging path with no ledger effect until the client imports it.
 - No AIA form artifact — G702/G703 are copyrighted and actively enforced.
   The synthetic corpus and UI use our own layout with equivalent column
   semantics.
