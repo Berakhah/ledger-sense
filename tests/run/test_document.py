@@ -510,3 +510,28 @@ def test_i2_never_touches_another_tenants_vendor_ledger(db: RunDb) -> None:
     findings = db.findings_for(document_id)
     # db.tenant_id's own ledger is still empty, so the name is unresolved.
     assert [f.rule_id for f in findings if f.rule_id == "I2"] == ["I2"]
+
+
+def test_a_printed_payment_total_is_not_compared_against_a_defaulted_component(
+    db: RunDb, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LS-06. A5b/A6b are derived from the summary totals. If a total could not
+    be extracted, `assemble` defaults it to 0.00; comparing the printed payment
+    due against a chain built on that zero would be a confident lie. X0 says
+    the truth, as it does for A5/A6."""
+    import ledger_sense.run.document as run_module
+
+    real = assemble_pay_application
+
+    def _scrub_retainage(pdf: bytes, source_path: str) -> object:
+        app = real(pdf, source_path)
+        app.provenance.pop("retainage_total", None)
+        cast(list[UnextractableField], app.provenance["_unextractable"]).append(
+            UnextractableField("retainage_total", "label not found on page"))
+        return app.model_copy(update={"retainage_total": money("0.00")})
+    monkeypatch.setattr(run_module, "assemble_pay_application", _scrub_retainage)
+
+    document_id = db.store_pdf(generate(seed=1, error="clean")[2])
+    run_document(db.engine, document_id)
+    rules = {f.rule_id for f in db.findings_for(document_id)}
+    assert "A5b" not in rules and "A6b" not in rules

@@ -54,8 +54,10 @@ ROUNDING_POLICY_SOURCE = "tenant_default"
 NO_TEXT_LAYER_NOTE = "no text layer; scanned documents route to review until OCR routing ships"
 
 # A5/A6 are derived from the summary totals; if any total is unverifiable the
-# derivation is too, and neither has a claim of its own to box.
-_SUMMARY_DERIVED_RULES = frozenset({"A5", "A6"})
+# derivation is too, and neither has a claim of its own to box. A5b/A6b compare
+# a PRINTED total with that same derivation (LS-06), so a defaulted component
+# makes their expected value just as untrustworthy.
+_SUMMARY_DERIVED_RULES = frozenset({"A5", "A6", "A5b", "A6b"})
 _SUMMARY_FIELDS = frozenset({"total_completed_and_stored", "retainage_total",
                              "previous_payments", "change_orders_net"})
 # A1/A8 sum over `app.lines` and report on a summary field. `assemble` drops a
