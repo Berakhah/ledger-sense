@@ -124,7 +124,7 @@ class TenantClient:
                 state="open", created_at=datetime.now(UTC)))
         return exc_id
 
-    def seed_postable_document(self) -> str:
+    def seed_postable_document(self, content_sha256: str = "abc123") -> str:
         """A document with a complete claim set (ready to post) and no open
         exceptions — findings all 'accepted', matching what the review queue
         looks like once a reviewer clears it."""
@@ -134,7 +134,7 @@ class TenantClient:
                 id=document_id, tenant_id=self.tenant_id, blob_id=None,
                 received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
                 origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
-                filename="fixture.pdf", content_sha256="abc123"))
+                filename="fixture.pdf", content_sha256=content_sha256))
             conn.execute(findings.insert().values(
                 id=uuid.uuid4().hex, tenant_id=self.tenant_id, document_id=document_id,
                 rule_id="A2", field="line[000].total_completed_and_stored",
