@@ -297,6 +297,33 @@ def test_reverse_with_another_documents_idempotency_key_is_refused_and_deletes_n
     assert alice.get(f"/api/writeback/documents/{doc_a}/status").json()["state"] == "posted"
 
 
+def test_identical_documents_in_two_tenants_are_posted_and_reversed_independently(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-02. Both tenants' documents have the same content hash, contract and
+    application number. The key, the audit lookups and the export must all be
+    tenant-scoped: Bob's post is not a replay of Alice's, and Alice reversing
+    hers neither fails nor touches Bob's."""
+    alice, bob = two_tenants
+    doc_a = alice.seed_postable_document()
+    doc_b = bob.seed_postable_document()
+    body: dict[str, object] = {"adapter": "export", "vendor_ref": "V-9"}
+
+    posted_a = alice.post_json(f"/api/writeback/documents/{doc_a}/post", body).json()
+    posted_b = bob.post_json(f"/api/writeback/documents/{doc_b}/post", body).json()
+
+    assert posted_a["was_replay"] is False
+    assert posted_b["was_replay"] is False
+    assert posted_a["remote_id"] != posted_b["remote_id"]
+
+    response = alice.post_json(f"/api/writeback/documents/{doc_a}/reverse",
+                               {"adapter": "export", "remote_id": posted_a["remote_id"],
+                                "idempotency_key": posted_a["idempotency_key"]})
+    assert response.status_code == 200, response.text
+    assert alice.get(f"/api/writeback/documents/{doc_a}/status").json()["state"] == "not_posted"
+    assert bob.get(f"/api/writeback/documents/{doc_b}/status").json() == {
+        "state": "posted", "remote_id": posted_b["remote_id"]}
+
+
 def test_reverse_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
         two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch) -> None:
     """Final whole-branch review, I-2. `reverse()` used to catch only
