@@ -58,3 +58,12 @@ def test_a_calibrated_field_takes_a_different_path(db: RunDb) -> None:
     document_id = _run_clean(db, router)
     r1 = [f for f in db.findings_for(document_id) if f.rule_id == "R1"]
     assert r1 == []
+
+
+def test_a_field_held_back_for_audit_is_queued_as_r2_not_r1(db: RunDb) -> None:
+    """R2 marks the review as an audit sample, so its verdict can become
+    audit-basis evidence (api/review.py) instead of ordinary field evidence."""
+    router = Router(cast(CalibrationStore, _AlwaysCalibrated()), audit_fraction=1.0)
+    document_id = _run_clean(db, router)
+    rules = {f.rule_id for f in db.findings_for(document_id)} - {"I2"}  # vendor not registered
+    assert rules == {"R2"}

@@ -302,7 +302,8 @@ def _routing_rows(tenant_id: str, document_id: str, claim_rows: list[dict[str, o
                   existing: list[dict[str, object]], router: Router | None,
                   now: datetime) -> list[dict[str, object]]:
     """R1: one open finding per extracted field the Router does not clear
-    for automatic acceptance. A field already under review for another
+    for automatic acceptance. R2 is the same queue item for a field the
+    Router WOULD have accepted but held back as an audit sample. A field already under review for another
     reason (X0, a rule, vendor resolution) is not queued twice. Because the
     review queue and the writeback gate already count open findings, an
     uncalibrated upload cannot reach posting without field review."""
@@ -314,15 +315,17 @@ def _routing_rows(tenant_id: str, document_id: str, claim_rows: list[dict[str, o
             continue
         if router is None:
             reason = "no calibration store is configured; every field routes to review"
+            rule_id = "R1"
         else:
             decision = router.decide_claim(
                 field_type_of(field), claim["confidence"], method=str(claim["method"]))
             if decision.route == "auto":
                 continue
             reason = f"{decision.calibration_state}: {decision.reason}"
+            rule_id = "R2" if decision.held_back_for_audit else "R1"
         rows.append({
             "id": uuid.uuid4().hex, "tenant_id": tenant_id, "document_id": document_id,
-            "rule_id": "R1", "field": field,
+            "rule_id": rule_id, "field": field,
             "message": f"field not cleared for automatic acceptance ({reason})",
             "expected": None, "actual": str(claim["value"]),
             "page": claim["page"], "x0": claim["x0"], "top": claim["top"],
