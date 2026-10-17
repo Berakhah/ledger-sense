@@ -59,17 +59,16 @@ class _AuditHoldBackSampler:
     exact (the very first call is held back) rather than merely likely.
     """
 
-    def __init__(self, fraction: float) -> None:
+    def __init__(self, fraction: float, store: CalibrationStore) -> None:
         self._fraction = fraction
-        self._calls: dict[str, int] = {}
+        self._store = store
 
     def should_hold_back(self, field: str) -> bool:
         if self._fraction <= 0.0:
             return False
         if self._fraction >= 1.0:
             return True
-        n = self._calls.get(field, 0) + 1
-        self._calls[field] = n
+        n = self._store.next_holdback_count(field)
         interval = round(1.0 / self._fraction)
         return n % interval == 0
 
@@ -81,7 +80,7 @@ class Router:
         self._store = store
         self._target = target_accuracy
         self._audit_fraction = audit_fraction
-        self._audit_sampler = _AuditHoldBackSampler(audit_fraction)
+        self._audit_sampler = _AuditHoldBackSampler(audit_fraction, store)
 
     def decide(self, field: str, confidence: float, *,
                method: str = "DETERMINISTIC",

@@ -244,3 +244,17 @@ def test_audit_labels_never_promote_a_synthetic_curve(store: CalibrationStore) -
     """
     labels = _labels([(0.99, True)] * 2200, basis="audit")
     assert CalibrationCurve.fit(labels).state == "calibrated:field"
+
+
+def test_the_audit_holdback_counter_survives_a_new_router_and_a_new_connection(
+        tmp_path: Path) -> None:
+    """LS-09: the runner builds a Router per document, so an in-memory counter
+    restarts at zero every run and a 1-in-N hold-back never reaches N. The
+    count must live in the store."""
+    path = tmp_path / "calibration.db"
+    CalibrationStore(path).save_curve(_curve("field", [(0.99, True)] * 2200))
+    routes = []
+    for _ in range(4):  # a fresh store connection and Router each time, as the runner does
+        router = Router(CalibrationStore(path), audit_fraction=0.25)
+        routes.append(router.decide("retainage_rate", confidence=0.999).route)
+    assert routes == ["auto", "auto", "auto", "review"]

@@ -60,3 +60,18 @@ def test_a_synthetic_review_session_produces_synthetic_labels() -> None:
 def test_an_unknown_action_kind_raises_rather_than_being_ignored() -> None:
     with pytest.raises(ValueError):
         labels_from_action(_action("shrug"), basis="field")
+
+
+def test_line_item_labels_are_recorded_under_the_field_type_not_the_row_index() -> None:
+    """LS-09: the Router looks curves up by field type. A label recorded as
+    'line[3].work_completed' would never reach the curve for
+    'line[].work_completed', so no line field could ever calibrate."""
+    labels = labels_from_action(_action("accept", field="line[3].work_completed"),
+                                basis="field")
+    assert labels[0].field_type == "line[].work_completed"
+
+
+def test_field_type_of_leaves_a_plain_field_alone() -> None:
+    from ledger_sense.route.labels import field_type_of
+    assert field_type_of("retainage_rate") == "retainage_rate"
+    assert field_type_of("line[12].this_period") == "line[].this_period"

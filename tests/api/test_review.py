@@ -27,6 +27,7 @@ from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.auth.session import issue_session
 from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.route.deps import calibration_store_from_environment
+from ledger_sense.route.labels import field_type_of
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
 from ledger_sense.store.vendors import load_vendor_ledger, load_vendor_ledger_for_update
@@ -318,11 +319,11 @@ def test_accepting_a_synthetic_documents_exception_writes_a_synthetic_label() ->
     claim_id = resp.json()["claim_id"]
 
     store = calibration_store_from_environment()
-    labels = store.labels_for(field, basis="synthetic")
+    labels = store.labels_for(field_type_of(field), basis="synthetic")
     assert any(lab.source_claim_id == claim_id and lab.was_correct is True
               and lab.predicted_confidence == 0.91 for lab in labels)
     # No route promotes a synthetic session's evidence to field-grade.
-    assert store.labels_for(field, basis="field") == []
+    assert store.labels_for(field_type_of(field), basis="field") == []
 
 
 def test_editing_a_client_confidential_documents_exception_writes_a_field_label() -> None:
@@ -337,7 +338,7 @@ def test_editing_a_client_confidential_documents_exception_writes_a_field_label(
     claim_id = resp.json()["claim_id"]
 
     store = calibration_store_from_environment()
-    labels = store.labels_for(field, basis="field")
+    labels = store.labels_for(field_type_of(field), basis="field")
     assert any(lab.source_claim_id == claim_id and lab.was_correct is False
               and lab.predicted_confidence == 0.42 for lab in labels)
 
