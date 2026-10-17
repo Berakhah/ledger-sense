@@ -5,8 +5,20 @@ improves with use at zero inference cost.
 """
 from __future__ import annotations
 
+import re
+
 from ledger_sense.review.actions import ReviewAction
 from ledger_sense.route.calibration import Basis, Label
+
+_ROW_INDEX = re.compile(r"\[\d+\]")
+
+
+def field_type_of(field: str) -> str:
+    """A calibration curve belongs to a field TYPE, not to row 3 of one
+    document: 'line[3].work_completed' -> 'line[].work_completed'. Labels and
+    routing lookups must both go through this, or they never meet."""
+    return _ROW_INDEX.sub("[]", field)
+
 
 _CORRECTNESS: dict[str, bool | None] = {
     "accept": True,
@@ -21,7 +33,7 @@ def labels_from_action(action: ReviewAction, *, basis: Basis) -> list[Label]:
     correct = _CORRECTNESS[action.kind]
     if correct is None:
         return []
-    return [Label(field_type=action.field,
+    return [Label(field_type=field_type_of(action.field),
                   predicted_confidence=action.predicted_confidence,
                   was_correct=correct,
                   observed_at=action.at,
