@@ -67,7 +67,7 @@ def _prior_claim(tenant_id: str, document_id: str, field: str, *,
             x1=368.0, bottom=112.0, caveat=None, observed_at=datetime.now(UTC)))
 
 
-def _finding(tenant_id: str, document_id: str, *, index: int = 0,
+def _finding(tenant_id: str, document_id: str, *, index: int = 0, rule_id: str = "A2",
             bbox: tuple[float, float, float, float] | None = (288.0, 100.0, 368.0, 112.0),
             page: int | None = 0, actual: str | None = "1005.00") -> str:
     exc_id = uuid.uuid4().hex
@@ -75,7 +75,7 @@ def _finding(tenant_id: str, document_id: str, *, index: int = 0,
     with app_engine().begin() as conn:
         conn.execute(findings.insert().values(
             id=exc_id, tenant_id=tenant_id, document_id=document_id,
-            rule_id="A2", field=f"line[{index:03d}].total_completed_and_stored",
+            rule_id=rule_id, field=f"line[{index:03d}].total_completed_and_stored",
             message="previous + this period + stored does not equal the total",
             expected="1000.00", actual=actual, page=page,
             x0=x0, top=top, x1=x1, bottom=bottom,
@@ -744,3 +744,35 @@ def test_editing_a_money_field_to_a_non_money_value_is_refused_without_state_cha
             claims.c.document_id == doc_id, claims.c.method == "human")).scalar_one()
     assert state == "open"
     assert human == 0
+
+
+def test_accepting_an_audit_sample_on_a_client_document_writes_an_audit_label() -> None:
+    """LS-09: an R2 finding is a field the Router would have auto-accepted,
+    held back to keep drift visible. Its verdict is audit evidence, the only
+    label source for a field type that has crossed its threshold."""
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id, sensitivity=Sensitivity.CLIENT_CONFIDENTIAL)
+    field = "line[000].total_completed_and_stored"
+    _prior_claim(tenant_id, doc_id, field, match_quality=0.97)
+    exc_id = _finding(tenant_id, doc_id, rule_id="R2")
+    resp = client.post(f"/api/review/exceptions/{exc_id}/accept", cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    store = calibration_store_from_environment()
+    claim_id = resp.json()["claim_id"]
+    assert any(lab.source_claim_id == claim_id and lab.was_correct
+               for lab in store.labels_for(field_type_of(field), basis="audit"))
+    assert not any(lab.source_claim_id == claim_id
+                   for lab in store.labels_for(field_type_of(field), basis="field"))
+
+
+def test_an_audit_sample_on_a_synthetic_document_never_becomes_audit_evidence() -> None:
+    cookies, tenant_id = _session_cookie()
+    doc_id = _document(tenant_id, sensitivity=Sensitivity.SYNTHETIC)
+    field = "line[000].total_completed_and_stored"
+    _prior_claim(tenant_id, doc_id, field, match_quality=0.97)
+    exc_id = _finding(tenant_id, doc_id, rule_id="R2")
+    claim_id = client.post(f"/api/review/exceptions/{exc_id}/accept",
+                           cookies=cookies).json()["claim_id"]
+    store = calibration_store_from_environment()
+    assert not any(lab.source_claim_id == claim_id
+                   for lab in store.labels_for(field_type_of(field), basis="audit"))

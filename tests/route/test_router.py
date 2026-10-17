@@ -258,3 +258,12 @@ def test_the_audit_holdback_counter_survives_a_new_router_and_a_new_connection(
         router = Router(CalibrationStore(path), audit_fraction=0.25)
         routes.append(router.decide("retainage_rate", confidence=0.999).route)
     assert routes == ["auto", "auto", "auto", "review"]
+
+
+def test_only_a_held_back_decision_is_marked_as_an_audit_sample() -> None:
+    store = CalibrationStore(pathlib.Path(":memory:"))
+    store.save_curve(_curve("field", [(0.99, True)] * 2200))
+    held = Router(store, audit_fraction=1.0).decide("retainage_rate", confidence=0.999)
+    assert held.route == "review" and held.held_back_for_audit is True
+    low = Router(store, audit_fraction=0.0).decide("retainage_rate", confidence=0.1)
+    assert low.route == "review" and low.held_back_for_audit is False

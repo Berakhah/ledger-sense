@@ -36,7 +36,7 @@ from ledger_sense.auth.session import Session
 from ledger_sense.boundary import Sensitivity
 from ledger_sense.provenance import Method
 from ledger_sense.review.actions import ReviewAction
-from ledger_sense.route.calibration import Basis
+from ledger_sense.route.calibration import LabelBasis
 from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
 from ledger_sense.store.retention import claims, documents, findings
@@ -261,15 +261,19 @@ def _observed_vendor_name(conn: sa.Connection, document_id: str) -> str | None:
     return None if row is None else row.value
 
 
-def _basis_for(conn: sa.Connection, document_id: str) -> Basis:
+def _basis_for(conn: sa.Connection, document_id: str, rule_id: str) -> LabelBasis:
     """Derived from the source document's own sensitivity label, never from a
     caller-supplied value — F-49/Never-rule #1's spirit applied to labels: no
     route may exist by which a synthetic review session gets recorded as
-    field evidence."""
+    field evidence. An R2 finding is an audit sample of a field the Router
+    would have auto-accepted: on a real document its verdict is `audit`
+    evidence, the only signal that can reveal drift (route/router.py)."""
     sensitivity = conn.execute(
         sa.select(documents.c.sensitivity).where(documents.c.id == document_id)
     ).scalar_one()
-    return "synthetic" if sensitivity == Sensitivity.SYNTHETIC.value else "field"
+    if sensitivity == Sensitivity.SYNTHETIC.value:
+        return "synthetic"
+    return "audit" if rule_id == "R2" else "field"
 
 
 def _record_label(conn: sa.Connection, row: sa.Row[Any], *, kind: str, claim_id: str,
@@ -287,7 +291,7 @@ def _record_label(conn: sa.Connection, row: sa.Row[Any], *, kind: str, claim_id:
     action = ReviewAction(kind=kind, field=row.field, claim_id=claim_id,
                           predicted_confidence=match_quality, actor=session.user_id,
                           at=datetime.now(UTC))
-    labels = labels_from_action(action, basis=_basis_for(conn, row.document_id))
+    labels = labels_from_action(action, basis=_basis_for(conn, row.document_id, row.rule_id))
     if labels:
         calibration_store_from_environment().add_labels(labels)
 

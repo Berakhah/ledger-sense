@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from ledger_sense.review.actions import ReviewAction
-from ledger_sense.route.calibration import Basis, Label
+from ledger_sense.route.calibration import Label, LabelBasis
 
 _ROW_INDEX = re.compile(r"\[\d+\]")
 
@@ -27,7 +27,7 @@ _CORRECTNESS: dict[str, bool | None] = {
 }
 
 
-def labels_from_action(action: ReviewAction, *, basis: Basis) -> list[Label]:
+def labels_from_action(action: ReviewAction, *, basis: LabelBasis) -> list[Label]:
     if action.kind not in _CORRECTNESS:
         raise ValueError(f"unknown review action kind: {action.kind!r}")
     correct = _CORRECTNESS[action.kind]
