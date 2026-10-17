@@ -14,7 +14,6 @@ failures (DB, blob store, KEK) propagate.
 """
 
 import logging
-import re
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -30,6 +29,7 @@ from ledger_sense.extract.textlayer import has_text_layer
 from ledger_sense.ingest.classify import classify
 from ledger_sense.provenance import Claim, FileSource
 from ledger_sense.route.deps import calibration_store_from_environment
+from ledger_sense.route.labels import field_type_of
 from ledger_sense.route.router import Router
 from ledger_sense.rules.arithmetic import (  # noqa: F401 — @register runs on import
     foot,
@@ -286,9 +286,6 @@ def _vendor_rows(conn: Connection, tenant_id: str, document_id: str,
     return rows
 
 
-_INDEX = re.compile(r"\[\d+\]")
-
-
 def _router_or_none(router: Router | None) -> Router | None:
     """The configured Router, or None when no calibration store exists --
     which fails CLOSED: with nothing to calibrate against, every field routes
@@ -319,7 +316,7 @@ def _routing_rows(tenant_id: str, document_id: str, claim_rows: list[dict[str, o
             reason = "no calibration store is configured; every field routes to review"
         else:
             decision = router.decide_claim(
-                _INDEX.sub("[]", field), claim["confidence"], method=str(claim["method"]))
+                field_type_of(field), claim["confidence"], method=str(claim["method"]))
             if decision.route == "auto":
                 continue
             reason = f"{decision.calibration_state}: {decision.reason}"
