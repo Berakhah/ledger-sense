@@ -41,6 +41,7 @@ class RoutingDecision:
     threshold: float | None
     calibrated_confidence: float | None
     reason: str
+    held_back_for_audit: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -135,7 +136,8 @@ class Router:
             return RoutingDecision(field, "review", curve.state, curve.basis, threshold,
                                     calibrated,
                                     f"held back for audit ({self._audit_fraction:.0%} "
-                                    "of auto-eligible fields) so drift stays visible")
+                                    "of auto-eligible fields) so drift stays visible",
+                                    held_back_for_audit=True)
 
         return RoutingDecision(field, "auto", curve.state, curve.basis, threshold,
                                 calibrated,
