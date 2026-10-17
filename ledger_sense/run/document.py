@@ -14,6 +14,7 @@ failures (DB, blob store, KEK) propagate.
 """
 
 import logging
+import re
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -28,6 +29,8 @@ from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.extract.textlayer import has_text_layer
 from ledger_sense.ingest.classify import classify
 from ledger_sense.provenance import Claim, FileSource
+from ledger_sense.route.deps import calibration_store_from_environment
+from ledger_sense.route.router import Router
 from ledger_sense.rules.arithmetic import (  # noqa: F401 — @register runs on import
     foot,
     lines,
@@ -123,7 +126,8 @@ def _take_row(conn: Connection, document_id: str) -> RunOutcome | sa.Row[tuple[o
 
 
 def run_document(engine: Engine, document_id: str, *,
-                 blobs: BlobStore | None = None) -> RunOutcome:
+                 blobs: BlobStore | None = None,
+                 router: Router | None = None) -> RunOutcome:
     """Run one document. Safe to call again: a row that is not `received` or
     `failed`, or that carries a human decision, is left exactly as it was."""
     store = blobs if blobs is not None else blob_store_from_environment()
@@ -132,7 +136,7 @@ def run_document(engine: Engine, document_id: str, *,
             taken = _take_row(conn, document_id)
             if isinstance(taken, RunOutcome):
                 return taken
-            return _execute(conn, taken, store)
+            return _execute(conn, taken, store, router)
     except _RunFailure as failure:
         return _mark_failed(engine, document_id, failure.cause, failure.doc_type)
 
@@ -282,6 +286,55 @@ def _vendor_rows(conn: Connection, tenant_id: str, document_id: str,
     return rows
 
 
+_INDEX = re.compile(r"\[\d+\]")
+
+
+def _router_or_none(router: Router | None) -> Router | None:
+    """The configured Router, or None when no calibration store exists --
+    which fails CLOSED: with nothing to calibrate against, every field routes
+    to review (CLAUDE.md, confidence routing)."""
+    if router is not None:
+        return router
+    try:
+        return Router(calibration_store_from_environment())
+    except RuntimeError:
+        return None
+
+
+def _routing_rows(tenant_id: str, document_id: str, claim_rows: list[dict[str, object]],
+                  existing: list[dict[str, object]], router: Router | None,
+                  now: datetime) -> list[dict[str, object]]:
+    """R1: one open finding per extracted field the Router does not clear
+    for automatic acceptance. A field already under review for another
+    reason (X0, a rule, vendor resolution) is not queued twice. Because the
+    review queue and the writeback gate already count open findings, an
+    uncalibrated upload cannot reach posting without field review."""
+    covered = {str(f["field"]) for f in existing}
+    rows: list[dict[str, object]] = []
+    for claim in claim_rows:
+        field = str(claim["field"])
+        if field in covered:
+            continue
+        if router is None:
+            reason = "no calibration store is configured; every field routes to review"
+        else:
+            decision = router.decide_claim(
+                _INDEX.sub("[]", field), claim["confidence"], method=str(claim["method"]))
+            if decision.route == "auto":
+                continue
+            reason = f"{decision.calibration_state}: {decision.reason}"
+        rows.append({
+            "id": uuid.uuid4().hex, "tenant_id": tenant_id, "document_id": document_id,
+            "rule_id": "R1", "field": field,
+            "message": f"field not cleared for automatic acceptance ({reason})",
+            "expected": None, "actual": str(claim["value"]),
+            "page": claim["page"], "x0": claim["x0"], "top": claim["top"],
+            "x1": claim["x1"], "bottom": claim["bottom"],
+            "state": "open", "created_at": now,
+        })
+    return rows
+
+
 def _write(conn: Connection, row: sa.Row[tuple[object, ...]],
            claim_rows: list[dict[str, object]],
            finding_rows: list[dict[str, object]]) -> RunOutcome:
@@ -343,7 +396,8 @@ def _flag_duplicate(conn: Connection, row: sa.Row[tuple[object, ...]], twin: str
     return RunOutcome(document_id, "duplicate", note, 0, 1)
 
 
-def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore) -> RunOutcome:
+def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore,
+             router: Router | None = None) -> RunOutcome:
     document_id, tenant_id = str(row.id), str(row.tenant_id)
     twin = _earlier_twin(conn, row)
     if twin is not None:
@@ -368,6 +422,8 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
         finding_rows = _x0_rows(tenant_id, document_id, app, now)
         finding_rows += _rule_rows(tenant_id, document_id, app, claim_rows, now)
         finding_rows += _vendor_rows(conn, tenant_id, document_id, app, claim_rows, now)
+        finding_rows += _routing_rows(tenant_id, document_id, claim_rows, finding_rows,
+                                      _router_or_none(router), now)
     except Exception as exc:  # every document-level error becomes `failed`
         raise _RunFailure(exc, doc_type) from exc
     # Outside the try on purpose (spec §2 step 7's catch-all covers steps 3-5

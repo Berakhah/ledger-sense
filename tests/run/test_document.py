@@ -296,7 +296,7 @@ def test_a_row_that_changes_status_during_the_write_raises_instead_of_failing(
     assert db.claims_for(document_id) == []
 
 
-def test_a_clean_document_produces_no_findings(db: RunDb) -> None:
+def test_a_clean_document_produces_no_rule_findings(db: RunDb) -> None:
     # A fresh tenant's vendor ledger is empty, so the vendor on this
     # document must be pre-registered — otherwise I2 legitimately fires
     # ("first time we've seen this name") and "no findings" would be false.
@@ -309,8 +309,10 @@ def test_a_clean_document_produces_no_findings(db: RunDb) -> None:
 
     document_id = db.store_pdf(pdf)
     outcome = run_document(db.engine, document_id)
-    assert outcome.findings_written == 0
-    assert db.findings_for(document_id) == []
+    # LS-09: no rule fires on a clean document. The only open items are R1,
+    # one per field, because nothing is calibrated yet.
+    assert {f.rule_id for f in db.findings_for(document_id)} == {"R1"}
+    assert outcome.findings_written == outcome.claims_written
 
 
 @pytest.mark.parametrize("error,rule_id", [
@@ -363,7 +365,7 @@ def test_arithmetic_is_not_run_on_a_field_that_could_not_be_extracted(
 
     document_id = db.store_pdf(pdf)
     run_document(db.engine, document_id)
-    rules_fired = {f.rule_id for f in db.findings_for(document_id)}
+    rules_fired = {f.rule_id for f in db.findings_for(document_id)} - {"R1"}
     assert rules_fired == {"X0"}, rules_fired
 
 

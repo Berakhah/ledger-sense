@@ -101,7 +101,7 @@ class Router:
                                     "rule failures block auto-posting: "
                                     f"{', '.join(rule_failures)}")
 
-        if method != "DETERMINISTIC":
+        if method.upper() != "DETERMINISTIC":
             return RoutingDecision(field, "review", curve.state, curve.basis, threshold,
                                     calibrated,
                                     f"claim method is {method}; only DETERMINISTIC "
@@ -142,6 +142,15 @@ class Router:
                                 calibrated,
                                 f"confidence {confidence:.3f} at or above "
                                 f"field-calibrated threshold {threshold:.3f}")
+
+    def decide_claim(self, field: str, confidence: object, *,
+                     method: str = "DETERMINISTIC",
+                     rule_failures: Sequence[str] = ()) -> RoutingDecision:
+        """`decide` for a stored claim, whose confidence column may be NULL.
+        A missing or non-numeric confidence is the lowest confidence, so it
+        can never clear a threshold."""
+        score = float(confidence) if isinstance(confidence, (int, float)) else 0.0
+        return self.decide(field, score, method=method, rule_failures=rule_failures)
 
     def withdraw_if_drifted(self, field: str) -> bool:
         """Refit on audit labels; withdraw the threshold if it can no longer

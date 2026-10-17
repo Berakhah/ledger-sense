@@ -457,3 +457,23 @@ def test_post_refuses_a_document_with_a_rejected_exception(
                                {"adapter": "export", "vendor_ref": "V-9"})
     assert response.status_code == 422, response.text
     assert "rejected" in response.json()["detail"]
+
+
+# --- LS-09: an uncalibrated upload cannot reach posting without field review ----
+
+def test_a_clean_uncalibrated_upload_cannot_be_posted_before_its_fields_are_reviewed(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    from ledger_sense.corpus.generate import generate
+    from tests.api.test_inbox import _register_vendor, _upload
+
+    alice, _bob = two_tenants
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    _register_vendor(alice, app.vendor_name)
+    doc_id = _upload(alice, pdf).json()["id"]
+
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 422, response.text
+    assert "open" in response.json()["detail"]
