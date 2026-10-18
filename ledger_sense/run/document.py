@@ -24,8 +24,10 @@ from sqlalchemy.engine import Connection, Engine
 
 from ledger_sense.domain.models import Contract, PayApplication, RetainageTerms
 from ledger_sense.domain.money import RoundingPolicy, money
+from ledger_sense.domain.vendor import PaymentDetail, payment_hmac
 from ledger_sense.extract.assemble import assemble_pay_application
-from ledger_sense.extract.textlayer import has_text_layer
+from ledger_sense.extract.remit import extract_remit
+from ledger_sense.extract.textlayer import extract_words, has_text_layer
 from ledger_sense.ingest.classify import classify
 from ledger_sense.provenance import Claim, FileSource
 from ledger_sense.route.deps import calibration_store_from_environment
@@ -42,6 +44,7 @@ from ledger_sense.rules.engine import (
     run_rules,
     unverifiable_money_fields,
 )
+from ledger_sense.rules.integrity.bank_details import assess_payment_detail
 from ledger_sense.rules.integrity.vendors import check_vendor_resolution
 from ledger_sense.store.blobs import BlobStore, blob_store_from_environment
 from ledger_sense.store.documents import load_document
@@ -286,6 +289,46 @@ def _vendor_rows(conn: Connection, tenant_id: str, document_id: str,
     return rows
 
 
+def _payment_rows(conn: Connection, tenant_id: str, document_id: str, pdf: bytes,
+                  app: PayApplication, now: datetime) -> list[dict[str, object]]:
+    """I3, read-only like I2: the document's remit-to details against the
+    vendor ledger's last CONFIRMED detail. The full account and routing numbers
+    live only inside this frame — they are reduced to last-four plus HMAC at once
+    and never reach a claim, a finding, a log line or an exception message.
+
+    No bank block on the document means nothing to compare (no finding, no X0).
+    A block that is present but unreadable is an X0 on `payment_account`, never a
+    guess. A document with details is NEVER clean unless they equal the confirmed
+    baseline: first-seen and changed are both hard stops."""
+    result = extract_remit(extract_words(pdf))
+    base: dict[str, object] = {
+        "tenant_id": tenant_id, "document_id": document_id, "field": "payment_account",
+        "state": "open", "created_at": now}
+    if result.hit is None:
+        if result.problem is None:
+            return []
+        return [{**base, "id": uuid.uuid4().hex, "rule_id": "X0",
+                 "message": f"could not extract: {result.problem}",
+                 "expected": None, "actual": None,
+                 "page": None, "x0": None, "top": None, "x1": None, "bottom": None}]
+    hit = result.hit
+    incoming = PaymentDetail(
+        account_last4=hit.account[-4:], routing_last4=hit.routing[-4:],
+        account_hmac=payment_hmac(hit.account, hit.routing),
+        observed_at=now, source_document=document_id)
+    ledger = load_vendor_ledger(conn, tenant_id)
+    vendor_id = ledger.resolve(app.vendor_name).vendor_id if app.vendor_name else None
+    assessment = assess_payment_detail(ledger, vendor_id, incoming)
+    if assessment is None:
+        return []
+    return [{**base, "id": uuid.uuid4().hex, "rule_id": "I3", "message": assessment.message,
+             "expected": (None if assessment.expected_last4 is None
+                          else f"....{assessment.expected_last4}"),
+             "actual": f"....{assessment.actual_last4}",
+             "page": hit.page, "x0": hit.bbox.x0, "top": hit.bbox.top,
+             "x1": hit.bbox.x1, "bottom": hit.bbox.bottom}]
+
+
 def _router_or_none(router: Router | None) -> Router | None:
     """The configured Router, or None when no calibration store exists --
     which fails CLOSED: with nothing to calibrate against, every field routes
@@ -432,6 +475,7 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
         finding_rows = _x0_rows(tenant_id, document_id, app, now)
         finding_rows += _rule_rows(tenant_id, document_id, app, claim_rows, now)
         finding_rows += _vendor_rows(conn, tenant_id, document_id, app, claim_rows, now)
+        finding_rows += _payment_rows(conn, tenant_id, document_id, pdf, app, now)
         finding_rows += _routing_rows(tenant_id, document_id, claim_rows, finding_rows,
                                       _router_or_none(router), now)
     except Exception as exc:  # every document-level error becomes `failed`
