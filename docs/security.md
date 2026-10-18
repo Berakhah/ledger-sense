@@ -222,7 +222,12 @@ Nothing in this section is claimed to run automatically that does not.
 - **`LEDGER_SENSE_PAYMENT_HMAC_KEY`** keys the HMAC that fingerprints vendor
   bank details. Account and routing numbers are low-entropy, so the digest is
   only as strong as this key: keep it out of database backups. The API refuses
-  to start if it is empty.
+  to start if it is empty. Bank account and routing numbers are read from a
+  document in memory only, reduced to last four plus HMAC, and never written to
+  claims, findings, logs or API responses (the `pdfminer` logger is capped
+  because its DEBUG output printed the full account number). The I3 hard stop
+  is cleared only by `confirm-bank-change`, which stores the verifier's channel
+  and contact.
 - **Accounting OAuth tokens** are stored encrypted (Fernet) under their own
   `LEDGER_SENSE_TOKEN_KEY`, in the `client_writeback` volume with the
   idempotency ledger and audit log. It is deliberately not the document KEK:
