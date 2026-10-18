@@ -86,6 +86,19 @@ DOC_HEADER_LABEL_X_PT = 36.0
 DOC_HEADER_VALUE_X_PT = 160.0
 DOC_HEADER_ROW_HEIGHT_PT = 12.0
 
+# REMIT BLOCK (LS-10) - account and routing numbers for I3. Same label/value
+# pattern as the document header, drawn on page one in the empty space to the
+# RIGHT of that block and ABOVE the continuation grid's header row, so the grid
+# reconstruction never sees it. "Account Number" / "Routing Number" share no
+# word sequence with any column header, summary label or header label.
+REMIT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("Account Number", "account"),
+    ("Routing Number", "routing"),
+)
+REMIT_TOP_PT = 588.0
+REMIT_LABEL_X_PT = 380.0
+REMIT_VALUE_X_PT = 520.0
+
 # ADVERSARIAL LAYOUT VARIANTS — REVISED (F-14).
 #
 # `extract/tables.py` originally imported CONTINUATION_COLUMNS from this module,
