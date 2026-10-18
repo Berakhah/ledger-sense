@@ -1,9 +1,13 @@
 """confirm-bank-change is the only way to clear an I3 hard stop (LS-10)."""
 
+import io
 from datetime import UTC, datetime
 
+import pypdfium2 as pdfium
+
 from ledger_sense.boundary import Origin
-from ledger_sense.corpus.generate import generate
+from ledger_sense.corpus.generate import _insert_text, generate
+from ledger_sense.corpus.layouts import REMIT_LABEL_X_PT, REMIT_TOP_PT
 from ledger_sense.corpus.remit import remit_for
 from ledger_sense.ingest.intake import accept_document
 from ledger_sense.run.document import run_document
@@ -18,6 +22,10 @@ ATTEST: dict[str, object] = {"channel": "phone", "contact": "J. Vendor", "note":
 def _stored_and_run(tenant: TenantClient, seed: int, variant: str) -> str:
     remit = remit_for(seed, variant)  # type: ignore[arg-type]
     _c, _a, pdf = generate(seed=seed, error="clean", remit=remit)
+    return _store_and_run(tenant, pdf)
+
+
+def _store_and_run(tenant: TenantClient, pdf: bytes) -> str:
     doc = accept_document(pdf, origin=Origin.CORPUS, provenance="tests/api/test_bank_change.py")
     with app_engine().begin() as conn:
         document_id = store_document(
@@ -134,3 +142,36 @@ def test_confirm_only_applies_to_an_i3_exception(
     exc_id = a.seed_exception()  # an A2 finding
     assert a.post_json(f"/api/review/exceptions/{exc_id}/confirm-bank-change",
                        ATTEST).status_code == 422
+
+
+def test_undo_confirm_vendor_cannot_reopen_an_i3_finding(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=3, variant="base")
+    vendor_id = _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    assert a.post_json(f"/api/review/exceptions/{i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+    response = a.post(f"/api/review/exceptions/{i3['id']}/undo-confirm-vendor")
+    assert response.status_code == 422
+    assert _exception(a, document_id, "I3")["state"] == "confirmed"
+    assert len(a.get(f"/api/vendors/{vendor_id}/ledger").json()["payment_history"]) == 1
+
+
+def test_an_unreadable_bank_block_x0_cannot_be_accepted_or_edited_but_can_be_rejected(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    _c, _a, plain = generate(seed=6, error="clean")
+    doc = pdfium.PdfDocument(plain)
+    page = doc[0]
+    _insert_text(page, doc, "Account Number", REMIT_LABEL_X_PT, REMIT_TOP_PT, 9.0)
+    page.gen_content()
+    buf = io.BytesIO()
+    doc.save(buf)
+    document_id = _store_and_run(a, buf.getvalue())
+    rows = a.get(f"/api/review/documents/{document_id}/exceptions").json()
+    (x0,) = [r for r in rows if r["rule_id"] == "X0" and r["field"] == "payment_account"]
+    base = f"/api/review/exceptions/{x0['id']}"
+    assert a.post(f"{base}/accept").status_code == 422
+    assert a.post_json(f"{base}/edit", {"value": "123456789"}).status_code == 422
+    assert a.post_json(f"{base}/reject", {"reason": "unreadable, ask vendor"}).status_code == 200

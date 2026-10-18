@@ -522,6 +522,9 @@ def undo_confirm_vendor(exc_id: str, session: CurrentSession) -> dict[str, str |
     with app_engine().begin() as conn:
         row = _get_finding(exc_id, session, conn)
         _require_confirmed(row)
+        if row.rule_id != "I2":
+            raise HTTPException(status_code=422,
+                                detail="undo-confirm-vendor only applies to an I2 exception")
 
         # The lock must be acquired BEFORE anything this transaction reads is
         # trusted: two concurrent undo calls can both pass _require_confirmed
