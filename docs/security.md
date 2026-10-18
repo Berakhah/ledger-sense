@@ -228,6 +228,12 @@ Nothing in this section is claimed to run automatically that does not.
   because its DEBUG output printed the full account number). The I3 hard stop
   is cleared only by `confirm-bank-change`, which stores the verifier's channel
   and contact.
+  Known limits of this control: it fires only for a document that carries a
+  recognised "Account Number" and "Routing Number" block, and the extractor
+  reads the text layer as written (invisible or tiny text is not filtered); an
+  unreadable bank block (X0) can only be rejected, which blocks writeback for
+  that document; undo deletes the confirmed detail and its attestation without
+  recording who undid it. See the LS-10 design's "Known limitations" section.
 - **Accounting OAuth tokens** are stored encrypted (Fernet) under their own
   `LEDGER_SENSE_TOKEN_KEY`, in the `client_writeback` volume with the
   idempotency ledger and audit log. It is deliberately not the document KEK:

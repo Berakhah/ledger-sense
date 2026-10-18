@@ -87,8 +87,32 @@ scope-statement docs, two-person rule.
 2. This slice, TDD, with `security-review` on the extraction/storage path before commit.
 
 ## Risks
-- Plaintext leakage via claims/findings text, logs or exceptions (mitigated by masking + scan test).
+- Plaintext leakage via claims/findings text, logs or exceptions (mitigated by: no bank claims, masked finding text, the logger cap, and the scan test).
 - A new I3 hard stop on every first invoice per vendor adds one confirmation per new vendor;
   accepted trade-off.
 - Skill map applies: `ecc:python-review`, `ecc:fastapi-review`, `ecc:database-migrations`,
   `security-review`.
+
+## Known limitations and follow-ups
+- I3 fires only when the document carries a recognised "Account Number" /
+  "Routing Number" block; a differently labelled block raises nothing. The
+  extractor reads the document's text layer as written: invisible, white or tiny
+  text is not filtered. This affects every extracted field, not just bank
+  details, and is a platform follow-up.
+- An X0 on `payment_account` can only be rejected, and a rejected finding blocks
+  writeback permanently; a decided document cannot be re-run. Remedy today:
+  re-ingest a corrected document. This is a fail-closed dead end.
+- confirm-bank-change returns 409 when re-assessment under the ledger lock shows
+  the details differ from the vendor's confirmed account (a change, not a first
+  sighting). That is the same kind of dead end for that document: re-ingest it so
+  it is assessed against the vendor.
+- Undo hard-deletes the confirmed detail (including the attestation) and records
+  no actor or reason. A revoke-with-audit design is a follow-up.
+- The HMAC key placeholder `changeme` in `.env.example` is accepted at startup
+  (pre-existing); hardening is a separate track.
+- "Never logged" holds for the extraction path because the `pdfminer` logger is
+  capped at WARNING when `extract.document` is imported; run-failure logging
+  still emits `%r` of the exception.
+- Retention purge removes the baseline and its attestation when the source
+  document ages out, so the vendor's next details read as a first sighting (fails
+  closed).
