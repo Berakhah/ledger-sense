@@ -312,7 +312,9 @@ def test_0007_adds_vendor_tables_and_the_documents_vendor_id_column(
         detail_cols = {c["name"] for c in inspector.get_columns("payment_details")}
         assert detail_cols == {"id", "tenant_id", "vendor_id", "account_last4",
                                "routing_last4", "account_hmac", "observed_at",
-                               "source_document", "confirmed_by", "confirmed_at"}
+                               "source_document", "confirmed_by", "confirmed_at",
+                               "confirmation_channel", "confirmation_contact",
+                               "confirmation_note"}
         doc_cols = {c["name"] for c in inspector.get_columns("documents")}
         assert "vendor_id" in doc_cols
 

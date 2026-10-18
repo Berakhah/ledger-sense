@@ -13,8 +13,9 @@ is a breach waiting to happen.
 
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from rapidfuzz import fuzz, utils
 
 from ledger_sense.domain.models import _Base
@@ -37,6 +38,21 @@ from ledger_sense.domain.models import _Base
 # the threshold exists to confirm.
 EXACT = 100
 CONFIRM_THRESHOLD = 80
+
+
+class Attestation(_Base):
+    """How a human satisfied the I3 hard stop: an out-of-band verification, with
+    enough evidence on the record to be audited later (B5, Never-rule 6)."""
+    channel: Literal["phone", "in_person", "video_call", "other"]
+    contact: str
+    note: str | None = None
+
+    @field_validator("contact")
+    @classmethod
+    def _contact_named(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("an attestation must name who was spoken to")
+        return value.strip()
 
 
 class PaymentDetail(_Base):
@@ -69,6 +85,9 @@ class PaymentDetail(_Base):
     source_document: str
     confirmed_by: str | None = None
     confirmed_at: datetime | None = None
+    confirmation_channel: str | None = None
+    confirmation_contact: str | None = None
+    confirmation_note: str | None = None
 
 
 def payment_hmac(account: str, routing: str) -> str:
@@ -292,24 +311,47 @@ class VendorLedger:
                                   if d.id not in migrated]
 
     def record_payment_detail(self, vendor_id: str, detail: PaymentDetail,
-                              confirmed_by: str) -> None:
+                              confirmed_by: str,
+                              attestation: Attestation | None = None) -> None:
         """Append-only. A CHANGED detail requires a named human confirmer, and
-        the confirmation is STORED (F-35) — spec §8 item 5 renders it.
+        the confirmation is STORED (F-35) — spec §8 item 5 renders it. When an
+        `attestation` is given its evidence is stored with it (LS-10).
 
-        Comparison is on the HMAC, not on four digits: last4 gives a 1-in-10,000
-        miss rate on a fraud control, and comparing only against the most recent
-        entry misses change-then-change-back.
-        """
+        Comparison is on the HMAC, not on four digits, and against the last
+        CONFIRMED entry: an unconfirmed entry is never a baseline."""
         vendor = self._vendors[vendor_id]
-        current = vendor.payment_history[-1] if vendor.payment_history else None
+        confirmed = [d for d in vendor.payment_history if d.confirmed_by]
+        current = confirmed[-1] if confirmed else None
         changed = current is not None and current.account_hmac != detail.account_hmac
         if changed and not confirmed_by:
             raise BankDetailChangeError(
                 "a bank-detail change requires human confirmation; this system "
                 "never auto-approves and never auto-updates a payment record")
-        vendor.payment_history.append(detail.model_copy(update={
+        update: dict[str, object] = {
             "confirmed_by": confirmed_by or None,
-            "confirmed_at": datetime.now(UTC) if confirmed_by else None}))
+            "confirmed_at": datetime.now(UTC) if confirmed_by else None}
+        if attestation is not None:
+            update.update(confirmation_channel=attestation.channel,
+                          confirmation_contact=attestation.contact,
+                          confirmation_note=attestation.note)
+        vendor.payment_history.append(detail.model_copy(update=update))
+
+    def find_payment_detail(self, source_document: str) -> tuple[str, PaymentDetail] | None:
+        """The (vendor_id, confirmed detail) that one document's bank-change
+        confirmation recorded. Undo's lookup, by identity not by value."""
+        for vendor in self._vendors.values():
+            for detail in vendor.payment_history:
+                if detail.source_document == source_document and detail.confirmed_by:
+                    return vendor.id, detail
+        return None
+
+    def undo_payment_detail(self, vendor_id: str, detail_id: str) -> None:
+        """Reverse one confirmation: remove the entry by identity (F-36's lesson),
+        restoring the previous baseline. A no-op if the vendor is gone."""
+        vendor = self._vendors.get(vendor_id)
+        if vendor is None:
+            return
+        vendor.payment_history = [d for d in vendor.payment_history if d.id != detail_id]
 
     def seen_before(self, vendor_id: str, detail: PaymentDetail) -> bool:
         """Has this account EVER been on file for this vendor? Change-then-

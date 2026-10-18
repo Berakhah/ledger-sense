@@ -22,6 +22,7 @@ import pytest
 from ledger_sense.domain.vendor import PaymentDetail, VendorLedger, payment_hmac
 from ledger_sense.rules.integrity.bank_details import (
     BankDetailChangeError,
+    assess_payment_detail,
     check_payment_detail,
 )
 
@@ -117,7 +118,8 @@ def test_no_full_account_number_is_ever_stored() -> None:
     record identifier, not account data, so it belongs in this allow-list."""
     assert set(PaymentDetail.model_fields) == {
         "id", "account_last4", "routing_last4", "account_hmac", "observed_at",
-        "source_document", "confirmed_by", "confirmed_at"}
+        "source_document", "confirmed_by", "confirmed_at",
+        "confirmation_channel", "confirmation_contact", "confirmation_note"}
     for field in ("account_number", "routing_number", "iban", "account"):
         assert field not in PaymentDetail.model_fields
 
@@ -160,3 +162,51 @@ def test_a_change_back_to_a_previously_seen_account_is_still_surfaced(
     reverted = _incoming(account="4321")
     assert led.seen_before(vendor_id, reverted) is True
     assert [f.rule_id for f in check_payment_detail(led, vendor_id, reverted)] == ["I3"]
+
+
+def test_first_seen_details_are_a_hard_stop_too() -> None:
+    led = VendorLedger()
+    vendor_id = led.create("Acme Steel Company")
+    assessment = assess_payment_detail(led, vendor_id, _incoming())
+    assert assessment is not None
+    assert assessment.kind == "first_seen"
+    assert assessment.expected_last4 is None
+    assert "hard stop" in assessment.message.lower()
+
+
+def test_a_vendor_that_does_not_exist_yet_is_first_seen() -> None:
+    assessment = assess_payment_detail(VendorLedger(), None, _incoming())
+    assert assessment is not None
+    assert assessment.kind == "first_seen"
+
+
+def test_an_unconfirmed_history_entry_is_not_a_baseline() -> None:
+    led = VendorLedger()
+    vendor_id = led.create("Acme Steel Company")
+    led.record_payment_detail(vendor_id, _incoming(), confirmed_by="")
+    assessment = assess_payment_detail(led, vendor_id, _incoming())
+    assert assessment is not None
+    assert assessment.kind == "first_seen"
+
+
+def test_a_changed_account_reports_both_last_fours(
+        ledger: tuple[VendorLedger, str]) -> None:
+    led, vendor_id = ledger
+    assessment = assess_payment_detail(led, vendor_id, _incoming(account="9999"))
+    assert assessment is not None
+    assert (assessment.kind, assessment.expected_last4, assessment.actual_last4) == (
+        "changed", "4321", "9999")
+
+
+def test_change_then_change_back_is_labelled_as_such(
+        ledger: tuple[VendorLedger, str]) -> None:
+    led, vendor_id = ledger
+    led.record_payment_detail(vendor_id, _incoming(account="9999"), confirmed_by="A. Bookkeeper")
+    assessment = assess_payment_detail(led, vendor_id, _incoming(account="4321"))
+    assert assessment is not None
+    assert assessment.kind == "changed_back"
+
+
+def test_a_matching_confirmed_detail_is_clean(ledger: tuple[VendorLedger, str]) -> None:
+    led, vendor_id = ledger
+    assert assess_payment_detail(led, vendor_id, _incoming()) is None
