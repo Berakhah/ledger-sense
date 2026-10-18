@@ -95,3 +95,18 @@ def generate_history(seed: int) -> list[tuple[Contract, PayApplication, bytes]]:
     contract, app, pdf = generate(seed=seed, error="clean")
     return [(contract, app, pdf),
             (contract, inject_duplicate(app), pdf)]
+
+
+def generate_bank_change_history(seed: int) -> list[tuple[Contract, PayApplication, bytes]]:
+    """Two documents from one vendor: the original and a re-submission of the
+    same invoice whose remit-to account differs. I3 must stop the second.
+
+    A HISTORY-level error like I1_duplicate: it needs a prior document to differ
+    from, so it cannot be an `ErrorClass` mutation. Imports `generate` inside the
+    function for the same circular-import reason as `generate_history`."""
+    from ledger_sense.corpus.generate import generate
+    from ledger_sense.corpus.remit import remit_for
+
+    original = generate(seed=seed, error="clean", remit=remit_for(seed, "base"))
+    changed = generate(seed=seed, error="clean", remit=remit_for(seed, "changed"))
+    return [original, changed]
