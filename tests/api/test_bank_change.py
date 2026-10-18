@@ -4,6 +4,7 @@ import io
 from datetime import UTC, datetime
 
 import pypdfium2 as pdfium
+import pytest
 
 from ledger_sense.boundary import Origin
 from ledger_sense.corpus.generate import _insert_text, generate
@@ -12,7 +13,7 @@ from ledger_sense.corpus.remit import remit_for
 from ledger_sense.ingest.intake import accept_document
 from ledger_sense.run.document import run_document
 from ledger_sense.store.blobs import blob_store_from_environment
-from ledger_sense.store.documents import store_document
+from ledger_sense.store.documents import DocumentNotFound, store_document
 from ledger_sense.store.session import app_engine
 from tests.api.conftest import TenantClient
 
@@ -175,3 +176,142 @@ def test_an_unreadable_bank_block_x0_cannot_be_accepted_or_edited_but_can_be_rej
     assert a.post(f"{base}/accept").status_code == 422
     assert a.post_json(f"{base}/edit", {"value": "123456789"}).status_code == 422
     assert a.post_json(f"{base}/reject", {"reason": "unreadable, ask vendor"}).status_code == 200
+
+def _run_with_remit(tenant: TenantClient, seed: int, remit_seed: int) -> str:
+    _c, _a, pdf = generate(seed=seed, error="clean", remit=remit_for(remit_seed))
+    return _store_and_run(tenant, pdf)
+
+def _open_count(detail: str) -> int:
+    return int(detail.split(" ", 1)[0])
+
+
+def _confirm_i2_existing(tenant: TenantClient, document_id: str, vendor_id: str) -> None:
+    i2 = _exception(tenant, document_id, "I2")
+    response = tenant.post_json(
+        f"/api/review/exceptions/{i2['id']}/confirm-vendor", {"vendor_id": vendor_id})
+    assert response.status_code == 200, response.text
+
+
+def test_undo_confirm_vendor_is_refused_while_a_confirmed_bank_detail_hangs_off_it(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=11, variant="base")
+    vendor_id = _confirm_new_vendor(a, document_id)
+    i2 = _exception(a, document_id, "I2")
+    i3 = _exception(a, document_id, "I3")
+    assert a.post_json(f"/api/review/exceptions/{i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+    response = a.post(f"/api/review/exceptions/{i2['id']}/undo-confirm-vendor")
+    assert response.status_code == 409
+    assert "bank" in response.json()["detail"]
+    assert _exception(a, document_id, "I2")["state"] == "confirmed"
+    assert len(a.get(f"/api/vendors/{vendor_id}/ledger").json()["payment_history"]) == 1
+
+    assert a.post(f"/api/review/exceptions/{i3['id']}/undo-confirm-bank-change"
+                  ).status_code == 200
+    assert a.post(f"/api/review/exceptions/{i2['id']}/undo-confirm-vendor"
+                  ).status_code == 200
+
+
+def test_confirming_a_first_sighting_against_a_vendor_with_a_different_baseline_is_refused(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    first = _run_with_remit(a, seed=12, remit_seed=12)
+    second = _run_with_remit(a, seed=13, remit_seed=13)  # also first_seen: ledger still empty
+    vendor_id = _confirm_new_vendor(a, first)
+    first_i3 = _exception(a, first, "I3")
+    assert a.post_json(f"/api/review/exceptions/{first_i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+    _confirm_i2_existing(a, second, vendor_id)
+    second_i3 = _exception(a, second, "I3")
+    response = a.post_json(
+        f"/api/review/exceptions/{second_i3['id']}/confirm-bank-change", ATTEST)
+    assert response.status_code == 409
+    assert "change, not a first sighting" in response.json()["detail"]
+    assert _exception(a, second, "I3")["state"] == "open"
+    assert len(a.get(f"/api/vendors/{vendor_id}/ledger").json()["payment_history"]) == 1
+
+
+def test_confirming_a_first_sighting_equal_to_the_baseline_is_accepted(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    first = _run_with_remit(a, seed=14, remit_seed=14)
+    second = _run_with_remit(a, seed=15, remit_seed=14)  # same account, different invoice
+    vendor_id = _confirm_new_vendor(a, first)
+    first_i3 = _exception(a, first, "I3")
+    assert a.post_json(f"/api/review/exceptions/{first_i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+    _confirm_i2_existing(a, second, vendor_id)
+    second_i3 = _exception(a, second, "I3")
+    response = a.post_json(
+        f"/api/review/exceptions/{second_i3['id']}/confirm-bank-change", ATTEST)
+    assert response.status_code == 200, response.text
+
+
+def test_an_open_bank_hard_stop_blocks_writeback_until_it_is_confirmed(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=16, variant="base")
+    post = f"/api/writeback/documents/{document_id}/post"
+    body: dict[str, object] = {"adapter": "export", "vendor_ref": "V-9"}
+    refused = a.post_json(post, body)
+    assert refused.status_code == 422
+    assert "exceptions still open" in refused.json()["detail"]
+
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    assert a.post_json(f"/api/review/exceptions/{i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+    after = a.post_json(post, body)
+    # The fixture document carries other findings this slice does not clear, so
+    # the gate still refuses -- but for exactly two fewer open exceptions (the
+    # I2 and I3 just confirmed): the bank hard stop no longer holds it.
+    assert after.status_code == 422
+    assert _open_count(after.json()["detail"]) == _open_count(refused.json()["detail"]) - 2
+
+
+def test_a_purged_document_blob_makes_confirm_a_409_not_a_500(
+        two_tenants: tuple[TenantClient, TenantClient],
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=17, variant="base")
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+
+    def _gone(*_args: object, **_kwargs: object) -> object:
+        raise DocumentNotFound(document_id)
+
+    monkeypatch.setattr("ledger_sense.api.review.load_document", _gone)
+    response = a.post_json(f"/api/review/exceptions/{i3['id']}/confirm-bank-change", ATTEST)
+    assert response.status_code == 409
+    assert "no longer available" in response.json()["detail"]
+
+
+def test_the_attestation_fields_are_length_bounded(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=18, variant="base")
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    url = f"/api/review/exceptions/{i3['id']}/confirm-bank-change"
+    assert a.post_json(url, {**ATTEST, "contact": "c" * 201}).status_code == 422
+    assert a.post_json(url, {**ATTEST, "note": "n" * 2001}).status_code == 422
+    ok = a.post_json(url, {**ATTEST, "contact": "c" * 200, "note": "n" * 2000})
+    assert ok.status_code == 200, ok.text
+
+
+def test_neither_the_full_numbers_nor_the_hmac_appear_in_any_response(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=19, variant="base")
+    vendor_id = _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    confirm = a.post_json(f"/api/review/exceptions/{i3['id']}/confirm-bank-change", ATTEST)
+    remit = remit_for(19)
+    texts = [confirm.text,
+             a.get(f"/api/review/documents/{document_id}/exceptions").text,
+             a.get(f"/api/vendors/{vendor_id}/ledger").text]
+    for text in texts:
+        assert remit.account not in text
+        assert remit.routing not in text
+        assert "account_hmac" not in text

@@ -198,9 +198,9 @@ class VendorLedger:
         # ALL-CAPS rendering of a canonical name (the norm in OCR'd document
         # headers) scores far below its own canonical name and I2 reports a
         # known vendor as new — a second empty-history canonical record then
-        # gets created and I3's bank-detail hard stop silently never fires
-        # for it, since check_payment_detail short-circuits on an empty
-        # payment_history.
+        # gets created. I3 no longer depends on history being non-empty: an
+        # empty or unconfirmed payment_history yields a first-seen I3 hard stop,
+        # so such a record is stopped rather than waved through.
         best_ids: list[str] = []
         best_score: float = 0
         for vendor in self._vendors.values():

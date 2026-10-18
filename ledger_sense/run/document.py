@@ -317,7 +317,11 @@ def _payment_rows(conn: Connection, tenant_id: str, document_id: str, pdf: bytes
         account_hmac=payment_hmac(hit.account, hit.routing),
         observed_at=now, source_document=document_id)
     ledger = load_vendor_ledger(conn, tenant_id)
-    vendor_id = ledger.resolve(app.vendor_name).vendor_id if app.vendor_name else None
+    match = ledger.resolve(app.vendor_name) if app.vendor_name else None
+    # A fuzzy or tied match is a GUESS about who this is. Comparing against the
+    # guessed vendor's baseline could make the document look clean; with no
+    # vendor the assessment is first-seen until a reviewer confirms one (I2).
+    vendor_id = (None if match is None or match.needs_confirmation else match.vendor_id)
     assessment = assess_payment_detail(ledger, vendor_id, incoming)
     if assessment is None:
         return []

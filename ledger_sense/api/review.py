@@ -29,7 +29,7 @@ from typing import Annotated, Any, Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, StrictStr, field_validator, model_validator
+from pydantic import BaseModel, Field, StrictStr, field_validator, model_validator
 
 from ledger_sense.api.deps import owned, require_session
 from ledger_sense.auth.session import Session
@@ -42,8 +42,9 @@ from ledger_sense.review.actions import ReviewAction
 from ledger_sense.route.calibration import LabelBasis
 from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
+from ledger_sense.rules.integrity.bank_details import assess_payment_detail
 from ledger_sense.store.blobs import blob_store_from_environment
-from ledger_sense.store.documents import load_document
+from ledger_sense.store.documents import DocumentNotFound, load_document
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
 from ledger_sense.store.vendors import (
@@ -77,8 +78,8 @@ def _refuse_bank_clearing(row: sa.Row[Any], *, action: str) -> None:
 
 class ConfirmBankChangeBody(BaseModel):
     channel: Literal["phone", "in_person", "video_call", "other"]
-    contact: StrictStr
-    note: StrictStr | None = None
+    contact: StrictStr = Field(max_length=200)
+    note: StrictStr | None = Field(default=None, max_length=2000)
 
     @field_validator("contact")
     @classmethod
@@ -113,8 +114,14 @@ def _reextract_detail(conn: sa.Connection, row: sa.Row[Any], session: Session) -
     one anywhere: there is then no unconfirmed row to leak into the baseline, and
     what is confirmed is provably what the document says (its last four must
     match the finding the reviewer is looking at)."""
-    pdf = load_document(conn, tenant_id=session.tenant_id, document_id=row.document_id,
-                        blobs=blob_store_from_environment()).payload
+    try:
+        pdf = load_document(conn, tenant_id=session.tenant_id, document_id=row.document_id,
+                            blobs=blob_store_from_environment()).payload
+    except DocumentNotFound:
+        raise HTTPException(
+            status_code=409,
+            detail="the stored document is no longer available; the bank details cannot be re-read",
+        ) from None
     hit = extract_remit(extract_words(pdf)).hit
     if hit is None or f"....{hit.account[-4:]}" != row.actual:
         raise HTTPException(status_code=409,
@@ -534,6 +541,17 @@ def undo_confirm_vendor(exc_id: str, session: CurrentSession) -> dict[str, str |
         # tenant's lock, not from any state read before it.
         ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
 
+        bank_confirmed = conn.execute(
+            sa.select(findings.c.id).where(
+                findings.c.document_id == row.document_id,
+                findings.c.tenant_id == session.tenant_id,
+                findings.c.rule_id == "I3", findings.c.state == "confirmed")
+        ).first()
+        if bank_confirmed is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="undo the bank-detail confirmation (I3) for this document first")
+
         doc_row = conn.execute(
             sa.select(documents.c.vendor_id).where(documents.c.id == row.document_id)
         ).one()
@@ -568,6 +586,19 @@ def confirm_bank_change(exc_id: str, body: ConfirmBankChangeBody,
         ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
         vendor_id = _vendor_for_bank_confirmation(conn, ledger, row)
         detail = _reextract_detail(conn, row, session)
+        # The finding was assessed when the document ran; the baseline may have
+        # moved since. Re-assess under the lock: a detail that now differs from
+        # the vendor's confirmed account is a change, not the first sighting the
+        # reviewer was shown, and must not silently replace or join the baseline.
+        assessment = assess_payment_detail(ledger, vendor_id, detail)
+        shown = (row.expected or "").removeprefix("....") or None
+        if (assessment is not None and assessment.kind != "first_seen"
+                and assessment.expected_last4 != shown):
+            raise HTTPException(
+                status_code=409,
+                detail=("bank details differ from the vendor's confirmed account; this is a "
+                        "change, not a first sighting - re-ingest the document so it is "
+                        "assessed against that vendor"))
         ledger.record_payment_detail(
             vendor_id, detail, confirmed_by=session.user_id,
             attestation=Attestation(channel=body.channel, contact=body.contact,
