@@ -21,7 +21,8 @@ extracts bank details and never calls I3, and `GET /api/vendors/{id}/ledger` alw
 
 In: synthetic corpus bank block + injected error class; deterministic extraction; runner I3
 step; `confirm-bank-change` review action with undo; attestation columns (migration); API
-surfaces; tests. Out: semantic duplicates, contract storage, construction convention rules
+surfaces; tests. Out: the review-queue UI for confirm/undo bank change (browser workflow is LS-13; API and tests
+are in scope), semantic duplicates, contract storage, construction convention rules
 (retainage, stored materials, CO, tax, lien waivers — need domain authority), the LS-10
 scope-statement docs, two-person rule.
 
@@ -33,9 +34,14 @@ scope-statement docs, two-person rule.
   history) alongside a clean control.
 - Extraction is anchor-based and deterministic. The full account/routing number exists only in
   memory during a run: it is reduced to `payment_hmac` plus last4 and dropped.
-- The `claims` table stores values as text, so the bank claims are stored **masked**
-  (`....1234`), never plaintext. Documents stay `CLIENT_CONFIDENTIAL`; nothing here reaches the
-  model lane.
+- **No claims are written for bank fields.** Claims feed the Router and the review `edit`
+  action, which would let a reviewer type a plaintext account into `claims`. The I3 finding
+  itself carries the located box and the masked `....1234` in `actual`. Documents stay
+  `CLIENT_CONFIDENTIAL`; nothing here reaches the model lane.
+- `bank_change` is a history helper (`generate_bank_change_history` in `corpus/errors.py`), not
+  an `ErrorClass`: like `I1_duplicate` it needs two documents.
+- Task 4 capped the `pdfminer` logger in `extract/document.py`: its DEBUG logging printed the
+  full account number, which would have defeated the in-memory-only rule.
 
 ### 2. Runner
 - After vendor resolution, build a `PaymentDetail` and call I3.
@@ -48,11 +54,18 @@ scope-statement docs, two-person rule.
 
 ### 3. Confirmation
 - New review action `confirm-bank-change` on the I3 finding. Input: channel, contact, note.
-  Records actor and timestamp, then calls `record_payment_detail(confirmed_by=…)`.
+  The pending detail is **not stored** while open: the action re-extracts it from the stored
+  document, so no unconfirmed row can leak into the baseline. Records actor and timestamp,
+  then calls `record_payment_detail(confirmed_by=…)`.
+- The baseline is the last **confirmed** detail; an unconfirmed history entry never counts.
 - Migration adds attestation columns to `payment_details` (channel, contact, note).
 - Undo removes the appended detail by id (same pattern as `undo_confirmation`) and reopens I3.
-- Generic `accept` and `edit` on an I3 finding are refused. The only way to clear it is the
-  specific confirmation. The existing open-findings writeback gate keeps writeback blocked
+- Generic `accept`, `edit` and `reject` on an I3 finding (any finding whose field is
+  `payment_account`) are refused: `reject` closes a finding with a reason and would be a
+  one-click bypass. An `X0` on `payment_account` (bank block present but unreadable) may still
+  be rejected with a stated reason. `undo-confirm-vendor` is restricted to I2 findings, so a
+  confirmed I3 cannot be reopened through it. The only way to clear I3 is the specific
+  confirmation. The existing open-findings writeback gate keeps writeback blocked
   until then.
 - API exposes last4 and attestation only; `account_hmac` never leaves the server.
 
