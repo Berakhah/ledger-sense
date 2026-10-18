@@ -298,6 +298,16 @@ def _router_or_none(router: Router | None) -> Router | None:
         return None
 
 
+def _predictor(claim: dict[str, object]) -> object:
+    """The score the Router is asked about must be the score review labels are
+    fitted on. Labels carry `match_quality` (api/review.py `_match_quality_for`)
+    because `Claim.confidence` is None for every deterministic extraction; a
+    NULL used to reach the Router as 0.0, so a fitted curve would have been
+    queried at the wrong point (LS-09 follow-up)."""
+    confidence = claim["confidence"]
+    return confidence if confidence is not None else claim["match_quality"]
+
+
 def _routing_rows(tenant_id: str, document_id: str, claim_rows: list[dict[str, object]],
                   existing: list[dict[str, object]], router: Router | None,
                   now: datetime) -> list[dict[str, object]]:
@@ -318,7 +328,7 @@ def _routing_rows(tenant_id: str, document_id: str, claim_rows: list[dict[str, o
             rule_id = "R1"
         else:
             decision = router.decide_claim(
-                field_type_of(field), claim["confidence"], method=str(claim["method"]))
+                field_type_of(field), _predictor(claim), method=str(claim["method"]))
             if decision.route == "auto":
                 continue
             reason = f"{decision.calibration_state}: {decision.reason}"
