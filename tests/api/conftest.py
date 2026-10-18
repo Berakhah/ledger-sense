@@ -54,7 +54,8 @@ def _database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
         # survive SQLAlchemy's URL parser.
         patch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{db.as_posix()}")
         patch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
-        patch.setenv("LEDGER_SENSE_BLOB_ROOT", str(tmp_path_factory.mktemp("blobs")))
+        patch.setenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", "test-key-not-a-secret")
+        patch.setenv("LEDGER_SENSE_BLOB_ROOT",str(tmp_path_factory.mktemp("blobs")))
         patch.setenv("LEDGER_SENSE_CALIBRATION_DIR", str(tmp_path_factory.mktemp("calibration")))
         store_session.reset_app_engine()
 
