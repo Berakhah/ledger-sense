@@ -121,3 +121,25 @@ def test_no_plaintext_account_or_routing_is_stored_or_logged(
     haystack = "\n".join(dump) + caplog.text
     assert remit.account not in haystack
     assert remit.routing not in haystack
+
+
+def test_a_fuzzy_vendor_match_cannot_borrow_that_vendors_baseline(db: RunDb) -> None:
+    app, remit, document_id = _doc(db, seed=3)
+    assert app.vendor_name
+    ledger = VendorLedger()
+    near = f"{app.vendor_name} Co"
+    vendor_id = ledger.create_confirmed(near, near, source_document="seed",
+                                        confirmed_by="A. Bookkeeper")
+    ledger.record_payment_detail(
+        vendor_id,
+        PaymentDetail(account_last4=remit.account[-4:], routing_last4=remit.routing[-4:],
+                      account_hmac=payment_hmac(remit.account, remit.routing),
+                      observed_at=datetime.now(UTC), source_document="seed"),
+        confirmed_by="A. Bookkeeper")
+    match = ledger.resolve(app.vendor_name)
+    assert match.vendor_id == vendor_id and match.needs_confirmation  # fuzzy, not exact
+    with db.engine.begin() as conn:
+        save_vendor_ledger(conn, db.tenant_id, ledger)
+    run_document(db.engine, document_id)
+    (finding,) = _i3(db, document_id)
+    assert finding.expected is None  # first-seen: no vendor is confirmed yet

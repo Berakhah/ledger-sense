@@ -1,6 +1,6 @@
 from ledger_sense.corpus.errors import generate_bank_change_history
 from ledger_sense.corpus.generate import generate
-from ledger_sense.corpus.remit import remit_for
+from ledger_sense.corpus.remit import Remit, remit_for
 from ledger_sense.extract.assemble import assemble_pay_application
 from ledger_sense.extract.remit import extract_remit
 from ledger_sense.extract.textlayer import extract_words
@@ -73,3 +73,51 @@ def test_the_bank_change_history_is_the_same_vendor_with_a_different_account() -
     second = extract_remit(extract_words(pdf2)).hit
     assert first is not None and second is not None
     assert first.account != second.account
+
+
+def _extract_for(account: str, routing: str = "021000021"):  # type: ignore[no-untyped-def]
+    _c, _a, pdf = generate(seed=3, error="clean", remit=Remit(account=account, routing=routing))
+    return extract_remit(extract_words(pdf))
+
+
+def test_a_spaced_account_number_is_read_whole() -> None:
+    result = _extract_for("4417 0093 2210")
+    assert result.problem is None and result.hit is not None
+    assert result.hit.account == "441700932210"
+
+
+def test_a_hyphenated_account_number_normalises_to_the_same_digits() -> None:
+    result = _extract_for("4417-0093-2210")
+    assert result.problem is None and result.hit is not None
+    assert result.hit.account == "441700932210"
+
+
+def test_two_accounts_sharing_a_first_group_extract_differently() -> None:
+    a = _extract_for("4417 0093 2210").hit
+    b = _extract_for("4417 5555 6666").hit
+    assert a is not None and b is not None
+    assert a.account != b.account
+
+
+def test_a_value_with_letters_mixed_in_is_ambiguous_not_a_hit() -> None:
+    result = _extract_for("4417 00A3 2210")
+    assert result.hit is None
+    assert result.problem is not None and "ambiguous" in result.problem
+
+
+def test_a_short_routing_number_is_a_problem() -> None:
+    result = _extract_for("4417009322", routing="02100002")
+    assert result.hit is None
+    assert result.problem is not None
+
+
+def test_only_one_of_the_two_labels_is_a_problem_not_no_block() -> None:
+    remit = remit_for(3)
+    _c, _a, pdf = generate(seed=3, error="clean", remit=remit)
+    words = extract_words(pdf)
+    i = next(i for i, w in enumerate(words) if w.text == "Routing")
+    assert words[i + 1].text == "Number"
+    kept = [w for j, w in enumerate(words) if j not in (i, i + 1)]
+    result = extract_remit(kept)
+    assert result.hit is None
+    assert result.problem is not None
