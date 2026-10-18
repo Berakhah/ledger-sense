@@ -15,10 +15,16 @@ future backend swap converts HERE and nowhere else.
 """
 
 import io
+import logging
 from dataclasses import dataclass
 from typing import NamedTuple
 
 import pdfplumber
+
+# pdfminer's DEBUG tracing logs every text-showing operator verbatim, i.e. the
+# document's content (bank account numbers included). Client text must never
+# reach a log line, so cap its loggers at WARNING regardless of root level.
+logging.getLogger("pdfminer").setLevel(logging.WARNING)
 
 
 class BBox(NamedTuple):
