@@ -79,6 +79,19 @@ def test_an_unset_payment_hmac_key_fails_the_boot_probe(
         _probe_payment_hmac_key()
 
 
+@pytest.mark.parametrize("weak", ["changeme", "ChangeMe", " changeme ", "short-key", "k" * 31])
+def test_a_placeholder_or_short_payment_hmac_key_fails_the_boot_probe(
+    monkeypatch: pytest.MonkeyPatch, weak: str,
+) -> None:
+    """.env.example ships LEDGER_SENSE_PAYMENT_HMAC_KEY=changeme. Account numbers
+    are low-entropy, so a guessable key makes the stored digests brute-forceable."""
+    from ledger_sense.__main__ import _probe_payment_hmac_key
+
+    monkeypatch.setenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", weak)
+    with pytest.raises(RuntimeError, match="LEDGER_SENSE_PAYMENT_HMAC_KEY"):
+        _probe_payment_hmac_key()
+
+
 def test_a_set_payment_hmac_key_passes_the_boot_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
