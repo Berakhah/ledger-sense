@@ -488,23 +488,22 @@ export function ReviewQueue({ docId }: { docId: string }) {
   // Not routed through actOnCurrent: a hard stop is confirmed pessimistically.
   // Closing it on the keystroke and reopening on a 409 would flash "Confirmed"
   // over an exception the server has refused. The panel awaits this and shows
-  // a rejection inline. resync() brings the server's list and count in; the
+  // a rejection inline. Once the POST returns 200 the local state is patched
+  // (like undoBankChange; no resync, see the invariant in resync()); the
   // cursor moves on only if it is still on the item just confirmed.
   const confirmBankChange = useCallback(async (excId: string, attestation: BankAttestation) => {
     await postJson(`/api/review/exceptions/${excId}/confirm-bank-change`, attestation)
     setActionError(null)
-    try {
-      await resync()
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : 'Could not reload the queue')
-    }
+    setItemState(excId, 'confirmed')
+    commit()
+    refetchProgress()
     const { items, cursor } = model.current
     if (items[cursor]?.id === excId) {
       model.current = { items, cursor: nextOpen(items, cursor) ?? cursor }
       commit()
     }
     focusQueue()
-  }, [resync, commit, focusQueue])
+  }, [commit, refetchProgress, setItemState, focusQueue])
 
   const undoBankChange = useCallback((excId: string) => {
     void postJson(`/api/review/exceptions/${excId}/undo-confirm-bank-change`, {})
