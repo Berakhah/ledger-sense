@@ -8,6 +8,11 @@ import { seedBankDocument } from './seed'
 // seeds a real corpus PDF through the real pipeline (api/fixtures.py's bank
 // scenario), so the findings are the product's own, not hand-made rows.
 
+// Each seed runs the real pipeline (15-25 s). Serial, so this file never seeds two
+// at once on the single demo API, and a generous timeout for the same reason.
+test.describe.configure({ mode: 'serial' })
+test.setTimeout(120_000)
+
 function docKey(stem: string): string {
   return `${stem}-w${test.info().workerIndex}`
 }
@@ -54,6 +59,29 @@ async function confirmAndReturn(page: Page) {
   await expect(page.getByTestId('bank-confirmed')).toBeVisible()
 }
 
+/** Record every state-changing API request the page makes (non-GET, under /api/;
+ *  CORS preflights excluded). Register before navigating. */
+function recordWrites(page: Page): string[] {
+  const writes: string[] = []
+  page.on('request', (req) => {
+    const method = req.method()
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return
+    if (req.url().includes('/api/')) writes.push(`${method} ${new URL(req.url()).pathname}`)
+  })
+  return writes
+}
+
+/** After a bare key: let any (async, pessimistic) write land, then prove nothing
+ *  was sent and the I3 panel is still the open item. */
+async function expectInert(page: Page, writes: string[]) {
+  await page.waitForLoadState('networkidle')
+  await page.waitForTimeout(500)
+  expect(writes).toEqual([])
+  await expect(page.getByTestId('bank-change-panel')).toBeVisible()
+  await expect(page.getByTestId('current-rule')).toHaveText('I3')
+  await expectCleared(page, 0)
+}
+
 async function seriousViolations(page: Page) {
   const results = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
@@ -63,6 +91,7 @@ async function seriousViolations(page: Page) {
 
 test('a changed account is confirmed with Ctrl+Enter and undone, keyboard-only', async ({ page }) => {
   await forbidMouse(page)
+  const writes = recordWrites(page)
   const { docId } = await seedBankDocument(page, docKey('bank-changed'), { seed: 40, variant: 'changed' })
   await page.goto(`/review/${docId}`)
   await goToRule(page, 'I3')
@@ -77,24 +106,28 @@ test('a changed account is confirmed with Ctrl+Enter and undone, keyboard-only',
   await queue(page).focus()
   await page.keyboard.press('Enter')
   await expect(page.getByTestId('action-error')).toContainText('Bank-detail changes are cleared only')
-  await expectCleared(page, 0)
-  await expect(panel).toBeVisible()
+  await expectInert(page, writes)
   // E and R are inert too.
   await page.keyboard.press('e')
+  await expectInert(page, writes)
   await page.keyboard.press('r')
-  await expectCleared(page, 0)
+  await expectInert(page, writes)
 
   await tabTo(page, page.getByTestId('bank-contact'))
   await page.keyboard.type('J. Vendor')
   // A bare Enter inside the form does not confirm either.
   await page.keyboard.press('Enter')
-  await expectCleared(page, 0)
+  await expectInert(page, writes)
+  await expect(page.getByTestId('bank-contact')).toHaveValue('J. Vendor')
 
   await page.keyboard.press('Control+Enter')
   // Pessimistic: the server answers, the item clears, focus returns to the queue,
   // and the cursor moves on to the next open exception (the real queue has ~60).
   await expectCleared(page, 1)
   await expect(queue(page)).toBeFocused()
+  expect(writes.filter((w) => /confirm-bank-change$/.test(w))).toHaveLength(1)
+  expect(writes.filter((w) => /\/(accept|edit|reject)$/.test(w))).toEqual([])
+  expect(writes).toHaveLength(1)
   await goToRule(page, 'I3')
   await expect(page.getByTestId('bank-confirmed')).toBeVisible()
 
@@ -115,38 +148,41 @@ test('a first sighting is reached after confirming the vendor, then confirmed', 
   await tabTo(page, page.getByRole('button', { name: 'Confirm new vendor' }))
   await page.keyboard.press('Enter')
   await goToRule(page, 'I3')
-  await expect(page.getByTestId('bank-change-panel').locator('del')).toHaveCount(0)
+  const panel = page.getByTestId('bank-change-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel.locator('del')).toHaveCount(0)
+  await expect(panel.locator('ins')).toHaveCount(1)
 
   await confirmAndReturn(page)
   await expectNoMouse(page)
 })
 
-test('"Leave open, next" records nothing and the stop stays open', async ({ page }) => {
-  const { docId } = await seedBankDocument(page, docKey('bank-leave'), { seed: 42, variant: 'changed' })
-  await page.goto(`/review/${docId}`)
-  await goToRule(page, 'I3')
-  await tabTo(page, page.getByTestId('bank-leave-open'))
-  await page.keyboard.press('Enter')
-  // Other exceptions are open, so the cursor moves on; nothing is recorded.
-  await expect(page.getByTestId('current-rule')).not.toHaveText('I3')
-  await expectCleared(page, 0)
-  await goToRule(page, 'I3')
-  await expect(page.getByTestId('bank-change-panel')).toBeVisible()
-  await expect(page.getByTestId('bank-confirmed')).toHaveCount(0)
-})
-
-test('the open panel passes axe, and the diff reads in greyscale', async ({ page }, testInfo) => {
+test('the open panel passes axe, reads in greyscale, and "Leave open, next" records nothing', async ({ page }, testInfo) => {
   const { docId } = await seedBankDocument(page, docKey('bank-a11y'), { seed: 43, variant: 'changed' })
   await page.goto(`/review/${docId}`)
   await goToRule(page, 'I3')
-  await expect(page.getByTestId('bank-change-panel')).toBeVisible()
+  const panel = page.getByTestId('bank-change-panel')
+  await expect(panel).toBeVisible()
   expect(await seriousViolations(page)).toEqual([])
 
+  // The diff must not depend on colour: previous digits struck, incoming underlined.
+  expect(await panel.locator('del').evaluate((el) => getComputedStyle(el).textDecorationLine)).toContain('line-through')
+  expect(await panel.locator('ins').evaluate((el) => getComputedStyle(el).textDecorationLine)).toContain('underline')
   await page.addStyleTag({ content: 'html { filter: grayscale(1); }' })
   await testInfo.attach('bank-diff-greyscale', {
-    body: await page.getByTestId('bank-change-panel').screenshot(),
+    body: await panel.screenshot(),
     contentType: 'image/png',
   })
+
+  // Last, because it moves the cursor. Other exceptions are open, so it moves on
+  // and nothing is recorded.
+  await tabTo(page, page.getByTestId('bank-leave-open'))
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('current-rule')).not.toHaveText('I3')
+  await expectCleared(page, 0)
+  await goToRule(page, 'I3')
+  await expect(panel).toBeVisible()
+  await expect(page.getByTestId('bank-confirmed')).toHaveCount(0)
 })
 
 test('the confirmed state passes axe', async ({ page }) => {
