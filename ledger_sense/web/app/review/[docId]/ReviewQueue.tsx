@@ -322,6 +322,9 @@ export function ReviewQueue({ docId }: { docId: string }) {
    *  never be optimistically closed for them. */
   const refusal = useCallback((item: ReviewException, state: ExceptionState): string | null => {
     if (item.rule_id === 'I3') return BANK_CLEARING_NOTICE
+    // The bank X0 field is refused permanently for accept and edit (422,
+    // review.py _refuse_bank_clearing); only reject is allowed there.
+    if (item.field === 'payment_account' && state !== 'rejected') return BANK_CLEARING_NOTICE
     // Neither rejecting nor confirming a vendor asserts anything about a
     // field's location — confirm-vendor's own 422s (I2 wrong exception,
     // vendor lookup 404) are round-tripped and reported by the caller
@@ -485,38 +488,52 @@ export function ReviewQueue({ docId }: { docId: string }) {
       })
   }, [commit, refetchProgress, setItemState, focusQueue])
 
+  // The success-path half of the resync invariant (see resync()): a success
+  // landing while a failure is parked must issue a newer resync, so a stale
+  // read cannot put back what this write just changed.
+  const refreshAfterBankWrite = useCallback(() => {
+    if (pendingFailures.current.size > 0) {
+      void resync().catch((resyncErr: unknown) => {
+        setActionError(resyncErr instanceof Error ? resyncErr.message : 'Could not reload the queue')
+      })
+    } else {
+      refetchProgress()
+    }
+  }, [resync, refetchProgress])
+
   // Not routed through actOnCurrent: a hard stop is confirmed pessimistically.
   // Closing it on the keystroke and reopening on a 409 would flash "Confirmed"
   // over an exception the server has refused. The panel awaits this and shows
   // a rejection inline. Once the POST returns 200 the local state is patched
-  // (like undoBankChange; no resync, see the invariant in resync()); the
+  // (like undoBankChange); the success path then resyncs if a failure is parked
+  // (see the invariant in resync()), else just refreshes progress. The
   // cursor moves on only if it is still on the item just confirmed.
   const confirmBankChange = useCallback(async (excId: string, attestation: BankAttestation) => {
     await postJson(`/api/review/exceptions/${excId}/confirm-bank-change`, attestation)
     setActionError(null)
     setItemState(excId, 'confirmed')
     commit()
-    refetchProgress()
+    refreshAfterBankWrite()
     const { items, cursor } = model.current
     if (items[cursor]?.id === excId) {
       model.current = { items, cursor: nextOpen(items, cursor) ?? cursor }
       commit()
     }
     focusQueue()
-  }, [commit, refetchProgress, setItemState, focusQueue])
+  }, [commit, refreshAfterBankWrite, setItemState, focusQueue])
 
   const undoBankChange = useCallback((excId: string) => {
     void postJson(`/api/review/exceptions/${excId}/undo-confirm-bank-change`, {})
       .then(() => {
         setItemState(excId, 'open')
         commit()
-        refetchProgress()
+        refreshAfterBankWrite()
         focusQueue()
       })
       .catch((err: unknown) => {
         setActionError(err instanceof Error ? err.message : 'Could not undo the bank-detail confirmation')
       })
-  }, [commit, refetchProgress, setItemState, focusQueue])
+  }, [commit, refreshAfterBankWrite, setItemState, focusQueue])
 
   /** "Leave open, next": records nothing. Moves to the next open exception, or
    *  says nothing else is open. */

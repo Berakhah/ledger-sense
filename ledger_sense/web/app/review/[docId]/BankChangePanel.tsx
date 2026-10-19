@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export type BankChannel = 'phone' | 'in_person' | 'video_call' | 'other'
 
@@ -88,6 +88,8 @@ export function BankChangePanel({
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const contactRef = useRef<HTMLInputElement>(null)
+  const inFlight = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -105,11 +107,18 @@ export function BankChangePanel({
     }
   }, [apiUrl, excId])
 
+  // The fieldset is disabled while submitting, which blurs the focused input;
+  // after a refusal the keyboard user would land on <body>. Hand focus back.
+  useEffect(() => {
+    if (error !== null) contactRef.current?.focus()
+  }, [error])
+
   const valid =
     contact.trim() !== '' && contact.length <= CONTACT_MAX && note.length <= NOTE_MAX
 
   async function submit(): Promise<void> {
-    if (!valid || submitting || disabled) return
+    if (inFlight.current || !valid || submitting || disabled) return
+    inFlight.current = true
     setSubmitting(true)
     setError(null)
     try {
@@ -121,6 +130,7 @@ export function BankChangePanel({
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not confirm the bank details')
     } finally {
+      inFlight.current = false
       setSubmitting(false)
     }
   }
@@ -145,6 +155,7 @@ export function BankChangePanel({
       data-testid="bank-change-panel"
       className="mt-3 border-l-2 border-flag pl-3 text-sm"
       onKeyDown={(e) => {
+        if (e.repeat) return
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
           e.preventDefault()
           void submit()
@@ -179,7 +190,8 @@ export function BankChangePanel({
 
       <p className="mt-2 text-ink-muted">
         Verify with the vendor using a number you already trust — not one printed on the document.
-        The stop stays open until you do; nothing is recorded until you confirm.
+        The stop stays open until you do — the document cannot be posted until the bank details are
+        verified; nothing is recorded until you confirm.
       </p>
 
       <fieldset className="mt-3" disabled={disabled || submitting}>
@@ -205,6 +217,7 @@ export function BankChangePanel({
         <input
           id={`bank-contact-${excId}`}
           data-testid="bank-contact"
+          ref={contactRef}
           className="mt-1 w-full border border-rule bg-paper px-2 py-1"
           maxLength={CONTACT_MAX}
           value={contact}

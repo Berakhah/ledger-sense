@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BankChangePanel } from './BankChangePanel'
 
@@ -144,6 +144,59 @@ describe('BankChangePanel', () => {
     fireEvent.click(screen.getByTestId('bank-confirm'))
     expect(await screen.findByTestId('bank-error')).toHaveTextContent('bank details differ from the vendor')
     expect(screen.getByTestId('bank-confirm')).toBeEnabled()
+  })
+
+  it('returns focus to the contact input after a refused confirm', async () => {
+    stubView(CHANGED)
+    // A browser blurs a focused control when its fieldset becomes disabled;
+    // jsdom does not, so simulate it.
+    const onConfirm = vi.fn().mockImplementation(async () => {
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      throw new Error('refused')
+    })
+    renderPanel({ onConfirm })
+    await screen.findByTestId('bank-confirm')
+    const contact = screen.getByTestId('bank-contact')
+    fireEvent.change(contact, { target: { value: 'J. Vendor' } })
+    contact.focus()
+    fireEvent.keyDown(contact, { key: 'Enter', ctrlKey: true })
+    await screen.findByTestId('bank-error')
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('bank-contact')))
+  })
+
+  it('does not submit twice while a confirm is in flight, nor on key auto-repeat', async () => {
+    stubView(CHANGED)
+    const onConfirm = vi.fn().mockReturnValue(new Promise<void>(() => {}))
+    renderPanel({ onConfirm })
+    await screen.findByTestId('bank-confirm')
+    const contact = screen.getByTestId('bank-contact')
+    fireEvent.change(contact, { target: { value: 'J. Vendor' } })
+    // One act(): React state has not re-rendered between these events, so only
+    // a synchronous in-flight flag can stop the duplicates.
+    act(() => {
+      fireEvent.keyDown(contact, { key: 'Enter', ctrlKey: true })
+      fireEvent.keyDown(contact, { key: 'Enter', ctrlKey: true })
+      fireEvent.click(screen.getByTestId('bank-confirm'))
+      fireEvent.keyDown(contact, { key: 'Enter', ctrlKey: true, repeat: true })
+    })
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('a key auto-repeat alone never submits', async () => {
+    stubView(CHANGED)
+    const props = renderPanel()
+    await screen.findByTestId('bank-confirm')
+    const contact = screen.getByTestId('bank-contact')
+    fireEvent.change(contact, { target: { value: 'J. Vendor' } })
+    fireEvent.keyDown(contact, { key: 'Enter', ctrlKey: true, repeat: true })
+    expect(props.onConfirm).not.toHaveBeenCalled()
+  })
+
+  it('says the document cannot be posted until the bank details are verified', async () => {
+    stubView(CHANGED)
+    renderPanel()
+    expect(await screen.findByText(/cannot be posted until the bank details are\s+verified/i))
+      .toBeInTheDocument()
   })
 
   it('leaving it open records nothing', async () => {
