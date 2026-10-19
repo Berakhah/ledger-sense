@@ -207,3 +207,50 @@ def test_vendor_names_are_pattern_bounded(monkeypatch: pytest.MonkeyPatch, name:
         response = client.post("/api/fixtures/seed",
                                json={"doc_id": "doc-v5", "vendor": vendor})
         assert response.status_code == 422, vendor
+
+
+def test_a_bank_seed_produces_a_real_i2_and_i3(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ledger_sense.corpus.remit import remit_for
+
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-1", "bank": {"seed": 30, "variant": "base"}}).json()
+    rows = client.get(f"/api/review/documents/{body['doc_id']}/exceptions").json()
+    by_rule = {r["rule_id"]: r for r in rows}
+    assert {"I2", "I3"} <= set(by_rule)
+    assert by_rule["I3"]["actual"] == f"....{remit_for(30).account[-4:]}"
+    assert by_rule["I3"]["state"] == "open"
+
+
+def test_a_changed_bank_seed_raises_only_a_change_against_a_confirmed_baseline(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from ledger_sense.corpus.remit import remit_for
+
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-2", "bank": {"seed": 31, "variant": "changed"}}).json()
+    rows = client.get(f"/api/review/documents/{body['doc_id']}/exceptions").json()
+    assert "I2" not in {r["rule_id"] for r in rows}
+    (i3,) = [r for r in rows if r["rule_id"] == "I3"]
+    assert i3["expected"] == f"....{remit_for(31).account[-4:]}"
+    assert i3["actual"] == f"....{remit_for(31, 'changed').account[-4:]}"
+    view = client.get(f"/api/review/exceptions/{i3['id']}/bank-change").json()
+    assert view["kind"] == "changed"
+
+
+def test_a_bank_seed_cannot_be_combined_with_synthetic_exceptions_or_a_vendor(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, "demo")
+    bank = {"seed": 32, "variant": "base"}
+    assert client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-3", "exceptions": 2, "bank": bank}).status_code == 422
+    assert client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-4", "bank": bank,
+        "vendor": {"observed_name": "Keystone Framing LLC"}}).status_code == 422
+
+
+def test_the_bank_scenario_does_not_exist_under_the_client_profile(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, "client")
+    assert client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-5", "bank": {"seed": 33, "variant": "base"}}).status_code == 404
