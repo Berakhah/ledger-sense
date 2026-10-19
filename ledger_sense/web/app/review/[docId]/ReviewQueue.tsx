@@ -509,7 +509,19 @@ export function ReviewQueue({ docId }: { docId: string }) {
   // (see the invariant in resync()), else just refreshes progress. The
   // cursor moves on only if it is still on the item just confirmed.
   const confirmBankChange = useCallback(async (excId: string, attestation: BankAttestation) => {
-    await postJson(`/api/review/exceptions/${excId}/confirm-bank-change`, attestation)
+    try {
+      await postJson(`/api/review/exceptions/${excId}/confirm-bank-change`, attestation)
+    } catch (err: unknown) {
+      // The panel shows a refusal inline, but only while it is mounted. If the
+      // reviewer has moved off this item while the request was in flight the
+      // panel is gone and its error would vanish with it, leaving a hard stop
+      // that looks handled. Say so at queue level; still rethrow for the panel.
+      const { items, cursor } = model.current
+      if (items[cursor]?.id !== excId) {
+        setActionError(err instanceof Error ? err.message : 'Could not confirm the bank details')
+      }
+      throw err
+    }
     setActionError(null)
     setItemState(excId, 'confirmed')
     commit()

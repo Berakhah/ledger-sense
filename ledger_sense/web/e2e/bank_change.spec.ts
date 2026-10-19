@@ -185,6 +185,34 @@ test('the open panel passes axe, reads in greyscale, and "Leave open, next" reco
   await expect(page.getByTestId('bank-confirmed')).toHaveCount(0)
 })
 
+test('a refusal arriving after the reviewer has moved on is still shown', async ({ page }) => {
+  const { docId } = await seedBankDocument(page, docKey('bank-late'), { seed: 45, variant: 'changed' })
+  // Hold the confirm until the reviewer has left the item, then refuse it.
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  await page.route('**/confirm-bank-change', async (route) => {
+    await gate
+    await route.fulfill({
+      status: 409, contentType: 'application/json',
+      body: JSON.stringify({ detail: 'The vendor was changed while you were confirming' }),
+    })
+  })
+  await page.goto(`/review/${docId}`)
+  await goToRule(page, 'I3')
+
+  await tabTo(page, page.getByTestId('bank-contact'))
+  await page.keyboard.type('J. Vendor')
+  await page.keyboard.press('Control+Enter')
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('j')
+  await expect(page.getByTestId('current-rule')).not.toHaveText('I3')
+
+  release()
+  await expect(page.getByTestId('action-error'))
+    .toContainText('The vendor was changed while you were confirming')
+  await expectCleared(page, 0)
+})
+
 test('the confirmed state passes axe', async ({ page }) => {
   const { docId } = await seedBankDocument(page, docKey('bank-a11y2'), { seed: 44, variant: 'changed' })
   await page.goto(`/review/${docId}`)
