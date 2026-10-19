@@ -233,6 +233,24 @@ def test_confirming_a_first_sighting_against_a_vendor_with_a_different_baseline_
     assert len(a.get(f"/api/vendors/{vendor_id}/ledger").json()["payment_history"]) == 1
 
 
+def test_the_panel_view_of_a_first_sighting_refused_by_confirm_is_refused_too(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    first = _run_with_remit(a, seed=12, remit_seed=12)
+    second = _run_with_remit(a, seed=13, remit_seed=13)
+    vendor_id = _confirm_new_vendor(a, first)
+    first_i3 = _exception(a, first, "I3")
+    assert a.post_json(f"/api/review/exceptions/{first_i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+    _confirm_i2_existing(a, second, vendor_id)
+    second_i3 = _exception(a, second, "I3")
+    confirm = a.post_json(
+        f"/api/review/exceptions/{second_i3['id']}/confirm-bank-change", ATTEST)
+    view = a.get(f"/api/review/exceptions/{second_i3['id']}/bank-change")
+    assert view.status_code == 409
+    assert view.json()["detail"] == confirm.json()["detail"]
+
+
 def test_confirming_a_first_sighting_equal_to_the_baseline_is_accepted(
         two_tenants: tuple[TenantClient, TenantClient]) -> None:
     a, _ = two_tenants

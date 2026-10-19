@@ -42,7 +42,7 @@ from ledger_sense.review.actions import ReviewAction
 from ledger_sense.route.calibration import LabelBasis
 from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
-from ledger_sense.rules.integrity.bank_details import assess_payment_detail
+from ledger_sense.rules.integrity.bank_details import BankAssessment, assess_payment_detail
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import DocumentNotFound, load_document
 from ledger_sense.store.retention import claims, documents, findings
@@ -247,6 +247,19 @@ def _require_confirmed(row: sa.Row[Any]) -> None:
     if row.state != "confirmed":
         raise HTTPException(status_code=409,
                             detail=f"exception is {row.state}, not confirmed")
+
+
+def _require_baseline_unmoved(row: sa.Row[Any], assessment: BankAssessment) -> None:
+    """Shared by the bank-change GET and confirm-bank-change: a detail that now
+    differs from the vendor's confirmed account is a change, not the first
+    sighting the finding showed, so neither the panel nor confirm may proceed."""
+    shown = (row.expected or "").removeprefix("....") or None
+    if assessment.kind != "first_seen" and assessment.expected_last4 != shown:
+        raise HTTPException(
+            status_code=409,
+            detail=("bank details differ from the vendor's confirmed account; this is a "
+                    "change, not a first sighting - re-ingest the document so it is "
+                    "assessed against that vendor"))
 
 
 def _transition(conn: sa.Connection, exc_id: str, from_state: ExceptionState,
@@ -512,6 +525,7 @@ def bank_change(exc_id: str, session: CurrentSession) -> BankChangeView:
                 status_code=409,
                 detail="the vendor's confirmed account now matches this document; "
                        "re-run the document to refresh this exception")
+        _require_baseline_unmoved(row, assessment)
         vendor = ledger.get(vendor_id)
         assert vendor is not None  # _vendor_for_bank_confirmation returned a ledger id
     return BankChangeView(vendor_name=vendor.name, kind=assessment.kind,
@@ -629,14 +643,8 @@ def confirm_bank_change(exc_id: str, body: ConfirmBankChangeBody,
         # the vendor's confirmed account is a change, not the first sighting the
         # reviewer was shown, and must not silently replace or join the baseline.
         assessment = assess_payment_detail(ledger, vendor_id, detail)
-        shown = (row.expected or "").removeprefix("....") or None
-        if (assessment is not None and assessment.kind != "first_seen"
-                and assessment.expected_last4 != shown):
-            raise HTTPException(
-                status_code=409,
-                detail=("bank details differ from the vendor's confirmed account; this is a "
-                        "change, not a first sighting - re-ingest the document so it is "
-                        "assessed against that vendor"))
+        if assessment is not None:
+            _require_baseline_unmoved(row, assessment)
         ledger.record_payment_detail(
             vendor_id, detail, confirmed_by=session.user_id,
             attestation=Attestation(channel=body.channel, contact=body.contact,
