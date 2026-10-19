@@ -249,6 +249,55 @@ def test_a_bank_seed_cannot_be_combined_with_synthetic_exceptions_or_a_vendor(
         "vendor": {"observed_name": "Keystone Framing LLC"}}).status_code == 422
 
 
+def test_concurrent_seeds_hash_one_password_at_a_time(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The measured cause of the Playwright seed timeouts: `create_user` hashes
+    the (thrown-away) password with Argon2's defaults - 64 MiB and several
+    threads each. Eleven concurrent plain seeds took ~30 s each in the demo
+    container (1 CPU, 1 GiB) against 0.3 s idle, with no pipeline involved.
+    Hashing one at a time keeps each seed fast and memory bounded."""
+    import time
+
+    from fastapi import Response
+
+    from ledger_sense.api import fixtures
+
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+    real = fixtures.create_user
+
+    def spy(*args: object, **kwargs: object) -> object:
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.05)  # widen the window an unserialised overlap needs
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+        finally:
+            with guard:
+                active -= 1
+
+    monkeypatch.setattr(fixtures, "create_user", spy)
+    ensure_stub_tables(store_session.app_engine())
+    errors: list[BaseException] = []
+
+    def seed_one(n: int) -> None:
+        try:
+            fixtures.seed(fixtures.SeedRequest(doc_id=f"hash-{n}", exceptions=1), Response())
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=seed_one, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert peak == 1
+
+
 def test_the_bank_scenario_does_not_exist_under_the_client_profile(
         monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(monkeypatch, "client")

@@ -60,6 +60,7 @@ cookies.
 """
 
 import os
+import threading
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
@@ -106,6 +107,9 @@ MAX_EXCEPTIONS = 500
 # The pre-seeded known vendor's evidence: a synthetic prior bill, never the
 # seeded document itself. See _seed_known_vendor for why that matters.
 PRIOR_BILL = "corpus://seed/prior-bill"
+
+# Serialises the Argon2 hash in seed(). See the comment there.
+_HASH_LOCK = threading.Lock()
 
 
 def demo_profile_enabled() -> bool:
@@ -294,7 +298,12 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     # way in than a fixed demo credential would be.
     suffix = uuid.uuid4().hex[:8]
     tenant_id = create_tenant(f"demo-{suffix}")
-    user_id = create_user(tenant_id, f"demo-{suffix}@example.invalid", uuid.uuid4().hex)
+    # One hash at a time. create_user hashes with Argon2's defaults (64 MiB and
+    # several threads each) and this password is thrown away. Eleven concurrent
+    # seeds in the demo container (cpus 1.0, 1 GiB) each took ~30 s, against
+    # ~0.3 s idle, and some dropped. Real logins keep their normal parameters.
+    with _HASH_LOCK:
+        user_id = create_user(tenant_id, f"demo-{suffix}@example.invalid", uuid.uuid4().hex)
 
     if body.bank is not None:
         if body.bank.variant == "changed":
