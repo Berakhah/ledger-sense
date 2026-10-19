@@ -215,6 +215,26 @@ describe('BankChangePanel', () => {
     expect(screen.queryByTestId('bank-confirm')).not.toBeInTheDocument()
   })
 
+  it('offers a retry after a failed lookup, and loads the panel when it works', async () => {
+    const failure = { ok: false, status: 503, statusText: 'Unavailable', json: async () => ({ detail: 'try later' }) }
+    const success = { ok: true, status: 200, statusText: 'OK', json: async () => CHANGED }
+    const fetchMock = vi.fn().mockResolvedValueOnce(failure).mockResolvedValue(success)
+    vi.stubGlobal('fetch', fetchMock)
+    renderPanel()
+    expect(await screen.findByRole('alert')).toHaveTextContent('try later')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByTestId('bank-change-panel')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the retry reachable when it fails again', async () => {
+    stubView(CHANGED, false, 'still down')
+    renderPanel()
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Try again' })).toHaveFocus())
+  })
+
   it('disables everything while the exception is not open', async () => {
     stubView(CHANGED)
     renderPanel({ disabled: true })

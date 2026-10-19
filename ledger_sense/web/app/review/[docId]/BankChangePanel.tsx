@@ -88,7 +88,9 @@ export function BankChangePanel({
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const contactRef = useRef<HTMLInputElement>(null)
+  const retryRef = useRef<HTMLButtonElement>(null)
   const inFlight = useRef(false)
 
   useEffect(() => {
@@ -105,7 +107,14 @@ export function BankChangePanel({
     return () => {
       cancelled = true
     }
-  }, [apiUrl, excId])
+  }, [apiUrl, excId, attempt])
+
+  // Retrying swaps the button for the loading line, so focus is lost; when the
+  // retry fails the button comes back and takes focus (attempt 0 is the
+  // initial load, which must not steal focus from the queue).
+  useEffect(() => {
+    if (loadError !== null && attempt > 0) retryRef.current?.focus()
+  }, [loadError, attempt])
 
   // The fieldset is disabled while submitting, which blurs the focused input;
   // after a refusal the keyboard user would land on <body>. Hand focus back.
@@ -137,9 +146,19 @@ export function BankChangePanel({
 
   if (loadError !== null) {
     return (
-      <p role="alert" data-testid="bank-change-error" className="mt-3 text-sm text-flag">
-        Could not check these bank details: {loadError}
-      </p>
+      <div className="mt-3 text-sm">
+        <p role="alert" data-testid="bank-change-error" className="text-flag">
+          Could not check these bank details: {loadError}
+        </p>
+        <button
+          ref={retryRef}
+          type="button"
+          onClick={() => setAttempt((n) => n + 1)}
+          className="mt-2 underline"
+        >
+          Try again
+        </button>
+      </div>
     )
   }
   if (view === null) {
