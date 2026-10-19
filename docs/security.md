@@ -228,7 +228,10 @@ Nothing in this section is claimed to run automatically that does not.
   claims, findings, logs or API responses (the `pdfminer` logger is capped
   because its DEBUG output printed the full account number). The I3 hard stop
   is cleared only by `confirm-bank-change`, which stores the verifier's channel
-  and contact.
+  and contact. The review queue clears and undoes it from a panel that shows last four digits
+  only; accept, edit and reject are inert on I3 in the UI as well as refused by
+  the API, and confirming needs an explicit Ctrl+Enter or button press after
+  naming who was contacted.
   Known limits of this control: it fires only for a document that carries a
   recognised "Account Number" and "Routing Number" block, and the extractor
   reads the text layer as written (invisible or tiny text is not filtered); an
