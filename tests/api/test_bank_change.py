@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pypdfium2 as pdfium
 import pytest
+from httpx import Response
 
 from ledger_sense.boundary import Origin
 from ledger_sense.corpus.generate import _insert_text, generate
@@ -315,3 +316,113 @@ def test_neither_the_full_numbers_nor_the_hmac_appear_in_any_response(
         assert remit.account not in text
         assert remit.routing not in text
         assert "account_hmac" not in text
+
+
+def _bank_view(tenant: TenantClient, exc_id: object) -> Response:
+    return tenant.get(f"/api/review/exceptions/{exc_id}/bank-change")
+
+
+def test_bank_change_view_of_a_first_sighting(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=20, variant="base")
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    response = _bank_view(a, i3["id"])
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "vendor_name": "Acme Steel Company", "kind": "first_seen",
+        "previous_last4": None, "incoming_last4": remit_for(20).account[-4:]}
+
+
+def test_bank_change_view_of_a_changed_account(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    first = _stored_and_run(a, seed=21, variant="base")
+    _confirm_new_vendor(a, first)
+    first_i3 = _exception(a, first, "I3")
+    assert a.post_json(f"/api/review/exceptions/{first_i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+
+    second = _stored_and_run(a, seed=21, variant="changed")
+    changed = _exception(a, second, "I3")
+    body = _bank_view(a, changed["id"]).json()
+    assert body["kind"] == "changed"
+    assert body["previous_last4"] == remit_for(21).account[-4:]
+    assert body["incoming_last4"] == remit_for(21, "changed").account[-4:]
+
+
+def test_bank_change_view_is_read_only(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=22, variant="base")
+    vendor_id = _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    before = a.get(f"/api/vendors/{vendor_id}/ledger").json()
+    assert _bank_view(a, i3["id"]).status_code == 200
+    assert a.get(f"/api/vendors/{vendor_id}/ledger").json() == before
+    assert _exception(a, document_id, "I3")["state"] == "open"
+
+
+def test_bank_change_view_refuses_a_non_i3_exception(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=23, variant="base")
+    i2 = _exception(a, document_id, "I2")
+    assert _bank_view(a, i2["id"]).status_code == 422
+
+
+def test_bank_change_view_refuses_a_closed_exception(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=24, variant="base")
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    assert a.post_json(f"/api/review/exceptions/{i3['id']}/confirm-bank-change",
+                       ATTEST).status_code == 200
+    assert _bank_view(a, i3["id"]).status_code == 409
+
+
+def test_bank_change_view_is_tenant_scoped(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, b = two_tenants
+    document_id = _stored_and_run(a, seed=25, variant="base")
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    assert _bank_view(b, i3["id"]).status_code == 404
+
+
+def test_bank_change_view_needs_a_confirmed_vendor_first(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=26, variant="base")
+    i3 = _exception(a, document_id, "I3")
+    assert _bank_view(a, i3["id"]).status_code == 409
+
+
+def test_bank_change_view_leaks_no_full_number_and_no_hmac(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=27, variant="base")
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    text = _bank_view(a, i3["id"]).text
+    remit = remit_for(27)
+    assert remit.account not in text and remit.routing not in text
+    assert "hmac" not in text.lower()
+
+
+def test_bank_change_view_is_a_409_when_the_baseline_has_caught_up(
+        two_tenants: tuple[TenantClient, TenantClient],
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """assess_payment_detail returns None when the detail equals the confirmed
+    baseline: the finding is stale and the reviewer must re-run the document."""
+    a, _ = two_tenants
+    document_id = _stored_and_run(a, seed=28, variant="base")
+    _confirm_new_vendor(a, document_id)
+    i3 = _exception(a, document_id, "I3")
+    monkeypatch.setattr("ledger_sense.api.review.assess_payment_detail",
+                        lambda ledger, vendor_id, detail: None)
+    response = _bank_view(a, i3["id"])
+    assert response.status_code == 409
+    assert "re-run" in response.json()["detail"]

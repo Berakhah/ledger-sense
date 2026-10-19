@@ -181,6 +181,15 @@ class VendorMatch(BaseModel):
     candidate: VendorCandidate | None
 
 
+class BankChangeView(BaseModel):
+    """What the review panel shows for an I3 hard stop. Last four digits only:
+    the full number and the HMAC never leave the server."""
+    vendor_name: str
+    kind: Literal["first_seen", "changed", "changed_back"]
+    previous_last4: str | None
+    incoming_last4: str
+
+
 class ConfirmVendorBody(BaseModel):
     vendor_id: str | None = None
     new_vendor_name: StrictStr | None = None
@@ -479,6 +488,35 @@ def vendor_match(exc_id: str, session: CurrentSession) -> VendorMatch:
             candidate = VendorCandidate(vendor_id=match.vendor_id, name=canonical.name,
                                         score=match.score)
     return VendorMatch(observed_name=observed_name, candidate=candidate)
+
+
+@router.get("/exceptions/{exc_id}/bank-change")
+def bank_change(exc_id: str, session: CurrentSession) -> BankChangeView:
+    """What the I3 hard stop is about, for the review panel: the vendor, whether
+    this is a first sighting or a change, and the last four digits either side.
+    Re-assessed against the ledger exactly as confirm-bank-change will, so the
+    panel shows what confirm will accept. Read-only: no write lock, nothing
+    persisted."""
+    with app_engine().connect() as conn:
+        row = _get_finding(exc_id, session, conn)
+        if row.rule_id != "I3":
+            raise HTTPException(status_code=422,
+                                detail="bank-change only applies to an I3 exception")
+        _require_open(row)
+        ledger = load_vendor_ledger(conn, session.tenant_id)
+        vendor_id = _vendor_for_bank_confirmation(conn, ledger, row)
+        detail = _reextract_detail(conn, row, session)
+        assessment = assess_payment_detail(ledger, vendor_id, detail)
+        if assessment is None:
+            raise HTTPException(
+                status_code=409,
+                detail="the vendor's confirmed account now matches this document; "
+                       "re-run the document to refresh this exception")
+        vendor = ledger.get(vendor_id)
+        assert vendor is not None  # _vendor_for_bank_confirmation returned a ledger id
+    return BankChangeView(vendor_name=vendor.name, kind=assessment.kind,
+                          previous_last4=assessment.expected_last4,
+                          incoming_last4=detail.account_last4)
 
 
 @router.post("/exceptions/{exc_id}/confirm-vendor")
