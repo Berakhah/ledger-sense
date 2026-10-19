@@ -9,6 +9,7 @@ import type { BBox } from '@/lib/bbox'
 import { latestOnly } from '@/lib/latestOnly'
 import { useReviewKeys } from '@/lib/useReviewKeys'
 import { VendorConfirmPanel } from './VendorConfirmPanel'
+import { BankChangePanel, type BankAttestation } from './BankChangePanel'
 
 // Browser only. pdf.js renders to a canvas and has nothing to say on the
 // server; its module scope also touches globals (`Iterator`) that a Node 20
@@ -66,6 +67,12 @@ const STATE_LABEL: Record<ExceptionState, string> = {
   rejected: 'Rejected',
   confirmed: 'Confirmed',
 }
+
+/** The server refuses accept/edit/reject on I3 with a 422 (review.py
+ *  _refuse_bank_clearing). Decided here without a round trip so an I3 item is
+ *  never optimistically closed for a write that cannot succeed. */
+const BANK_CLEARING_NOTICE =
+  'Bank-detail changes are cleared only by verifying with the vendor and confirming below — accept, edit and reject are disabled.'
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, { credentials: 'include', ...init })
@@ -314,6 +321,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
    *  round trip: those refusals are permanent (review.py), so the item must
    *  never be optimistically closed for them. */
   const refusal = useCallback((item: ReviewException, state: ExceptionState): string | null => {
+    if (item.rule_id === 'I3') return BANK_CLEARING_NOTICE
     // Neither rejecting nor confirming a vendor asserts anything about a
     // field's location — confirm-vendor's own 422s (I2 wrong exception,
     // vendor lookup 404) are round-tripped and reported by the caller
@@ -477,6 +485,54 @@ export function ReviewQueue({ docId }: { docId: string }) {
       })
   }, [commit, refetchProgress, setItemState, focusQueue])
 
+  // Not routed through actOnCurrent: a hard stop is confirmed pessimistically.
+  // Closing it on the keystroke and reopening on a 409 would flash "Confirmed"
+  // over an exception the server has refused. The panel awaits this and shows
+  // a rejection inline. resync() brings the server's list and count in; the
+  // cursor moves on only if it is still on the item just confirmed.
+  const confirmBankChange = useCallback(async (excId: string, attestation: BankAttestation) => {
+    await postJson(`/api/review/exceptions/${excId}/confirm-bank-change`, attestation)
+    setActionError(null)
+    try {
+      await resync()
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Could not reload the queue')
+    }
+    const { items, cursor } = model.current
+    if (items[cursor]?.id === excId) {
+      model.current = { items, cursor: nextOpen(items, cursor) ?? cursor }
+      commit()
+    }
+    focusQueue()
+  }, [resync, commit, focusQueue])
+
+  const undoBankChange = useCallback((excId: string) => {
+    void postJson(`/api/review/exceptions/${excId}/undo-confirm-bank-change`, {})
+      .then(() => {
+        setItemState(excId, 'open')
+        commit()
+        refetchProgress()
+        focusQueue()
+      })
+      .catch((err: unknown) => {
+        setActionError(err instanceof Error ? err.message : 'Could not undo the bank-detail confirmation')
+      })
+  }, [commit, refetchProgress, setItemState, focusQueue])
+
+  /** "Leave open, next": records nothing. Moves to the next open exception, or
+   *  says nothing else is open. */
+  const leaveBankChangeOpen = useCallback(() => {
+    const { items, cursor } = model.current
+    const next = nextOpen(items, cursor)
+    if (next === null || next === cursor) {
+      setActionError('Nothing else is open. This bank-detail stop stays open until it is verified.')
+    } else {
+      model.current = { items, cursor: next }
+      commit()
+    }
+    focusQueue()
+  }, [commit, focusQueue])
+
   // The value goes to the API exactly as typed — a string, never a Number.
   const submitEdit = useCallback((value: string) => {
     actOnCurrent('edited', (item) => postJson(`/api/review/exceptions/${item.id}/edit`, { value }))
@@ -490,27 +546,32 @@ export function ReviewQueue({ docId }: { docId: string }) {
     focusQueue()
   }, [actOnCurrent, focusQueue])
 
-  /** E and R on a closed item say so, like Enter does, rather than focusing
-   *  a disabled input. */
-  const closedNotice = useCallback((): boolean => {
+  /** E and R on a closed or bank-detail item say so, like Enter does, rather
+   *  than focusing a disabled input. */
+  const blockedNotice = useCallback((): boolean => {
     const item = model.current.items[model.current.cursor]
-    if (!item || item.state === 'open') return false
+    if (!item) return false
+    if (item.rule_id === 'I3' && item.state === 'open') {
+      setActionError(BANK_CLEARING_NOTICE)
+      return true
+    }
+    if (item.state === 'open') return false
     setActionError(`This exception is already ${STATE_LABEL[item.state].toLowerCase()}.`)
     return true
   }, [])
 
   const onEdit = useCallback(() => {
-    if (closedNotice()) return
+    if (blockedNotice()) return
     const input = editRef.current
     if (!input) return
     input.focus()
     input.select()
-  }, [closedNotice])
+  }, [blockedNotice])
 
   const onReject = useCallback(() => {
-    if (closedNotice()) return
+    if (blockedNotice()) return
     reasonRef.current?.focus()
-  }, [closedNotice])
+  }, [blockedNotice])
 
   /** Escape: drop whatever was typed, hand the keys back to the queue. */
   const cancelEdit = useCallback(() => {
@@ -680,7 +741,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
                   data-testid="edit-input"
                   className="numeric mt-1 w-full border border-rule bg-paper px-2 py-1"
                   value={editValue}
-                  disabled={current.state !== 'open'}
+                  disabled={current.state !== 'open' || current.rule_id === 'I3'}
                   onChange={(e) => setEditValue(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
@@ -698,7 +759,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
               <ul className="mt-1 divide-y divide-rule border-y border-rule text-sm">
                 <li className="py-2">
                   <p>
-                    <span className="numeric text-ink-muted">{current.rule_id}</span>{' '}
+                    <span className="numeric text-ink-muted" data-testid="current-rule">{current.rule_id}</span>{' '}
                     {current.message}
                   </p>
                   <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
@@ -748,6 +809,32 @@ export function ReviewQueue({ docId }: { docId: string }) {
                 ) : null
               })()}
 
+              {current.rule_id === 'I3' && (
+                current.state === 'confirmed' ? (
+                  <p data-testid="bank-confirmed" className="mt-3 border-l-2 border-accent pl-3 text-sm">
+                    Bank details confirmed.{' '}
+                    <button
+                      type="button"
+                      data-testid="undo-bank-change"
+                      className="underline"
+                      onClick={() => undoBankChange(current.id)}
+                    >
+                      Undo
+                    </button>
+                  </p>
+                ) : current.state === 'open' ? (
+                  <BankChangePanel
+                    key={current.id}
+                    excId={current.id}
+                    apiUrl={API_URL}
+                    disabled={current.state !== 'open'}
+                    onConfirm={(attestation) => confirmBankChange(current.id, attestation)}
+                    onLeaveOpen={leaveBankChangeOpen}
+                    onEscape={focusQueue}
+                  />
+                ) : null
+              )}
+
               <h3 className="mt-5 text-sm font-semibold">Provenance</h3>
               <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 border-l-2 border-rule pl-3 text-sm">
                 <dt className="text-ink-muted">Page</dt>
@@ -770,7 +857,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
                   data-testid="reject-reason"
                   className="mt-1 w-full border border-rule bg-paper px-2 py-1"
                   value={reason}
-                  disabled={current.state !== 'open'}
+                  disabled={current.state !== 'open' || current.rule_id === 'I3'}
                   onChange={(e) => setReason(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
