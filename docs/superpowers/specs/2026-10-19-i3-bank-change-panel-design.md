@@ -42,7 +42,9 @@ previous_last4: str | null, incoming_last4: str }`.
 - 422 if the exception is not I3; 409 if it is not open.
 - Never returns a full account or routing number or the HMAC. Last four only.
 - If the baseline moved since the finding was raised, it reports the current kind, so the
-  panel matches what confirm will accept.
+  panel matches what confirm will accept. If the baseline has caught up and now equals the
+  document's detail, it returns 409 ("re-run the document"), like confirm's own stale-baseline
+  409.
 - Wording of the finding message is not parsed anywhere in the UI.
 
 ## 2. Panel and keyboard
@@ -57,18 +59,37 @@ jsdom; `ReviewQueue.tsx` pulls in pdf.js and is not.
 - Attestation form: labelled `fieldset`; contact method radio group; required contact name;
   optional note; limits match the server.
 - Guidance: verify with a known-good number, not one printed on the document.
-- Confirmed state shows "Confirmed" and an Undo action. The accepted-field green rule
-  appears only after a confirm.
+- Confirmed state shows "Bank details confirmed" and an Undo action. No green rule: a
+  confirmation is not a field-value claim, and `acceptedBoxesOf` excludes `confirmed` by
+  design (as for I2).
 - "Leave open, next" moves to the next exception and records nothing. Copy states that the
   stop stays open and the document cannot be posted until verified.
 - Server errors (409 stale baseline, 422, network) render inline as text.
 
-Keys (`useReviewKeys`, I3 mode): `Enter`, `E`, `R` inert; `J`/`K` move; `Ctrl+Enter` confirms
-only when the form is valid. Other rules unchanged. A held bare `Enter` can never clear a
-hard stop.
+Keys: `Enter`, `E`, `R` are inert on an I3 exception (a notice, nothing closes); `J`/`K`
+move; `Ctrl+Enter` inside the form confirms only when it is valid; bare `Enter` in a field
+does nothing; `Escape` returns focus to the queue. Other rules unchanged. A held bare
+`Enter` can never clear a hard stop.
 
-Accessibility: errors in an `aria-live` region; focus moves to the first form control when
-an I3 exception is selected; after confirm or undo focus returns to the exception list.
+Accessibility: errors in an `aria-live` region; after confirm or undo focus returns to the
+queue. The panel does not take focus on appearing (see Amendments).
+
+## Amendments (after reading the code, 2026-10-19)
+
+1. **No `useReviewKeys` I3 mode.** The hook already ignores Ctrl-modified keys and anything
+   typed into an input, so `Ctrl+Enter` lives on the form. I3 inertness is `ReviewQueue`'s
+   existing `refusal()` / blocked-notice checks (decided client-side so an I3 item is never
+   optimistically closed for a write the server will 422).
+2. **No auto-focus.** The hook treats a focused `<input>` as typing, so focusing the form
+   would make `J`/`K` inert until the reviewer left it. `Tab` from the queue enters the
+   form; `Escape` returns to the queue. (Replaces "focus moves to the first form control".)
+3. **No green rule on confirm.** See the confirmed-state bullet above.
+4. **Confirm waits for the server.** Unlike accept, it does not close optimistically: a
+   hard stop must not show "Confirmed" and reopen on a 409. The panel awaits the request
+   and shows a refusal inline.
+5. **Playwright seed.** `api/fixtures.py` gains a demo-only `bank` scenario that stores a
+   real corpus PDF with a remit block and runs the real pipeline, so the queue holds genuine
+   I2/I3 findings. `changed` first gives the tenant a confirmed baseline.
 
 ## 3. Testing
 
