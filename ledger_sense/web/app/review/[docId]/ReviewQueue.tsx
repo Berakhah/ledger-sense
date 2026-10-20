@@ -694,7 +694,7 @@ export function ReviewQueue({ docId }: { docId: string }) {
           tabIndex={0}
           data-review-shortcuts="true"
           aria-label="Exception under review"
-          className="order-1 md:order-2"
+          className="order-1 md:order-2 rounded-lg p-4"
         >
           {current ? (
             <>

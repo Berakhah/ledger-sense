@@ -34,6 +34,11 @@
      reliability curve does. */
   --color-uncalibrated: oklch(0.72 0 0);
 
+  /* The scrim over a document page outside the field under review. The page
+     is white paper in every scheme, so the scrim is dark in every scheme:
+     it must not follow --color-ink, which is near-white in the dark scheme. */
+  --color-dim: oklch(0.18 0.02 250 / 0.5);
+
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono",
@@ -59,18 +64,28 @@
   --row-pad-x: 0.5rem;
 }
 
-/* Light is the primary mode: these screens are read next to paper. Dark is
-   supported, not the design target. */
+/* The app boots dark (tokens.defaultScheme). Light stays supported and print
+   is always light, below. The ambient light is a cool steel-blue on purpose:
+   green means "accepted" and nothing else, so no decoration may borrow it. */
 :root {
   color-scheme: light;
+  --surface: oklch(0.975 0.003 250);
+  --halo: oklch(0.86 0.03 245);
+  --shadow-lift: 0 1px 2px oklch(0.2 0.02 250 / 0.12);
 }
 
 [data-scheme="dark"] {
   color-scheme: dark;
-  --color-ink: oklch(0.93 0.01 250);
-  --color-ink-muted: oklch(0.70 0.01 250);
-  --color-paper: oklch(0.19 0.01 250);
-  --color-rule: oklch(0.32 0.006 250);
+  --color-ink: oklch(0.95 0.006 250);
+  --color-ink-muted: oklch(0.74 0.014 250);
+  --color-paper: oklch(0.165 0.016 255);
+  --color-rule: oklch(0.32 0.016 255);
+  /* Lighter than the light scheme's flag so it still clears AA on dark paper
+     and on its own bg-flag/10 tint; lib/contrast.css.test.ts holds it. */
+  --color-flag: oklch(0.76 0.14 55);
+  --surface: oklch(0.21 0.018 255);
+  --halo: oklch(0.5 0.1 245);
+  --shadow-lift: 0 1px 0 oklch(1 0 0 / 0.05) inset, 0 8px 24px -12px oklch(0 0 0 / 0.6);
 }
 
 /* The review queue derives the document pane's scale from its container
@@ -86,6 +101,215 @@ body {
   background: var(--color-paper);
   color: var(--color-ink);
   font-family: var(--font-sans);
+}
+
+/* ── The stage ────────────────────────────────────────────────────────────
+ * A fixed, non-interactive backdrop: two slow pools of steel-blue light and a
+ * ledger ruling that fades toward the edges, so the room reads as a bookkeeper's
+ * desk under a lamp. Only `transform` animates (compositor-only, no layout, no
+ * paint), and it is switched off under prefers-reduced-motion. */
+body {
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+body::before {
+  /* Overscanned so the drift never uncovers an edge. */
+  inset: -8%;
+  background:
+    radial-gradient(60rem 38rem at 12% -8%, color-mix(in oklch, var(--halo) 38%, transparent), transparent 70%),
+    radial-gradient(52rem 34rem at 108% 4%, color-mix(in oklch, var(--halo) 22%, transparent), transparent 72%);
+  animation: ls-drift 38s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+body::after {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 35px,
+    color-mix(in oklch, var(--color-rule) 55%, transparent) 35px,
+    color-mix(in oklch, var(--color-rule) 55%, transparent) 36px
+  );
+  -webkit-mask-image: radial-gradient(ellipse at 50% 0%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 0%, transparent 78%);
+  opacity: 0.35;
+}
+
+@keyframes ls-drift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1); }
+  to { transform: translate3d(2%, 2%, 0) scale(1.06); }
+}
+
+/* ── Surfaces and controls ────────────────────────────────────────────────
+ * In @layer base so every Tailwind utility on a component still wins. */
+@layer base {
+  ::selection {
+    background: color-mix(in oklch, var(--halo) 55%, transparent);
+    color: var(--color-ink);
+  }
+
+  h1 {
+    letter-spacing: -0.02em;
+  }
+
+  /* A luminous hairline under each screen's header, brightest at the left
+     where the eye starts. */
+  header {
+    border-image: linear-gradient(to right, var(--halo), var(--color-rule) 40%, transparent) 1;
+  }
+
+  th {
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--color-ink-muted);
+  }
+
+  tbody tr {
+    transition: background-color 140ms ease-out;
+  }
+
+  tbody tr:hover {
+    background: color-mix(in oklch, var(--color-ink) 5%, transparent);
+  }
+
+  button {
+    background: var(--surface);
+    color: var(--color-ink);
+    border: 1px solid var(--color-rule);
+    border-radius: 0.375rem;
+    padding: 0.3rem 0.75rem;
+    box-shadow: var(--shadow-lift);
+    transition:
+      transform 120ms ease-out,
+      border-color 120ms ease-out,
+      background-color 120ms ease-out;
+  }
+
+  button:hover:not(:disabled) {
+    border-color: color-mix(in oklch, var(--color-ink-muted) 70%, transparent);
+    background: color-mix(in oklch, var(--surface) 88%, var(--color-ink));
+    transform: translateY(-1px);
+  }
+
+  button:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  kbd {
+    font-family: var(--font-mono);
+    font-size: 0.75em;
+    padding: 0.05em 0.4em;
+    border: 1px solid var(--color-rule);
+    border-bottom-width: 2px;
+    border-radius: 0.25rem;
+    background: var(--surface);
+  }
+
+  input,
+  select,
+  textarea {
+    background: var(--surface);
+    color: var(--color-ink);
+    border: 1px solid var(--color-rule);
+    border-radius: 0.375rem;
+  }
+
+  a {
+    text-underline-offset: 0.2em;
+    text-decoration-color: color-mix(in oklch, var(--color-ink-muted) 60%, transparent);
+  }
+
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-rule) transparent;
+  }
+}
+
+/* Each screen's content rises into place, staggered. Transform only: an
+   opacity fade would hand axe (and a screen-magnifier user) half-transparent
+   text to measure. */
+main > * {
+  animation: ls-rise 460ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+main > :nth-child(2) { animation-delay: 50ms; }
+main > :nth-child(3) { animation-delay: 100ms; }
+main > :nth-child(4) { animation-delay: 150ms; }
+main > :nth-child(n + 5) { animation-delay: 200ms; }
+
+@keyframes ls-rise {
+  from { transform: translate3d(0, 10px, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+/* The scanned page is a lit sheet on the dark stage: a faint halo and a deep
+   contact shadow, so the document reads as the thing being examined. */
+.document-page {
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--halo) 40%, transparent),
+    0 0 48px -8px color-mix(in oklch, var(--halo) 45%, transparent),
+    0 24px 48px -24px oklch(0 0 0 / 0.7);
+}
+
+@media print {
+  .document-page {
+    box-shadow: none;
+  }
+}
+
+/* An accepted field's green rule draws in and settles with a soft glow. The
+   accent's single meaning is unchanged: this is still only "accepted". */
+.border-accent {
+  animation: ls-rule 520ms ease-out both;
+  box-shadow: -10px 0 22px -14px var(--color-accent);
+}
+
+@keyframes ls-rule {
+  from { border-left-color: transparent; box-shadow: none; }
+}
+
+/* Focus: the ring stays (WCAG 2.2) and gains a halo so it reads on the dark
+   stage as a lit edge, not a thin line. */
+:focus-visible {
+  box-shadow: 0 0 0 5px color-mix(in oklch, var(--color-accent) 22%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  main > *,
+  .border-accent {
+    animation: none;
+  }
+
+  button,
+  tbody tr {
+    transition: none;
+  }
+
+  button:hover:not(:disabled) {
+    transform: none;
+  }
 }
 
 /* Every money and quantity cell. Proportional digits put the decimal points
@@ -121,9 +345,30 @@ body {
     display: none;
   }
 
+  /* Print is always the light scheme, whatever the screen is showing. */
+  [data-scheme="dark"] {
+    --color-ink: oklch(0.22 0.01 250);
+    --color-ink-muted: oklch(0.52 0.01 250);
+    --color-paper: oklch(0.99 0.002 250);
+    --color-rule: oklch(0.90 0.004 250);
+    --color-flag: oklch(0.53 0.15 45);
+    --surface: oklch(0.975 0.003 250);
+    --shadow-lift: none;
+  }
+
   body {
     background: white;
     color: var(--color-ink);
+  }
+
+  body::before,
+  body::after {
+    display: none;
+  }
+
+  main > *,
+  .border-accent {
+    animation: none;
   }
 
   .numeric,
