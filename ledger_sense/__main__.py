@@ -42,6 +42,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # like), and BlobStore's tenant binding means a probe blob written under this
 # id can never be read back as any other tenant's document.
 _STARTUP_PROBE_TENANT_ID = "_startup_probe"
+_MIN_PAYMENT_HMAC_KEY_CHARS = 32  # token_urlsafe(32), as .env.example suggests, is 43
 
 
 def _migrate() -> None:
@@ -71,13 +72,23 @@ def _probe_blob_store() -> None:
 
 def _probe_payment_hmac_key() -> None:
     """Fail at boot, not mid-request, when the vendor payment-detail HMAC key
-    is missing. `domain.vendor.payment_hmac` indexes the environment directly,
+    is missing, still the `.env.example` placeholder, or too short to resist
+    guessing. `domain.vendor.payment_hmac` indexes the environment directly,
     so an unset key surfaced as a bare KeyError on the first document that
-    carried bank details."""
-    if not os.environ.get("LEDGER_SENSE_PAYMENT_HMAC_KEY"):
+    carried bank details. Account numbers are low-entropy: the digest is only
+    as strong as this key, so a guessable one makes every stored fingerprint
+    brute-forceable."""
+    key = os.environ.get("LEDGER_SENSE_PAYMENT_HMAC_KEY", "").strip()
+    if not key:
         raise RuntimeError(
             "LEDGER_SENSE_PAYMENT_HMAC_KEY is unset: refusing to start without "
             "the key that fingerprints vendor bank details (see docs/security.md)."
+        )
+    if key.lower() == "changeme" or len(key) < _MIN_PAYMENT_HMAC_KEY_CHARS:
+        raise RuntimeError(
+            "LEDGER_SENSE_PAYMENT_HMAC_KEY is a placeholder or shorter than "
+            f"{_MIN_PAYMENT_HMAC_KEY_CHARS} characters: refusing to start with a "
+            "guessable bank-detail key (see .env.example for how to generate one)."
         )
 
 

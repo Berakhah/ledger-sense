@@ -20,6 +20,8 @@ interface PaymentDetail {
   source_document: string
   confirmed_by: string | null
   confirmed_at: string | null
+  reversed_by?: string | null
+  reversed_at?: string | null
 }
 
 interface VendorLedgerData {
@@ -131,6 +133,7 @@ export function VendorLedger({ vendorId }: { vendorId: string }) {
                 <th scope="col">Observed</th>
                 <th scope="col">Source document</th>
                 <th scope="col">Confirmed by</th>
+                <th scope="col">Status</th>
               </tr>
             </thead>
             <tbody>
@@ -141,6 +144,11 @@ export function VendorLedger({ vendorId }: { vendorId: string }) {
                   <td>{detail.observed_at}</td>
                   <td>{detail.source_document}</td>
                   <td>{detail.confirmed_by ?? '—'}</td>
+                  <td>
+                    {detail.reversed_at
+                      ? `Reversed by ${detail.reversed_by ?? 'unknown'} on ${detail.reversed_at}`
+                      : 'In force'}
+                  </td>
                 </tr>
               ))}
             </tbody>

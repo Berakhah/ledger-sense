@@ -6,10 +6,13 @@ satisfies exactly the same protocol as the QBO adapter, so nothing above the
 port knows the difference.
 """
 
+import contextlib
 import csv
 import io
 import os
 import pathlib
+import tempfile
+import threading
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Literal
@@ -73,6 +76,18 @@ def _safe_iif_field(value: str) -> str:
     return _safe_cell(value).replace("\t", " ").replace("\n", " ").replace("\r", " ")
 
 
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: pathlib.Path) -> threading.Lock:
+    """One lock per export file for the whole process, however many adapter
+    instances the request handlers construct. Covers the API's thread pool; it
+    does not coordinate separate OS processes writing the same file."""
+    with _FILE_LOCKS_GUARD:
+        return _FILE_LOCKS.setdefault(str(path.resolve()), threading.Lock())
+
+
 class ExportAdapter:
     name = "export"
 
@@ -86,113 +101,164 @@ class ExportAdapter:
         """There is no remote book to close."""
         return False
 
-    def _existing_keys(self) -> set[str]:
+    @property
+    def _newline(self) -> str | None:
+        # csv.writer emits its own line terminator, so CSV is read and written
+        # untranslated; IIF keeps the platform newline translation it always had.
+        return "" if self._fmt == "csv" else None
+
+    def _read(self) -> str:
         if not self._path.exists():
+            return ""
+        with self._path.open(encoding="utf-8", newline=self._newline) as handle:
+            return handle.read()
+
+    def _atomic_write(self, text: str) -> None:
+        """LS-03: build the whole new file beside the target and swap it in.
+
+        A crash or error at any point leaves either the old file or the new
+        file, never a half-written bill.
+        """
+        fd, tmp = tempfile.mkstemp(dir=self._dir, prefix=".bills-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline=self._newline) as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, self._path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
+
+    def _existing_keys(self) -> set[str]:
+        text = self._read()
+        if not text:
             return set()
-        text = self._path.read_text(encoding="utf-8")
         if self._fmt == "csv":
-            return {row["idempotency_key"] for row in csv.DictReader(io.StringIO(text))}
+            return {row["idempotency_key"] for row in csv.DictReader(io.StringIO(text, newline=""))}
         return {line.split("\t")[6] for line in text.splitlines()
                 if line.startswith("TRNS\t")}
 
-    def create_unapproved_bill(self, request: WriteRequest) -> WriteResult:
-        if request.idempotency_key in self._existing_keys():
-            return WriteResult(remote_id=request.idempotency_key, adapter=self.name,
-                               idempotency_key=request.idempotency_key,
-                               created_at=datetime.now(UTC), was_replay=True)
-
-        is_new = not self._path.exists()
+    def _is_complete(self, text: str, key: str, line_count: int) -> bool:
+        """True only if `key` is present as exactly one whole bill of
+        `line_count` lines. A key found on some rows is not proof the bill was
+        fully exported (LS-03)."""
         if self._fmt == "csv":
-            with self._path.open("a", encoding="utf-8", newline="") as handle:
-                writer = csv.writer(handle)
-                if is_new:
-                    writer.writerow(CSV_HEADER)
-                for item in request.line_items:
-                    writer.writerow([
-                        request.idempotency_key, request.doc_id,
-                        _safe_cell(request.vendor_ref),
-                        request.txn_date.isoformat(), item.account_ref,
-                        _safe_cell(item.description), str(item.amount),
-                        _safe_cell(request.memo), STATUS])
-        else:
-            with self._path.open("a", encoding="utf-8") as handle:
-                if is_new:
-                    handle.write(IIF_HEADER)
-                total = sum((item.amount for item in request.line_items),
-                            start=Decimal(0))
-                first_account = (request.line_items[0].account_ref
-                                 if request.line_items else "")
-                handle.write("\t".join([
-                    "TRNS", "BILL", request.txn_date.isoformat(),
-                    first_account, _safe_iif_field(request.vendor_ref),
-                    str(total), request.idempotency_key,
-                    _safe_iif_field(request.memo)]) + "\n")
-                for item in request.line_items:
-                    handle.write("\t".join([
-                        "SPL", "BILL", request.txn_date.isoformat(),
-                        item.account_ref, _safe_iif_field(request.vendor_ref),
-                        str(item.amount),
-                        _safe_iif_field(f"{STATUS} — {item.description}")]) + "\n")
-                handle.write("ENDTRNS\n")
+            rows = list(csv.reader(io.StringIO(text, newline="")))
+            return sum(1 for r in rows[1:] if r and r[0] == key) == line_count
+        complete_blocks = 0
+        key_headers = 0
+        in_block = False
+        spl = 0
+        for ln in text.splitlines():
+            if ln.startswith("TRNS\t"):
+                in_block = ln.split("\t")[6] == key
+                spl = 0
+                key_headers += in_block
+            elif ln.startswith("SPL\t") and in_block:
+                spl += 1
+            elif ln == "ENDTRNS":
+                if in_block and spl == line_count:
+                    complete_blocks += 1
+                in_block = False
+        return complete_blocks == 1 and key_headers == 1
 
-        return WriteResult(remote_id=request.idempotency_key, adapter=self.name,
-                           idempotency_key=request.idempotency_key,
+    def _without_key(self, text: str, key: str) -> str:
+        """`text` minus every row / TRNS..ENDTRNS block carrying `key`, whole or partial.
+
+        F-45: match the key FIELD, not a substring of the line. IIF: drop the
+        whole TRNS/SPL.../ENDTRNS block, not just the TRNS line, or its SPL
+        rows corrupt every transaction after it.
+        """
+        if self._fmt == "csv":
+            rows = list(csv.reader(io.StringIO(text, newline="")))
+            kept = rows[:1] + [r for r in rows[1:] if r and r[0] != key]
+            out = io.StringIO(newline="")
+            csv.writer(out).writerows(kept)
+            return out.getvalue()
+        kept_lines: list[str] = []
+        dropping = False
+        for ln in text.splitlines(keepends=True):
+            if ln.startswith("TRNS\t"):
+                dropping = ln.split("\t")[6] == key
+                if dropping:
+                    continue
+            elif ln.startswith("SPL\t") and dropping:
+                continue
+            elif ln.rstrip("\r\n") == "ENDTRNS":
+                if dropping:
+                    dropping = False
+                    continue
+            kept_lines.append(ln)
+        return "".join(kept_lines)
+
+    def _render(self, request: WriteRequest, with_header: bool) -> str:
+        if self._fmt == "csv":
+            out = io.StringIO(newline="")
+            writer = csv.writer(out)
+            if with_header:
+                writer.writerow(CSV_HEADER)
+            for item in request.line_items:
+                writer.writerow([
+                    request.idempotency_key, request.doc_id,
+                    _safe_cell(request.vendor_ref),
+                    request.txn_date.isoformat(), item.account_ref,
+                    _safe_cell(item.description), str(item.amount),
+                    _safe_cell(request.memo), STATUS])
+            return out.getvalue()
+        lines: list[str] = [IIF_HEADER] if with_header else []
+        total = sum((item.amount for item in request.line_items), start=Decimal(0))
+        first_account = (request.line_items[0].account_ref
+                         if request.line_items else "")
+        lines.append("\t".join([
+            "TRNS", "BILL", request.txn_date.isoformat(),
+            first_account, _safe_iif_field(request.vendor_ref),
+            str(total), request.idempotency_key,
+            _safe_iif_field(request.memo)]) + "\n")
+        for item in request.line_items:
+            lines.append("\t".join([
+                "SPL", "BILL", request.txn_date.isoformat(),
+                item.account_ref, _safe_iif_field(request.vendor_ref),
+                str(item.amount),
+                _safe_iif_field(f"{STATUS} — {item.description}")]) + "\n")
+        lines.append("ENDTRNS\n")
+        return "".join(lines)
+
+    def create_unapproved_bill(self, request: WriteRequest) -> WriteResult:
+        key = request.idempotency_key
+        # LS-03: check, repair and write under one per-file lock, and replace
+        # the file atomically. Concurrent same-key posts write the bill once; a
+        # key found on a partial bill (legacy crash) is completed, not replayed.
+        with _lock_for(self._path):
+            text = self._read()
+            if key in self._existing_keys():
+                if self._is_complete(text, key, len(request.line_items)):
+                    return WriteResult(remote_id=key, adapter=self.name,
+                                       idempotency_key=key,
+                                       created_at=datetime.now(UTC), was_replay=True)
+                text = self._without_key(text, key)
+            is_new = not text.strip()
+            self._atomic_write(("" if is_new else text) + self._render(request, is_new))
+
+        return WriteResult(remote_id=key, adapter=self.name, idempotency_key=key,
                            created_at=datetime.now(UTC), was_replay=False)
 
     def reverse(self, remote_id: str, idempotency_key: str) -> ReversalResult:
         """Remove every row carrying this key, preserving the header.
 
-        REVISED (F-45). `remote_id not in ln` is a substring match over the whole
-        line, so it also removed any row whose DESCRIPTION happened to contain the
-        key. Compare the field.
-
-        REVISED (M-A, final whole-branch review). `idempotency_key` used to
-        default to `None` with a `key = idempotency_key or remote_id`
-        fallback — a divergence from `WritebackPort` and every other
-        adapter's required `idempotency_key: str`. For `ExportAdapter` the
-        remote id genuinely IS the idempotency key today (see
-        `create_unapproved_bill`), but the signature now matches the
-        protocol exactly rather than masking an omitted argument with a
-        silent fallback.
-
-        REVISED (M-B). A bare `FileNotFoundError` from `read_text` — if
-        nothing has ever been exported yet — is not an explanation. Matches
-        the style `AuditedAdapter.reverse` uses for its own "nothing to
-        reverse" case: refuse with a clear, catchable error.
+        F-45 / M-A / M-B: match the key field; the signature matches
+        `WritebackPort` (key required); a missing export is a clear error, not
+        a bare FileNotFoundError. LS-03: read-modify-replace happens under the
+        per-file lock and is atomic, so a concurrent create is never lost.
         """
-        key = idempotency_key
-        if not self._path.exists():
-            raise ValueError(
-                f"no {self._fmt} export exists yet at {self._path}; refusing "
-                f"to reverse remote id {remote_id!r} against a file that was "
-                f"never written")
-        text = self._path.read_text(encoding="utf-8")
-        if self._fmt == "csv":
-            rows = list(csv.reader(io.StringIO(text)))
-            kept = rows[:1] + [r for r in rows[1:] if r and r[0] != key]
-            with self._path.open("w", encoding="utf-8", newline="") as handle:
-                csv.writer(handle).writerows(kept)
-        else:
-            # Remove the whole TRNS/SPL.../ENDTRNS block matching this key,
-            # not just the TRNS line — leaving its SPL rows behind would
-            # corrupt every transaction after it (F-45 applies here too:
-            # match the field, not scan the raw line text).
-            lines = text.splitlines(keepends=True)
-            kept_lines: list[str] = []
-            dropping = False
-            for ln in lines:
-                if ln.startswith("TRNS\t"):
-                    dropping = ln.split("\t")[6] == key
-                    if dropping:
-                        continue
-                elif ln.startswith("SPL\t") and dropping:
-                    continue
-                elif ln.rstrip("\r\n") == "ENDTRNS":
-                    if dropping:
-                        dropping = False
-                        continue
-                kept_lines.append(ln)
-            self._path.write_text("".join(kept_lines), encoding="utf-8")
+        with _lock_for(self._path):
+            if not self._path.exists():
+                raise ValueError(
+                    f"no {self._fmt} export exists yet at {self._path}; refusing "
+                    f"to reverse remote id {remote_id!r} against a file that was "
+                    f"never written")
+            self._atomic_write(self._without_key(self._read(), idempotency_key))
         return ReversalResult(remote_id=remote_id,
                               reversed_at=datetime.now(UTC), method="deleted")
 

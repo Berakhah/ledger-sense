@@ -435,7 +435,9 @@ def test_an_upload_answers_received_and_is_extracted_by_the_time_it_is_read_back
     assert body["doc_type"] == "pay_application"
     assert body["run_note"] is None
     assert body["claim_count"] > 0
-    assert body["finding_count"] == 0
+    # LS-09: nothing is calibrated, so every extracted field of a clean
+    # upload is an open R1 review requirement -- none are silently trusted.
+    assert body["finding_count"] == body["claim_count"]
 
 
 def test_a_footing_error_shows_up_as_an_open_finding_count(

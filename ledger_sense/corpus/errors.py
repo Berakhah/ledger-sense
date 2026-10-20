@@ -18,6 +18,7 @@ from ledger_sense.domain.money import money
 ErrorClass = Literal[
     "clean", "A1_footing", "A2_line_sum", "A8_retainage",
     "I1_duplicate", "C4_stored_double_count", "C1_retainage_rate",
+    "A5b_earned_misprinted", "A6b_payment_due_misprinted",
 ]
 
 
@@ -52,6 +53,17 @@ def inject(contract: Contract, app: PayApplication,
         held = money(contract.retainage.base_rate * app.total_completed_and_stored)
         return contract, app.model_copy(update={
             "retainage_total": money(held / 2)})
+    if error == "A5b_earned_misprinted":
+        # The document PRINTS a total earned less retainage that its own
+        # components do not support (LS-06). Only the printed cell changes.
+        earned = money(app.total_completed_and_stored - app.retainage_total)
+        return contract, app.model_copy(update={
+            "reported_total_earned_less_retainage": money(earned + money("100.00"))})
+    if error == "A6b_payment_due_misprinted":
+        earned = money(app.total_completed_and_stored - app.retainage_total)
+        return contract, app.model_copy(update={
+            "reported_current_payment_due": money(
+                earned - app.previous_payments + money("100.00"))})
     if error == "I1_duplicate":
         # A duplicate is a HISTORY-level error: it needs a second document, not
         # a mutated field, so it cannot be expressed by `inject`. Use
@@ -83,3 +95,18 @@ def generate_history(seed: int) -> list[tuple[Contract, PayApplication, bytes]]:
     contract, app, pdf = generate(seed=seed, error="clean")
     return [(contract, app, pdf),
             (contract, inject_duplicate(app), pdf)]
+
+
+def generate_bank_change_history(seed: int) -> list[tuple[Contract, PayApplication, bytes]]:
+    """Two documents from one vendor: the original and a re-submission of the
+    same invoice whose remit-to account differs. I3 must stop the second.
+
+    A HISTORY-level error like I1_duplicate: it needs a prior document to differ
+    from, so it cannot be an `ErrorClass` mutation. Imports `generate` inside the
+    function for the same circular-import reason as `generate_history`."""
+    from ledger_sense.corpus.generate import generate
+    from ledger_sense.corpus.remit import remit_for
+
+    original = generate(seed=seed, error="clean", remit=remit_for(seed, "base"))
+    changed = generate(seed=seed, error="clean", remit=remit_for(seed, "changed"))
+    return [original, changed]

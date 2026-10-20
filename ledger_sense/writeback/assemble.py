@@ -78,7 +78,8 @@ def derive_idempotency_key(conn: Connection, *, document_id: str) -> str:
     latest = _latest_claims(conn, str(doc.tenant_id), document_id)
     contract_id = str(_require(latest, "contract_id").value)
     application_no = int(_require(latest, "application_no").value)
-    return build_idempotency_key(str(doc.content_sha256), contract_id, application_no)
+    return build_idempotency_key(str(doc.content_sha256), contract_id, application_no,
+                                 tenant_id=str(doc.tenant_id))
 
 
 _ACCOUNT_REF_ENV = "LEDGER_SENSE_DEFAULT_ACCOUNT_REF"

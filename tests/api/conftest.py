@@ -54,7 +54,8 @@ def _database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
         # survive SQLAlchemy's URL parser.
         patch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{db.as_posix()}")
         patch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
-        patch.setenv("LEDGER_SENSE_BLOB_ROOT", str(tmp_path_factory.mktemp("blobs")))
+        patch.setenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", "test-key-not-a-secret")
+        patch.setenv("LEDGER_SENSE_BLOB_ROOT",str(tmp_path_factory.mktemp("blobs")))
         patch.setenv("LEDGER_SENSE_CALIBRATION_DIR", str(tmp_path_factory.mktemp("calibration")))
         store_session.reset_app_engine()
 
@@ -114,7 +115,7 @@ class TenantClient:
                 id=document_id, tenant_id=self.tenant_id, blob_id=None,
                 received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
                 origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
-                filename="fixture.pdf"))
+                filename="fixture.pdf", status="extracted"))
             conn.execute(findings.insert().values(
                 id=exc_id, tenant_id=self.tenant_id, document_id=document_id,
                 rule_id="A2", field="line[000].total_completed_and_stored",
@@ -124,7 +125,8 @@ class TenantClient:
                 state="open", created_at=datetime.now(UTC)))
         return exc_id
 
-    def seed_postable_document(self) -> str:
+    def seed_postable_document(self, content_sha256: str = "abc123", *,
+                               with_finding: bool = True) -> str:
         """A document with a complete claim set (ready to post) and no open
         exceptions — findings all 'accepted', matching what the review queue
         looks like once a reviewer clears it."""
@@ -134,13 +136,15 @@ class TenantClient:
                 id=document_id, tenant_id=self.tenant_id, blob_id=None,
                 received_at=datetime.now(UTC), sensitivity=Sensitivity.SYNTHETIC.value,
                 origin=Origin.CORPUS.value, provenance="tests/api/conftest.py",
-                filename="fixture.pdf", content_sha256="abc123"))
-            conn.execute(findings.insert().values(
-                id=uuid.uuid4().hex, tenant_id=self.tenant_id, document_id=document_id,
-                rule_id="A2", field="line[000].total_completed_and_stored",
-                message="cleared", expected=None, actual=None, page=None,
-                x0=None, top=None, x1=None, bottom=None,
-                state="accepted", created_at=datetime.now(UTC)))
+                filename="fixture.pdf", content_sha256=content_sha256,
+                status="extracted"))
+            if with_finding:
+                conn.execute(findings.insert().values(
+                    id=uuid.uuid4().hex, tenant_id=self.tenant_id, document_id=document_id,
+                    rule_id="A2", field="line[000].total_completed_and_stored",
+                    message="cleared", expected=None, actual=None, page=None,
+                    x0=None, top=None, x1=None, bottom=None,
+                    state="accepted", created_at=datetime.now(UTC)))
             rows = [
                 ("contract_id", "C-1", "str"), ("application_no", "2", "int"),
                 ("period_to", "2026-08-31", "date"),

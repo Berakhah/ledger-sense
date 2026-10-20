@@ -95,7 +95,7 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
 
       <canvas
         ref={canvasRef}
-        className="block"
+        className="document-page block"
         role="img"
         aria-label={`Document page ${page + 1}`}
       />
@@ -121,7 +121,7 @@ export function DocumentPane({ pdfUrl, page, focusBox, accepted, scale = 1.5 }: 
               width: Math.max(0, size.width - focus.left - focus.width),
               height: focus.height },
           ].map((rect, i) => (
-            <div key={i} className="absolute bg-ink/40" style={rect} />
+            <div key={i} className="absolute bg-dim" style={rect} />
           ))}
         </div>
       )}

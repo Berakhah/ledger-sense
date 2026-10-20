@@ -1,5 +1,5 @@
 """Writeback API — the human-triggered seam from a cleared review queue to a
-draft bill in the client's accounting system.
+unpaid bill in the client's accounting system (QBO has no draft state).
 
 Never-rule #3: posting is a separate, later, human-triggered action, never a
 step ledger_sense.run.document takes automatically. This router is the only
@@ -41,6 +41,7 @@ from ledger_sense.writeback.audit import (
 from ledger_sense.writeback.export import export_adapter_from_environment
 from ledger_sense.writeback.idempotency import IdempotencyLedger, ledger_from_environment
 from ledger_sense.writeback.interface import ClosedPeriodError, WritebackPort, WriteResult
+from ledger_sense.writeback.preview import build_posting_preview
 from ledger_sense.writeback.qbo import (
     ConcurrentWriteInProgressError,
     QBORejected,
@@ -101,12 +102,44 @@ def status(doc_id: str, session: CurrentSession) -> StatusResponse:
                 status_code=422,
                 detail=f"cannot check status: no claim for {exc.field!r}") from exc
 
-    audit = audit_log_from_environment()
+    audit = audit_log_from_environment(session.tenant_id)
     live = _live_write_entries(audit, doc_id)
     if not live:
         return StatusResponse(state="not_posted", remote_id=None)
     entry = next(iter(live.values()))
     return StatusResponse(state="posted", remote_id=entry.remote_id)
+
+
+class PreviewResponse(BaseModel):
+    amount_to_write: str
+    total_completed_and_stored: str
+    retainage_total: str
+    previous_payments: str
+    expected_payable: str
+    difference: str
+    reconciles: bool
+
+
+@router.get("/documents/{doc_id}/preview")
+def preview(doc_id: str, session: CurrentSession) -> PreviewResponse:
+    """LS-04: what a post would write, beside the payable the payment chain
+    (A5/A6) implies, and whether they agree. Read-only; decides nothing."""
+    with app_engine().connect() as conn:
+        _get_document(doc_id, session, conn)
+        try:
+            result = build_posting_preview(
+                conn, tenant_id=session.tenant_id, document_id=doc_id)
+        except MissingClaimError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"cannot preview: no claim for {exc.field!r}") from exc
+    return PreviewResponse(
+        amount_to_write=str(result.amount_to_write),
+        total_completed_and_stored=str(result.total_completed_and_stored),
+        retainage_total=str(result.retainage_total),
+        previous_payments=str(result.previous_payments),
+        expected_payable=str(result.expected_payable),
+        difference=str(result.difference), reconciles=result.reconciles)
 
 
 class PostBody(BaseModel):
@@ -123,16 +156,32 @@ class PostResponse(BaseModel):
 
 
 def _require_cleared(conn: sa.Connection, document_id: str, tenant_id: str) -> None:
+    """LS-05. Writeback needs (1) a document whose extraction succeeded (read
+    from its own run status, so a clean document with zero findings is fine and
+    a never-run or failed one is not), (2) no open exceptions, and (3) no
+    rejected ones: rejecting a finding records that something is wrong, it is
+    not approval to pay."""
+    status = conn.execute(
+        sa.select(documents.c.status)
+        .where(documents.c.id == document_id, documents.c.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+    if status != "extracted":
+        raise HTTPException(
+            status_code=422,
+            detail=f"document has not been successfully extracted (status: {status})")
     rows = conn.execute(
         sa.select(findings.c.state)
         .where(findings.c.document_id == document_id, findings.c.tenant_id == tenant_id)
     ).all()
-    if not rows:
-        raise HTTPException(status_code=422,
-                            detail="document has never been run: no exceptions recorded")
     remaining = sum(1 for row in rows if row.state == "open")
     if remaining:
         raise HTTPException(status_code=422, detail=f"{remaining} exceptions still open")
+    rejected = sum(1 for row in rows if row.state == "rejected")
+    if rejected:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"{rejected} rejected exceptions: a rejection is not approval to "
+                    f"post; resolve each by accepting or correcting it"))
 
 
 def _approved_by(conn: sa.Connection, session: Session) -> str:
@@ -168,7 +217,7 @@ def post(doc_id: str, body: PostBody, session: CurrentSession) -> PostResponse:
                 status_code=422,
                 detail=f"cannot post: no claim for {exc.field!r}") from exc
 
-    audit = audit_log_from_environment()
+    audit = audit_log_from_environment(session.tenant_id)
     live = _live_write_entries(audit, doc_id).get(body.adapter)
     if live is not None and (live.vendor_ref != body.vendor_ref
                              or live.vendor_invoice_number != body.vendor_invoice_number):
@@ -209,7 +258,7 @@ def reverse(doc_id: str, body: ReverseBody, session: CurrentSession) -> ReverseR
         _get_document(doc_id, session, conn)
         approved_by = _approved_by(conn, session)
 
-    audit = audit_log_from_environment()
+    audit = audit_log_from_environment(session.tenant_id)
     # I-1: `doc_id` (the path parameter) is tenancy-checked above, but
     # `body.remote_id` — which actually drives the reversal — was not tied
     # to that document at all. Any caller who owns SOME document could

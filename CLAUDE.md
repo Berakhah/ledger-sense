@@ -46,7 +46,7 @@ Which skill to reach for, by what you're touching. Check before improvising; no 
 
 1. **No client document reaches a free-tier model.** `CLIENT_CONFIDENTIAL` hard-fails at the gateway. The model lane accepts `SYNTHETIC` or `REDACTED` only, and `REDACTED` requires the client's written opt-in plus the `bok-core` redaction verification pass. Build the boundary before anything that touches a document.
 2. **No floats in the money path.** `Decimal` with an explicit context, or integer minor units. Rounding policy documented and tested. Enforced by a lint rule *and* a test. `hypothesis` property tests on every arithmetic rule.
-3. **Writeback is draft-only in v1.** Unapproved bills / draft transactions. A human approves inside the accounting system. Never post an approved transaction, no matter what the client asks.
+3. **Writeback never approves or pays in v1.** QBO Bills have no draft state (decision 2026-10-17, LS-08): write only an **unpaid** Bill stamped `AWAITING REVIEW`, never a BillPayment, never mark anything approved. The Bill posts to Accounts Payable at once, so the client signs off on that effect. A human approves by paying inside the accounting system; the CSV/IIF export is the no-ledger-effect fallback. Never post an approved transaction, no matter what the client asks.
 4. **Idempotency keys on every write.** Test by force-failing mid-write. Never write to a closed period — check the book-close date, refuse and explain. Full audit trail with one-click clean reversal.
 5. **Never generate a legal document.** Lien waivers are legal instruments; several states mandate statutory language. Extract, validate, flag deviation, stop. Say so in the UI and the docs.
 6. **Never auto-approve a bank-detail change and never auto-merge a vendor.** Surface, require human confirmation, keep merges reversible with provenance for every alias.
@@ -87,6 +87,8 @@ Raw model/OCR confidence is **not calibrated**. Routing on an uncalibrated score
 ## Stack & layout
 
 Python 3.12+, `uv`, `ruff`, `mypy --strict`. FastAPI. Next.js 15 + `bok-ui`. Postgres + alembic. `docker compose up` on a clean machine.
+
+Colour scheme (overrides `00` §5.1's original light-first rule, revised 2026-10-20): the app **boots dark** (`tokens.defaultScheme`), and **print is always light** (`@media print` in `globals.css`). Light stays supported. The ambient light is steel-blue, never the accent: green means "accepted" and nothing else. The document-page scrim is a fixed dark token (`--color-dim`), not `--color-ink`, which is near-white in dark. Dark tokens are held to WCAG AA by `lib/contrast.css.test.ts`.
 
 Screens: **Baseline study** (the billable first week and the sales artifact) · Inbox · **Review queue** (split view, field boxed, `J`/`K`/`Enter`/`E`/`R`, fifty exceptions cleared without a mouse; accepted fields accumulate a thin green rule that stays) · Reconciliation (G703 vs G702, discrepancy at the exact cell, arithmetic inline) · Vendor ledger (payment-detail history as a red-lined diff) · Metrics (every figure a `Claim`, misses published).
 

@@ -104,6 +104,7 @@ def db(tmp_path: pathlib.Path) -> Iterator[RunDb]:
         patch.setenv("LEDGER_SENSE_DB_URL", f"sqlite:///{database}")
         patch.setenv("LEDGER_SENSE_KEK", Fernet.generate_key().decode())
         patch.setenv("LEDGER_SENSE_BLOB_ROOT", str(tmp_path / "blobs"))
+        patch.setenv("LEDGER_SENSE_PAYMENT_HMAC_KEY", "test-key-not-a-secret")
         store_session.reset_app_engine()
         config = Config(str(ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(ROOT / "migrations"))

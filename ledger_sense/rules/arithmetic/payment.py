@@ -42,6 +42,41 @@ def rule_a6(app: PayApplication, contract: Contract) -> list[Finding]:
     return []
 
 
+@register("A5b", "arithmetic")
+def rule_a5b(app: PayApplication, contract: Contract) -> list[Finding]:
+    """The printed 'total earned less retainage' against the chain's own value
+    (LS-06). A5 only checks the computed figure's sign; this is the reported-
+    versus-computed comparison A3/A4 already do for line columns. Silent when
+    the printed value was not extracted: that is recorded as unextractable."""
+    reported = app.reported_total_earned_less_retainage
+    if reported is None:
+        return []
+    expected = total_earned_less_retainage(app)
+    if reported != expected:
+        return [Finding("A5b", "reported_total_earned_less_retainage",
+                        "printed total earned less retainage does not equal total "
+                        "completed and stored minus retainage",
+                        expected, reported)]
+    return []
+
+
+@register("A6b", "arithmetic")
+def rule_a6b(app: PayApplication, contract: Contract) -> list[Finding]:
+    """The printed 'current payment due' against the chain's own value (LS-06).
+    The figure a payment is actually made against, so a mis-print here is the
+    expensive one."""
+    reported = app.reported_current_payment_due
+    if reported is None:
+        return []
+    expected = current_payment_due(app)
+    if reported != expected:
+        return [Finding("A6b", "reported_current_payment_due",
+                        "printed current payment due does not equal total earned "
+                        "less retainage minus previous payments",
+                        expected, reported)]
+    return []
+
+
 @register("A7", "arithmetic")
 def rule_a7(app: PayApplication, contract: Contract) -> list[Finding]:
     expected = app.adjusted_contract_sum(contract)

@@ -63,6 +63,33 @@ export async function seedVendorDocument(
   return { docId: body.doc_id as string, knownVendorId: body.known_vendor_id as string | null }
 }
 
+export interface BankScenario {
+  seed: number
+  variant?: 'base' | 'changed'
+}
+
+/**
+ * A real corpus PDF with a remit-to bank block, run through the real pipeline,
+ * so the queue holds a genuine I3 — and, for 'base', a genuine I2 first
+ * (the vendor is new to the tenant). 'changed' pre-seeds a vendor whose
+ * confirmed account is the base one, so only the change fires. Demo profile
+ * only, like every seed route.
+ */
+export async function seedBankDocument(
+  page: Page,
+  docId: string,
+  bank: BankScenario,
+): Promise<{ docId: string }> {
+  const response = await page.request.post(`${API_URL}/api/fixtures/seed`, {
+    data: { doc_id: docId, bank: { variant: 'base', ...bank } },
+  })
+  if (response.status() !== 201) {
+    throw new Error(`bank seed failed (${response.status()}): ${await response.text()}`)
+  }
+  const body = await response.json()
+  return { docId: body.doc_id as string }
+}
+
 /**
  * Mint a synthetic reconciliation document and leave the page logged in as
  * the throwaway tenant that owns it.

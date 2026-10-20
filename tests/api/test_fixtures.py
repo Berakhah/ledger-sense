@@ -207,3 +207,99 @@ def test_vendor_names_are_pattern_bounded(monkeypatch: pytest.MonkeyPatch, name:
         response = client.post("/api/fixtures/seed",
                                json={"doc_id": "doc-v5", "vendor": vendor})
         assert response.status_code == 422, vendor
+
+
+def test_a_bank_seed_produces_a_real_i2_and_i3(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ledger_sense.corpus.remit import remit_for
+
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-1", "bank": {"seed": 30, "variant": "base"}}).json()
+    rows = client.get(f"/api/review/documents/{body['doc_id']}/exceptions").json()
+    by_rule = {r["rule_id"]: r for r in rows}
+    assert {"I2", "I3"} <= set(by_rule)
+    assert by_rule["I3"]["actual"] == f"....{remit_for(30).account[-4:]}"
+    assert by_rule["I3"]["state"] == "open"
+
+
+def test_a_changed_bank_seed_raises_only_a_change_against_a_confirmed_baseline(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from ledger_sense.corpus.remit import remit_for
+
+    client = _client(monkeypatch, "demo")
+    body = client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-2", "bank": {"seed": 31, "variant": "changed"}}).json()
+    rows = client.get(f"/api/review/documents/{body['doc_id']}/exceptions").json()
+    assert "I2" not in {r["rule_id"] for r in rows}
+    (i3,) = [r for r in rows if r["rule_id"] == "I3"]
+    assert i3["expected"] == f"....{remit_for(31).account[-4:]}"
+    assert i3["actual"] == f"....{remit_for(31, 'changed').account[-4:]}"
+    view = client.get(f"/api/review/exceptions/{i3['id']}/bank-change").json()
+    assert view["kind"] == "changed"
+
+
+def test_a_bank_seed_cannot_be_combined_with_synthetic_exceptions_or_a_vendor(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, "demo")
+    bank = {"seed": 32, "variant": "base"}
+    assert client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-3", "exceptions": 2, "bank": bank}).status_code == 422
+    assert client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-4", "bank": bank,
+        "vendor": {"observed_name": "Keystone Framing LLC"}}).status_code == 422
+
+
+def test_concurrent_seeds_hash_one_password_at_a_time(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The measured cause of the Playwright seed timeouts: `create_user` hashes
+    the (thrown-away) password with Argon2's defaults - 64 MiB and several
+    threads each. Eleven concurrent plain seeds took ~30 s each in the demo
+    container (1 CPU, 1 GiB) against 0.3 s idle, with no pipeline involved.
+    Hashing one at a time keeps each seed fast and memory bounded."""
+    import time
+
+    from fastapi import Response
+
+    from ledger_sense.api import fixtures
+
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+    real = fixtures.create_user
+
+    def spy(*args: object, **kwargs: object) -> object:
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.05)  # widen the window an unserialised overlap needs
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+        finally:
+            with guard:
+                active -= 1
+
+    monkeypatch.setattr(fixtures, "create_user", spy)
+    ensure_stub_tables(store_session.app_engine())
+    errors: list[BaseException] = []
+
+    def seed_one(n: int) -> None:
+        try:
+            fixtures.seed(fixtures.SeedRequest(doc_id=f"hash-{n}", exceptions=1), Response())
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=seed_one, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert peak == 1
+
+
+def test_the_bank_scenario_does_not_exist_under_the_client_profile(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, "client")
+    assert client.post("/api/fixtures/seed", json={
+        "doc_id": "bank-5", "bank": {"seed": 33, "variant": "base"}}).status_code == 404
