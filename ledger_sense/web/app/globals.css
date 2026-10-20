@@ -226,7 +226,9 @@ body::after {
   textarea {
     background: var(--surface);
     color: var(--color-ink);
-    border: 1px solid var(--color-rule);
+    /* A control's edge is a UI boundary (WCAG 1.4.11, 3:1), so it is drawn
+       from the muted ink, not the hairline rule that only divides content. */
+    border: 1px solid color-mix(in oklch, var(--color-ink-muted) 65%, var(--color-paper));
     border-radius: 0.375rem;
   }
 
