@@ -52,6 +52,28 @@ describe('VendorLedger', () => {
     )
   })
 
+  it('labels a reversed bank-detail entry in words, and keeps it listed', async () => {
+    stubFetchOnce({
+      ...LEDGER,
+      payment_history: [
+        {
+          account_last4: '4321', routing_last4: '8765', observed_at: '2026-09-01T10:00:00Z',
+          source_document: 'doc-1', confirmed_by: 'reviewer-1', confirmed_at: '2026-09-01T11:00:00Z',
+          reversed_by: null, reversed_at: null,
+        },
+        {
+          account_last4: '9999', routing_last4: '8765', observed_at: '2026-09-15T10:00:00Z',
+          source_document: 'doc-2', confirmed_by: 'reviewer-1', confirmed_at: '2026-09-15T11:00:00Z',
+          reversed_by: 'reviewer-2', reversed_at: '2026-09-16T09:00:00Z',
+        },
+      ],
+    })
+    render(<VendorLedger vendorId="vendor-1" />)
+    await waitFor(() => expect(screen.getByText('····9999')).toBeInTheDocument())
+    expect(screen.getByText('In force')).toBeInTheDocument()
+    expect(screen.getByText(/Reversed by reviewer-2/)).toBeInTheDocument()
+  })
+
   it('surfaces a 404 as an explicit not-found state, not a silent blank screen', async () => {
     stubFetchOnce({ detail: 'not found' }, false)
     render(<VendorLedger vendorId="nope" />)

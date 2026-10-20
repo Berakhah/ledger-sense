@@ -43,6 +43,8 @@ class PaymentDetailOut(BaseModel):
     confirmation_channel: str | None = None
     confirmation_contact: str | None = None
     confirmation_note: str | None = None
+    reversed_by: str | None = None
+    reversed_at: datetime | None = None
 
 
 class VendorLedgerOut(BaseModel):
@@ -70,6 +72,7 @@ def vendor_ledger(vendor_id: str, session: CurrentSession) -> VendorLedgerOut:
             confirmed_by=p.confirmed_by, confirmed_at=p.confirmed_at,
             confirmation_channel=p.confirmation_channel,
             confirmation_contact=p.confirmation_contact,
-            confirmation_note=p.confirmation_note)
+            confirmation_note=p.confirmation_note,
+            reversed_by=p.reversed_by, reversed_at=p.reversed_at)
             for p in vendor.payment_history],
     )
