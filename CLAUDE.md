@@ -88,6 +88,8 @@ Raw model/OCR confidence is **not calibrated**. Routing on an uncalibrated score
 
 Python 3.12+, `uv`, `ruff`, `mypy --strict`. FastAPI. Next.js 15 + `bok-ui`. Postgres + alembic. `docker compose up` on a clean machine.
 
+Colour scheme (overrides `00` §5.1's original light-first rule, revised 2026-10-20): the app **boots dark** (`tokens.defaultScheme`), and **print is always light** (`@media print` in `globals.css`). Light stays supported. The ambient light is steel-blue, never the accent: green means "accepted" and nothing else. The document-page scrim is a fixed dark token (`--color-dim`), not `--color-ink`, which is near-white in dark. Dark tokens are held to WCAG AA by `lib/contrast.css.test.ts`.
+
 Screens: **Baseline study** (the billable first week and the sales artifact) · Inbox · **Review queue** (split view, field boxed, `J`/`K`/`Enter`/`E`/`R`, fifty exceptions cleared without a mouse; accepted fields accumulate a thin green rule that stays) · Reconciliation (G703 vs G702, discrepancy at the exact cell, arithmetic inline) · Vendor ledger (payment-detail history as a red-lined diff) · Metrics (every figure a `Claim`, misses published).
 
 ## Watch for

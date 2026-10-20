@@ -37,9 +37,10 @@ export const tokens = {
    */
   accent: 'oklch(0.58 0.11 158)',
 
-  /** Light is the primary mode: these screens are read next to paper. Dark is
-   *  supported, not the design target. */
-  defaultScheme: 'light' as ColourScheme,
+  /** The working screens boot dark: a luminous document page on a dark stage,
+   *  read for hours. Light stays supported, and print is always light
+   *  (globals.css) because the reconciliation screen is handed to auditors. */
+  defaultScheme: 'dark' as ColourScheme,
 
   /** 00 §5.2. Comfortable is a preference; compact is the working default. */
   defaultDensity: 'compact' as Density,
