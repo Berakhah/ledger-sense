@@ -88,6 +88,16 @@ class PaymentDetail(_Base):
     confirmation_channel: str | None = None
     confirmation_contact: str | None = None
     confirmation_note: str | None = None
+    # Undo keeps the record as evidence and stamps who reversed it and when.
+    # A reversed entry is no baseline (is_active) but was still on file.
+    reversed_by: str | None = None
+    reversed_at: datetime | None = None
+
+    @property
+    def is_active(self) -> bool:
+        """Confirmed by a human and not since reversed: the only kind of entry
+        that may serve as the vendor's bank-detail baseline."""
+        return bool(self.confirmed_by) and self.reversed_at is None
 
 
 def payment_hmac(account: str, routing: str) -> str:
@@ -320,7 +330,7 @@ class VendorLedger:
         Comparison is on the HMAC, not on four digits, and against the last
         CONFIRMED entry: an unconfirmed entry is never a baseline."""
         vendor = self._vendors[vendor_id]
-        confirmed = [d for d in vendor.payment_history if d.confirmed_by]
+        confirmed = [d for d in vendor.payment_history if d.is_active]
         current = confirmed[-1] if confirmed else None
         changed = current is not None and current.account_hmac != detail.account_hmac
         if changed and not confirmed_by:
@@ -341,22 +351,34 @@ class VendorLedger:
         confirmation recorded. Undo's lookup, by identity not by value."""
         for vendor in self._vendors.values():
             for detail in vendor.payment_history:
-                if detail.source_document == source_document and detail.confirmed_by:
+                if detail.source_document == source_document and detail.is_active:
                     return vendor.id, detail
         return None
 
-    def undo_payment_detail(self, vendor_id: str, detail_id: str) -> None:
-        """Reverse one confirmation: remove the entry by identity (F-36's lesson),
-        restoring the previous baseline. A no-op if the vendor is gone."""
+    def undo_payment_detail(self, vendor_id: str, detail_id: str, reversed_by: str) -> None:
+        """Reverse one confirmation by identity (F-36's lesson). The entry is KEPT
+        — attestation, confirmer and all — and stamped with who reversed it and
+        when: a wrong confirmation is the case an audit needs the evidence for.
+        It stops being the baseline (`is_active`), so the previous confirmed
+        entry is the baseline again. A no-op if the vendor is gone."""
+        if not reversed_by.strip():
+            raise ValueError("undoing a bank-detail confirmation requires reversed_by")
         vendor = self._vendors.get(vendor_id)
         if vendor is None:
             return
-        vendor.payment_history = [d for d in vendor.payment_history if d.id != detail_id]
+        now = datetime.now(UTC)
+        vendor.payment_history = [
+            d.model_copy(update={"reversed_by": reversed_by, "reversed_at": now})
+            if d.id == detail_id and d.reversed_at is None else d
+            for d in vendor.payment_history]
 
     def seen_before(self, vendor_id: str, detail: PaymentDetail) -> bool:
         """Has this account EVER been on file for this vendor? Change-then-
         change-back is a documented redirection pattern and comparing only
-        against payment_history[-1] cannot see it (F-35)."""
+        against payment_history[-1] cannot see it (F-35). A reversed entry was
+        on file, so it counts however recently it was reversed."""
         vendor = self._vendors[vendor_id]
-        return any(d.account_hmac == detail.account_hmac
-                   for d in vendor.payment_history[:-1])
+        return (any(d.account_hmac == detail.account_hmac
+                    for d in vendor.payment_history[:-1])
+                or any(d.reversed_at is not None and d.account_hmac == detail.account_hmac
+                       for d in vendor.payment_history))

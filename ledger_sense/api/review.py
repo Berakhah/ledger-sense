@@ -669,7 +669,7 @@ def undo_confirm_bank_change(exc_id: str, session: CurrentSession) -> dict[str, 
         found = ledger.find_payment_detail(row.document_id)
         if found is None:
             raise HTTPException(status_code=409, detail="exception already actioned")
-        ledger.undo_payment_detail(found[0], found[1].id)
+        ledger.undo_payment_detail(found[0], found[1].id, reversed_by=session.user_id)
         save_vendor_ledger(conn, session.tenant_id, ledger)
         _transition(conn, exc_id, "confirmed", "open")
     return {"status": "open"}

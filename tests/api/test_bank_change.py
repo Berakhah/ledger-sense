@@ -124,7 +124,14 @@ def test_a_changed_account_on_the_next_invoice_stops_again_and_undo_reopens_it(
     undo = a.post(f"/api/review/exceptions/{changed['id']}/undo-confirm-bank-change")
     assert undo.status_code == 200
     assert _exception(a, second, "I3")["state"] == "open"
-    assert len(a.get(f"/api/vendors/{vendor_id}/ledger").json()["payment_history"]) == 1
+    # Undo keeps the evidence: the entry stays, stamped reversed, attestation intact.
+    history = a.get(f"/api/vendors/{vendor_id}/ledger").json()["payment_history"]
+    assert len(history) == 2
+    kept = next(h for h in history if h["account_last4"] == remit_for(4, "changed").account[-4:])
+    assert kept["reversed_by"]
+    assert kept["reversed_at"]
+    assert (kept["confirmation_channel"], kept["confirmation_contact"]) == ("phone", "J. Vendor")
+    assert [h["reversed_at"] for h in history if h is not kept] == [None]
 
 
 def test_another_tenant_cannot_confirm_or_undo(

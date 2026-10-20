@@ -83,7 +83,8 @@ def load_vendor_ledger(conn: Connection, tenant_id: str) -> VendorLedger:
             confirmed_at=row.confirmed_at,
             confirmation_channel=row.confirmation_channel,
             confirmation_contact=row.confirmation_contact,
-            confirmation_note=row.confirmation_note))
+            confirmation_note=row.confirmation_note,
+            reversed_by=row.reversed_by, reversed_at=row.reversed_at))
 
     canon = [
         CanonicalVendor(
@@ -123,7 +124,8 @@ def save_vendor_ledger(conn: Connection, tenant_id: str, ledger: VendorLedger) -
          "confirmed_at": d.confirmed_at,
          "confirmation_channel": d.confirmation_channel,
          "confirmation_contact": d.confirmation_contact,
-         "confirmation_note": d.confirmation_note}
+         "confirmation_note": d.confirmation_note,
+         "reversed_by": d.reversed_by, "reversed_at": d.reversed_at}
         for v in canon for d in v.payment_history]
     if detail_rows:
         conn.execute(payment_details.insert(), detail_rows)

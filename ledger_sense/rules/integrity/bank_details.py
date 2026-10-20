@@ -38,7 +38,10 @@ def assess_payment_detail(ledger: VendorLedger, vendor_id: str | None,
     10,000). An unconfirmed history entry is never the baseline."""
     vendor = ledger.get(vendor_id) if vendor_id is not None else None
     name = vendor.name if vendor is not None else "this vendor"
-    confirmed = [d for d in vendor.payment_history if d.confirmed_by] if vendor else []
+    # `ever` = every human-confirmed entry, reversed ones included (they were on
+    # file); `confirmed` = those still in force, the only possible baseline.
+    ever = [d for d in vendor.payment_history if d.confirmed_by] if vendor else []
+    confirmed = [d for d in ever if d.reversed_at is None]
     if not confirmed:
         return BankAssessment(
             "first_seen",
@@ -50,7 +53,8 @@ def assess_payment_detail(ledger: VendorLedger, vendor_id: str | None,
     current = confirmed[-1]
     if current.account_hmac == incoming.account_hmac:
         return None
-    came_back = any(d.account_hmac == incoming.account_hmac for d in confirmed[:-1])
+    came_back = any(d.account_hmac == incoming.account_hmac
+                    for d in ever if d.id != current.id)
     lead = (f"HARD STOP: payment details for {name} changed BACK to an account seen earlier"
             if came_back else
             f"HARD STOP: payment details for {name} differ from the record on file")
