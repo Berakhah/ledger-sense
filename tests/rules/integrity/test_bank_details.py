@@ -119,7 +119,8 @@ def test_no_full_account_number_is_ever_stored() -> None:
     assert set(PaymentDetail.model_fields) == {
         "id", "account_last4", "routing_last4", "account_hmac", "observed_at",
         "source_document", "confirmed_by", "confirmed_at",
-        "confirmation_channel", "confirmation_contact", "confirmation_note"}
+        "confirmation_channel", "confirmation_contact", "confirmation_note",
+        "reversed_by", "reversed_at"}
     for field in ("account_number", "routing_number", "iban", "account"):
         assert field not in PaymentDetail.model_fields
 
@@ -162,6 +163,49 @@ def test_a_change_back_to_a_previously_seen_account_is_still_surfaced(
     reverted = _incoming(account="4321")
     assert led.seen_before(vendor_id, reverted) is True
     assert [f.rule_id for f in check_payment_detail(led, vendor_id, reverted)] == ["I3"]
+
+
+def _undo(led: VendorLedger, doc: str) -> None:
+    found = led.find_payment_detail(doc)
+    assert found is not None
+    led.undo_payment_detail(found[0], found[1].id, reversed_by="B. Reviewer")
+
+
+def test_undoing_a_confirmation_restores_the_previous_baseline(
+        ledger: tuple[VendorLedger, str]) -> None:
+    """Undo keeps the reversed record as evidence, so the baseline must be
+    computed from the entries still in force, not from the last one stored."""
+    led, vendor_id = ledger
+    changed = _incoming(account="9999")
+    changed.source_document = "doc://second"
+    led.record_payment_detail(vendor_id, changed, confirmed_by="A. Bookkeeper")
+    assert check_payment_detail(led, vendor_id, _incoming(account="4321")) != []
+    _undo(led, "doc://second")
+    assert check_payment_detail(led, vendor_id, _incoming(account="4321")) == []
+
+
+def test_a_reversed_account_is_never_trusted_again_but_is_recognised(
+        ledger: tuple[VendorLedger, str]) -> None:
+    """A confirmed-then-reversed account was on file: coming back to it is the
+    change-back pattern, a hard stop, never a silent match."""
+    led, vendor_id = ledger
+    changed = _incoming(account="9999")
+    changed.source_document = "doc://second"
+    led.record_payment_detail(vendor_id, changed, confirmed_by="A. Bookkeeper")
+    _undo(led, "doc://second")
+    assessment = assess_payment_detail(led, vendor_id, _incoming(account="9999"))
+    assert assessment is not None
+    assert assessment.kind == "changed_back"
+    assert assessment.expected_last4 == "4321"
+
+
+def test_undoing_the_only_confirmation_makes_the_account_first_seen_again(
+        ledger: tuple[VendorLedger, str]) -> None:
+    led, vendor_id = ledger
+    _undo(led, "doc://original")
+    assessment = assess_payment_detail(led, vendor_id, _incoming(account="4321"))
+    assert assessment is not None
+    assert assessment.kind == "first_seen"
 
 
 def test_first_seen_details_are_a_hard_stop_too() -> None:
