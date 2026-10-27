@@ -24,10 +24,15 @@ from sqlalchemy.engine import Connection, Engine
 
 from ledger_sense.domain.models import Contract, PayApplication, RetainageTerms
 from ledger_sense.domain.money import RoundingPolicy, money
+from ledger_sense.domain.vendor import PaymentDetail, payment_hmac
 from ledger_sense.extract.assemble import assemble_pay_application
-from ledger_sense.extract.textlayer import has_text_layer
+from ledger_sense.extract.remit import extract_remit
+from ledger_sense.extract.textlayer import extract_words, has_text_layer
 from ledger_sense.ingest.classify import classify
 from ledger_sense.provenance import Claim, FileSource
+from ledger_sense.route.deps import calibration_store_from_environment
+from ledger_sense.route.labels import field_type_of
+from ledger_sense.route.router import Router
 from ledger_sense.rules.arithmetic import (  # noqa: F401 — @register runs on import
     foot,
     lines,
@@ -39,6 +44,7 @@ from ledger_sense.rules.engine import (
     run_rules,
     unverifiable_money_fields,
 )
+from ledger_sense.rules.integrity.bank_details import assess_payment_detail
 from ledger_sense.rules.integrity.vendors import check_vendor_resolution
 from ledger_sense.store.blobs import BlobStore, blob_store_from_environment
 from ledger_sense.store.documents import load_document
@@ -54,8 +60,10 @@ ROUNDING_POLICY_SOURCE = "tenant_default"
 NO_TEXT_LAYER_NOTE = "no text layer; scanned documents route to review until OCR routing ships"
 
 # A5/A6 are derived from the summary totals; if any total is unverifiable the
-# derivation is too, and neither has a claim of its own to box.
-_SUMMARY_DERIVED_RULES = frozenset({"A5", "A6"})
+# derivation is too, and neither has a claim of its own to box. A5b/A6b compare
+# a PRINTED total with that same derivation (LS-06), so a defaulted component
+# makes their expected value just as untrustworthy.
+_SUMMARY_DERIVED_RULES = frozenset({"A5", "A6", "A5b", "A6b"})
 _SUMMARY_FIELDS = frozenset({"total_completed_and_stored", "retainage_total",
                              "previous_payments", "change_orders_net"})
 # A1/A8 sum over `app.lines` and report on a summary field. `assemble` drops a
@@ -121,7 +129,8 @@ def _take_row(conn: Connection, document_id: str) -> RunOutcome | sa.Row[tuple[o
 
 
 def run_document(engine: Engine, document_id: str, *,
-                 blobs: BlobStore | None = None) -> RunOutcome:
+                 blobs: BlobStore | None = None,
+                 router: Router | None = None) -> RunOutcome:
     """Run one document. Safe to call again: a row that is not `received` or
     `failed`, or that carries a human decision, is left exactly as it was."""
     store = blobs if blobs is not None else blob_store_from_environment()
@@ -130,7 +139,7 @@ def run_document(engine: Engine, document_id: str, *,
             taken = _take_row(conn, document_id)
             if isinstance(taken, RunOutcome):
                 return taken
-            return _execute(conn, taken, store)
+            return _execute(conn, taken, store, router)
     except _RunFailure as failure:
         return _mark_failed(engine, document_id, failure.cause, failure.doc_type)
 
@@ -280,6 +289,109 @@ def _vendor_rows(conn: Connection, tenant_id: str, document_id: str,
     return rows
 
 
+def _payment_rows(conn: Connection, tenant_id: str, document_id: str, pdf: bytes,
+                  app: PayApplication, now: datetime) -> list[dict[str, object]]:
+    """I3, read-only like I2: the document's remit-to details against the
+    vendor ledger's last CONFIRMED detail. The full account and routing numbers
+    live only inside this frame — they are reduced to last-four plus HMAC at once
+    and never reach a claim, a finding, a log line or an exception message.
+
+    No bank block on the document means nothing to compare (no finding, no X0).
+    A block that is present but unreadable is an X0 on `payment_account`, never a
+    guess. A document with details is NEVER clean unless they equal the confirmed
+    baseline: first-seen and changed are both hard stops."""
+    result = extract_remit(extract_words(pdf))
+    base: dict[str, object] = {
+        "tenant_id": tenant_id, "document_id": document_id, "field": "payment_account",
+        "state": "open", "created_at": now}
+    if result.hit is None:
+        if result.problem is None:
+            return []
+        return [{**base, "id": uuid.uuid4().hex, "rule_id": "X0",
+                 "message": f"could not extract: {result.problem}",
+                 "expected": None, "actual": None,
+                 "page": None, "x0": None, "top": None, "x1": None, "bottom": None}]
+    hit = result.hit
+    incoming = PaymentDetail(
+        account_last4=hit.account[-4:], routing_last4=hit.routing[-4:],
+        account_hmac=payment_hmac(hit.account, hit.routing),
+        observed_at=now, source_document=document_id)
+    ledger = load_vendor_ledger(conn, tenant_id)
+    match = ledger.resolve(app.vendor_name) if app.vendor_name else None
+    # A fuzzy or tied match is a GUESS about who this is. Comparing against the
+    # guessed vendor's baseline could make the document look clean; with no
+    # vendor the assessment is first-seen until a reviewer confirms one (I2).
+    vendor_id = (None if match is None or match.needs_confirmation else match.vendor_id)
+    assessment = assess_payment_detail(ledger, vendor_id, incoming)
+    if assessment is None:
+        return []
+    return [{**base, "id": uuid.uuid4().hex, "rule_id": "I3", "message": assessment.message,
+             "expected": (None if assessment.expected_last4 is None
+                          else f"....{assessment.expected_last4}"),
+             "actual": f"....{assessment.actual_last4}",
+             "page": hit.page, "x0": hit.bbox.x0, "top": hit.bbox.top,
+             "x1": hit.bbox.x1, "bottom": hit.bbox.bottom}]
+
+
+def _router_or_none(router: Router | None) -> Router | None:
+    """The configured Router, or None when no calibration store exists --
+    which fails CLOSED: with nothing to calibrate against, every field routes
+    to review (CLAUDE.md, confidence routing)."""
+    if router is not None:
+        return router
+    try:
+        return Router(calibration_store_from_environment())
+    except RuntimeError:
+        return None
+
+
+def _predictor(claim: dict[str, object]) -> object:
+    """The score the Router is asked about must be the score review labels are
+    fitted on. Labels carry `match_quality` (api/review.py `_match_quality_for`)
+    because `Claim.confidence` is None for every deterministic extraction; a
+    NULL used to reach the Router as 0.0, so a fitted curve would have been
+    queried at the wrong point (LS-09 follow-up)."""
+    confidence = claim["confidence"]
+    return confidence if confidence is not None else claim["match_quality"]
+
+
+def _routing_rows(tenant_id: str, document_id: str, claim_rows: list[dict[str, object]],
+                  existing: list[dict[str, object]], router: Router | None,
+                  now: datetime) -> list[dict[str, object]]:
+    """R1: one open finding per extracted field the Router does not clear
+    for automatic acceptance. R2 is the same queue item for a field the
+    Router WOULD have accepted but held back as an audit sample. A field already under review for another
+    reason (X0, a rule, vendor resolution) is not queued twice. Because the
+    review queue and the writeback gate already count open findings, an
+    uncalibrated upload cannot reach posting without field review."""
+    covered = {str(f["field"]) for f in existing}
+    rows: list[dict[str, object]] = []
+    for claim in claim_rows:
+        field = str(claim["field"])
+        if field in covered:
+            continue
+        if router is None:
+            reason = "no calibration store is configured; every field routes to review"
+            rule_id = "R1"
+        else:
+            decision = router.decide_claim(
+                field_type_of(field), _predictor(claim), method=str(claim["method"]))
+            if decision.route == "auto":
+                continue
+            reason = f"{decision.calibration_state}: {decision.reason}"
+            rule_id = "R2" if decision.held_back_for_audit else "R1"
+        rows.append({
+            "id": uuid.uuid4().hex, "tenant_id": tenant_id, "document_id": document_id,
+            "rule_id": rule_id, "field": field,
+            "message": f"field not cleared for automatic acceptance ({reason})",
+            "expected": None, "actual": str(claim["value"]),
+            "page": claim["page"], "x0": claim["x0"], "top": claim["top"],
+            "x1": claim["x1"], "bottom": claim["bottom"],
+            "state": "open", "created_at": now,
+        })
+    return rows
+
+
 def _write(conn: Connection, row: sa.Row[tuple[object, ...]],
            claim_rows: list[dict[str, object]],
            finding_rows: list[dict[str, object]]) -> RunOutcome:
@@ -341,7 +453,8 @@ def _flag_duplicate(conn: Connection, row: sa.Row[tuple[object, ...]], twin: str
     return RunOutcome(document_id, "duplicate", note, 0, 1)
 
 
-def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore) -> RunOutcome:
+def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore,
+             router: Router | None = None) -> RunOutcome:
     document_id, tenant_id = str(row.id), str(row.tenant_id)
     twin = _earlier_twin(conn, row)
     if twin is not None:
@@ -366,6 +479,9 @@ def _execute(conn: Connection, row: sa.Row[tuple[object, ...]], store: BlobStore
         finding_rows = _x0_rows(tenant_id, document_id, app, now)
         finding_rows += _rule_rows(tenant_id, document_id, app, claim_rows, now)
         finding_rows += _vendor_rows(conn, tenant_id, document_id, app, claim_rows, now)
+        finding_rows += _payment_rows(conn, tenant_id, document_id, pdf, app, now)
+        finding_rows += _routing_rows(tenant_id, document_id, claim_rows, finding_rows,
+                                      _router_or_none(router), now)
     except Exception as exc:  # every document-level error becomes `failed`
         raise _RunFailure(exc, doc_type) from exc
     # Outside the try on purpose (spec §2 step 7's catch-all covers steps 3-5

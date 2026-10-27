@@ -22,22 +22,29 @@ coerced — the money path (Never-rule #2) never sees one.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, StrictStr, field_validator, model_validator
+from pydantic import BaseModel, Field, StrictStr, field_validator, model_validator
 
 from ledger_sense.api.deps import owned, require_session
 from ledger_sense.auth.session import Session
 from ledger_sense.boundary import Sensitivity
+from ledger_sense.domain.vendor import Attestation, PaymentDetail, VendorLedger, payment_hmac
+from ledger_sense.extract.remit import extract_remit
+from ledger_sense.extract.textlayer import extract_words
 from ledger_sense.provenance import Method
 from ledger_sense.review.actions import ReviewAction
-from ledger_sense.route.calibration import Basis
+from ledger_sense.route.calibration import LabelBasis
 from ledger_sense.route.deps import calibration_store_from_environment
 from ledger_sense.route.labels import labels_from_action
+from ledger_sense.rules.integrity.bank_details import BankAssessment, assess_payment_detail
+from ledger_sense.store.blobs import blob_store_from_environment
+from ledger_sense.store.documents import DocumentNotFound, load_document
 from ledger_sense.store.retention import claims, documents, findings
 from ledger_sense.store.session import app_engine
 from ledger_sense.store.vendors import (
@@ -53,6 +60,77 @@ router = APIRouter(prefix="/api/review")
 CurrentSession = Annotated[Session, Depends(require_session)]
 
 ExceptionState = Literal["open", "accepted", "edited", "rejected", "confirmed"]
+
+_BANK_FIELD = "payment_account"
+
+
+def _refuse_bank_clearing(row: sa.Row[Any], *, action: str) -> None:
+    """Never-rule 6. The I3 hard stop is cleared by ONE action, confirm-bank-change,
+    which records who verified the details and how. accept/edit would write a
+    claim carrying an account number; reject would dismiss the stop with a
+    sentence. An X0 on the bank field (details present but unreadable) may still
+    be rejected with a stated reason — there is no detail to attest."""
+    if row.rule_id == "I3" or (row.field == _BANK_FIELD and action != "reject"):
+        raise HTTPException(
+            status_code=422,
+            detail="bank-detail exceptions are cleared only by confirm-bank-change")
+
+
+class ConfirmBankChangeBody(BaseModel):
+    channel: Literal["phone", "in_person", "video_call", "other"]
+    contact: StrictStr = Field(max_length=200)
+    note: StrictStr | None = Field(default=None, max_length=2000)
+
+    @field_validator("contact")
+    @classmethod
+    def _named(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("an attestation must name who was spoken to")
+        return value
+
+
+def _vendor_for_bank_confirmation(conn: sa.Connection, ledger: VendorLedger,
+                                  row: sa.Row[Any]) -> str:
+    """The vendor whose bank details this document asserts: the one a reviewer
+    confirmed (documents.vendor_id), else an EXACT, unambiguous ledger match.
+    Never a fuzzy guess — confirming bank details against the wrong vendor is the
+    attack this control exists to stop."""
+    confirmed = conn.execute(
+        sa.select(documents.c.vendor_id).where(documents.c.id == row.document_id)
+    ).scalar_one()
+    if confirmed is not None:
+        return str(confirmed)
+    observed = _observed_vendor_name(conn, row.document_id)
+    if observed is not None:
+        match = ledger.resolve(observed)
+        if match.vendor_id is not None and not match.needs_confirmation:
+            return match.vendor_id
+    raise HTTPException(status_code=409,
+                        detail="confirm the vendor (I2) before confirming its bank details")
+
+
+def _reextract_detail(conn: sa.Connection, row: sa.Row[Any], session: Session) -> PaymentDetail:
+    """Re-read the detail from the stored document instead of keeping a pending
+    one anywhere: there is then no unconfirmed row to leak into the baseline, and
+    what is confirmed is provably what the document says (its last four must
+    match the finding the reviewer is looking at)."""
+    try:
+        pdf = load_document(conn, tenant_id=session.tenant_id, document_id=row.document_id,
+                            blobs=blob_store_from_environment()).payload
+    except DocumentNotFound:
+        raise HTTPException(
+            status_code=409,
+            detail="the stored document is no longer available; the bank details cannot be re-read",
+        ) from None
+    hit = extract_remit(extract_words(pdf)).hit
+    if hit is None or f"....{hit.account[-4:]}" != row.actual:
+        raise HTTPException(status_code=409,
+                            detail="the document no longer matches this exception; re-run it")
+    return PaymentDetail(
+        account_last4=hit.account[-4:], routing_last4=hit.routing[-4:],
+        account_hmac=payment_hmac(hit.account, hit.routing),
+        observed_at=datetime.now(UTC), source_document=row.document_id)
+
 
 _NO_GEOMETRY_DETAIL = (
     "this exception has no located geometry; accept/edit needs a confirmed "
@@ -101,6 +179,15 @@ class VendorCandidate(BaseModel):
 class VendorMatch(BaseModel):
     observed_name: str
     candidate: VendorCandidate | None
+
+
+class BankChangeView(BaseModel):
+    """What the review panel shows for an I3 hard stop. Last four digits only:
+    the full number and the HMAC never leave the server."""
+    vendor_name: str
+    kind: Literal["first_seen", "changed", "changed_back"]
+    previous_last4: str | None
+    incoming_last4: str
 
 
 class ConfirmVendorBody(BaseModel):
@@ -162,6 +249,19 @@ def _require_confirmed(row: sa.Row[Any]) -> None:
                             detail=f"exception is {row.state}, not confirmed")
 
 
+def _require_baseline_unmoved(row: sa.Row[Any], assessment: BankAssessment) -> None:
+    """Shared by the bank-change GET and confirm-bank-change: a detail that now
+    differs from the vendor's confirmed account is a change, not the first
+    sighting the finding showed, so neither the panel nor confirm may proceed."""
+    shown = (row.expected or "").removeprefix("....") or None
+    if assessment.kind != "first_seen" and assessment.expected_last4 != shown:
+        raise HTTPException(
+            status_code=409,
+            detail=("bank details differ from the vendor's confirmed account; this is a "
+                    "change, not a first sighting - re-ingest the document so it is "
+                    "assessed against that vendor"))
+
+
 def _transition(conn: sa.Connection, exc_id: str, from_state: ExceptionState,
                 new_state: ExceptionState, **extra: object) -> None:
     """The compare-and-swap: the UPDATE's own WHERE state=from_state is the
@@ -204,6 +304,32 @@ def _value_type_for(conn: sa.Connection, document_id: str, field: str) -> str:
     return row.value_type if row is not None else "str"
 
 
+_MONEY_EDIT = re.compile(r"-?\d{1,15}(\.\d{1,2})?")
+_INT_EDIT = re.compile(r"-?\d{1,15}")
+
+
+def _validate_edit_value(value_type: str, value: str) -> None:
+    """LS-05: an edit is typed by the claim it judges, and must parse as that
+    type BEFORE the finding is closed. Otherwise a reviewer's `not money` is
+    stored as the effective value and writeback later fails on
+    InvalidOperation. Money is plain decimal notation, at most two places:
+    `money()` itself accepts NaN, Infinity and exponents, so it cannot be the
+    gate. `str` claims are free text and unchanged."""
+    ok = True
+    if value_type == "money":
+        ok = _MONEY_EDIT.fullmatch(value) is not None
+    elif value_type == "int":
+        ok = _INT_EDIT.fullmatch(value) is not None
+    elif value_type == "date":
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            ok = False
+    if not ok:
+        raise HTTPException(status_code=422,
+                            detail=f"{value!r} is not a valid {value_type} value")
+
+
 def _match_quality_for(conn: sa.Connection, document_id: str, field: str) -> float | None:
     """The extraction's own quality score for the value a reviewer is now
     judging — the prior DETERMINISTIC claim for this (document_id, field),
@@ -234,15 +360,19 @@ def _observed_vendor_name(conn: sa.Connection, document_id: str) -> str | None:
     return None if row is None else row.value
 
 
-def _basis_for(conn: sa.Connection, document_id: str) -> Basis:
+def _basis_for(conn: sa.Connection, document_id: str, rule_id: str) -> LabelBasis:
     """Derived from the source document's own sensitivity label, never from a
     caller-supplied value — F-49/Never-rule #1's spirit applied to labels: no
     route may exist by which a synthetic review session gets recorded as
-    field evidence."""
+    field evidence. An R2 finding is an audit sample of a field the Router
+    would have auto-accepted: on a real document its verdict is `audit`
+    evidence, the only signal that can reveal drift (route/router.py)."""
     sensitivity = conn.execute(
         sa.select(documents.c.sensitivity).where(documents.c.id == document_id)
     ).scalar_one()
-    return "synthetic" if sensitivity == Sensitivity.SYNTHETIC.value else "field"
+    if sensitivity == Sensitivity.SYNTHETIC.value:
+        return "synthetic"
+    return "audit" if rule_id == "R2" else "field"
 
 
 def _record_label(conn: sa.Connection, row: sa.Row[Any], *, kind: str, claim_id: str,
@@ -260,7 +390,7 @@ def _record_label(conn: sa.Connection, row: sa.Row[Any], *, kind: str, claim_id:
     action = ReviewAction(kind=kind, field=row.field, claim_id=claim_id,
                           predicted_confidence=match_quality, actor=session.user_id,
                           at=datetime.now(UTC))
-    labels = labels_from_action(action, basis=_basis_for(conn, row.document_id))
+    labels = labels_from_action(action, basis=_basis_for(conn, row.document_id, row.rule_id))
     if labels:
         calibration_store_from_environment().add_labels(labels)
 
@@ -299,6 +429,7 @@ def accept(exc_id: str, session: CurrentSession) -> dict[str, str | None]:
     with app_engine().begin() as conn:
         row = _get_finding(exc_id, session, conn)
         _require_open(row)
+        _refuse_bank_clearing(row, action="accept")
         if _bbox(row) is None:
             raise HTTPException(status_code=422, detail=_NO_GEOMETRY_DETAIL)
         if row.actual is None:
@@ -318,10 +449,12 @@ def edit(exc_id: str, body: EditBody, session: CurrentSession) -> dict[str, str 
     with app_engine().begin() as conn:
         row = _get_finding(exc_id, session, conn)
         _require_open(row)
+        _refuse_bank_clearing(row, action="edit")
         if _bbox(row) is None:
             raise HTTPException(status_code=422, detail=_NO_GEOMETRY_DETAIL)
-        _close(conn, exc_id, "edited")
         value_type = _value_type_for(conn, row.document_id, row.field)
+        _validate_edit_value(value_type, body.value)
+        _close(conn, exc_id, "edited")
         match_quality = _match_quality_for(conn, row.document_id, row.field)
         claim_id = _write_claim(conn, row, value=body.value, value_type=value_type,
                                 session=session)
@@ -335,6 +468,7 @@ def reject(exc_id: str, body: RejectBody, session: CurrentSession) -> dict[str, 
     with app_engine().begin() as conn:
         row = _get_finding(exc_id, session, conn)
         _require_open(row)
+        _refuse_bank_clearing(row, action="reject")
         _close(conn, exc_id, "rejected", reason=body.reason)
     return {"status": "rejected", "claim_id": None}
 
@@ -367,6 +501,36 @@ def vendor_match(exc_id: str, session: CurrentSession) -> VendorMatch:
             candidate = VendorCandidate(vendor_id=match.vendor_id, name=canonical.name,
                                         score=match.score)
     return VendorMatch(observed_name=observed_name, candidate=candidate)
+
+
+@router.get("/exceptions/{exc_id}/bank-change")
+def bank_change(exc_id: str, session: CurrentSession) -> BankChangeView:
+    """What the I3 hard stop is about, for the review panel: the vendor, whether
+    this is a first sighting or a change, and the last four digits either side.
+    Re-assessed against the ledger exactly as confirm-bank-change will, so the
+    panel shows what confirm will accept. Read-only: no write lock, nothing
+    persisted."""
+    with app_engine().connect() as conn:
+        row = _get_finding(exc_id, session, conn)
+        if row.rule_id != "I3":
+            raise HTTPException(status_code=422,
+                                detail="bank-change only applies to an I3 exception")
+        _require_open(row)
+        ledger = load_vendor_ledger(conn, session.tenant_id)
+        vendor_id = _vendor_for_bank_confirmation(conn, ledger, row)
+        detail = _reextract_detail(conn, row, session)
+        assessment = assess_payment_detail(ledger, vendor_id, detail)
+        if assessment is None:
+            raise HTTPException(
+                status_code=409,
+                detail="the vendor's confirmed account now matches this document; "
+                       "re-run the document to refresh this exception")
+        _require_baseline_unmoved(row, assessment)
+        vendor = ledger.get(vendor_id)
+        assert vendor is not None  # _vendor_for_bank_confirmation returned a ledger id
+    return BankChangeView(vendor_name=vendor.name, kind=assessment.kind,
+                          previous_last4=assessment.expected_last4,
+                          incoming_last4=detail.account_last4)
 
 
 @router.post("/exceptions/{exc_id}/confirm-vendor")
@@ -417,6 +581,9 @@ def undo_confirm_vendor(exc_id: str, session: CurrentSession) -> dict[str, str |
     with app_engine().begin() as conn:
         row = _get_finding(exc_id, session, conn)
         _require_confirmed(row)
+        if row.rule_id != "I2":
+            raise HTTPException(status_code=422,
+                                detail="undo-confirm-vendor only applies to an I2 exception")
 
         # The lock must be acquired BEFORE anything this transaction reads is
         # trusted: two concurrent undo calls can both pass _require_confirmed
@@ -425,6 +592,17 @@ def undo_confirm_vendor(exc_id: str, session: CurrentSession) -> dict[str, str |
         # below are re-derived fresh once this transaction actually holds the
         # tenant's lock, not from any state read before it.
         ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
+
+        bank_confirmed = conn.execute(
+            sa.select(findings.c.id).where(
+                findings.c.document_id == row.document_id,
+                findings.c.tenant_id == session.tenant_id,
+                findings.c.rule_id == "I3", findings.c.state == "confirmed")
+        ).first()
+        if bank_confirmed is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="undo the bank-detail confirmation (I3) for this document first")
 
         doc_row = conn.execute(
             sa.select(documents.c.vendor_id).where(documents.c.id == row.document_id)
@@ -442,6 +620,57 @@ def undo_confirm_vendor(exc_id: str, session: CurrentSession) -> dict[str, str |
 
         conn.execute(documents.update().where(documents.c.id == row.document_id)
                      .values(vendor_id=None))
+        _transition(conn, exc_id, "confirmed", "open")
+    return {"status": "open"}
+
+
+@router.post("/exceptions/{exc_id}/confirm-bank-change")
+def confirm_bank_change(exc_id: str, body: ConfirmBankChangeBody,
+                        session: CurrentSession) -> dict[str, str | None]:
+    """The ONLY way to clear I3 (Never-rule 6). Records the detail the document
+    carries, with the reviewer as confirmer and their attestation as evidence."""
+    with app_engine().begin() as conn:
+        row = _get_finding(exc_id, session, conn)
+        _require_open(row)
+        if row.rule_id != "I3":
+            raise HTTPException(status_code=422,
+                                detail="confirm-bank-change only applies to an I3 exception")
+        ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
+        vendor_id = _vendor_for_bank_confirmation(conn, ledger, row)
+        detail = _reextract_detail(conn, row, session)
+        # The finding was assessed when the document ran; the baseline may have
+        # moved since. Re-assess under the lock: a detail that now differs from
+        # the vendor's confirmed account is a change, not the first sighting the
+        # reviewer was shown, and must not silently replace or join the baseline.
+        assessment = assess_payment_detail(ledger, vendor_id, detail)
+        if assessment is not None:
+            _require_baseline_unmoved(row, assessment)
+        ledger.record_payment_detail(
+            vendor_id, detail, confirmed_by=session.user_id,
+            attestation=Attestation(channel=body.channel, contact=body.contact,
+                                    note=body.note))
+        save_vendor_ledger(conn, session.tenant_id, ledger)
+        _close(conn, exc_id, "confirmed")
+    return {"status": "confirmed", "vendor_id": vendor_id}
+
+
+@router.post("/exceptions/{exc_id}/undo-confirm-bank-change")
+def undo_confirm_bank_change(exc_id: str, session: CurrentSession) -> dict[str, str | None]:
+    """Reverses confirm_bank_change: removes the recorded detail by identity,
+    restoring the previous baseline, and reopens the hard stop. No time limit — a
+    wrong confirmation may only surface on a later audit."""
+    with app_engine().begin() as conn:
+        row = _get_finding(exc_id, session, conn)
+        _require_confirmed(row)
+        if row.rule_id != "I3":
+            raise HTTPException(status_code=422,
+                                detail="undo-confirm-bank-change only applies to an I3 exception")
+        ledger = load_vendor_ledger_for_update(conn, session.tenant_id)
+        found = ledger.find_payment_detail(row.document_id)
+        if found is None:
+            raise HTTPException(status_code=409, detail="exception already actioned")
+        ledger.undo_payment_detail(found[0], found[1].id, reversed_by=session.user_id)
+        save_vendor_ledger(conn, session.tenant_id, ledger)
         _transition(conn, exc_id, "confirmed", "open")
     return {"status": "open"}
 

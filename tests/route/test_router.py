@@ -154,8 +154,8 @@ _EXTRACT_FLOAT_ALLOWLIST: frozenset[tuple[str, int, float]] = frozenset({
     ("ledger_sense/extract/anchors.py", 27, 20.0),  # BELOW_X_SLACK_PT
     # tables.py: row/column banding tolerances for grid reconstruction, not
     # a confidence score.
-    ("ledger_sense/extract/tables.py", 27, 6.0),    # ROW_BAND_PT
-    ("ledger_sense/extract/tables.py", 28, 4.0),    # COLUMN_SLACK_PT
+    ("ledger_sense/extract/tables.py", 28, 6.0),    # ROW_BAND_PT
+    ("ledger_sense/extract/tables.py", 29, 4.0),    # COLUMN_SLACK_PT
     # anchors.py: I3 (final whole-branch review) -- max inter-word gap for
     # _value_after_label_merged's same-band collection, not a confidence score.
     ("ledger_sense/extract/anchors.py", 37, 15.0),  # MAX_MERGE_GAP_PT
@@ -244,3 +244,26 @@ def test_audit_labels_never_promote_a_synthetic_curve(store: CalibrationStore) -
     """
     labels = _labels([(0.99, True)] * 2200, basis="audit")
     assert CalibrationCurve.fit(labels).state == "calibrated:field"
+
+
+def test_the_audit_holdback_counter_survives_a_new_router_and_a_new_connection(
+        tmp_path: Path) -> None:
+    """LS-09: the runner builds a Router per document, so an in-memory counter
+    restarts at zero every run and a 1-in-N hold-back never reaches N. The
+    count must live in the store."""
+    path = tmp_path / "calibration.db"
+    CalibrationStore(path).save_curve(_curve("field", [(0.99, True)] * 2200))
+    routes = []
+    for _ in range(4):  # a fresh store connection and Router each time, as the runner does
+        router = Router(CalibrationStore(path), audit_fraction=0.25)
+        routes.append(router.decide("retainage_rate", confidence=0.999).route)
+    assert routes == ["auto", "auto", "auto", "review"]
+
+
+def test_only_a_held_back_decision_is_marked_as_an_audit_sample() -> None:
+    store = CalibrationStore(pathlib.Path(":memory:"))
+    store.save_curve(_curve("field", [(0.99, True)] * 2200))
+    held = Router(store, audit_fraction=1.0).decide("retainage_rate", confidence=0.999)
+    assert held.route == "review" and held.held_back_for_audit is True
+    low = Router(store, audit_fraction=0.0).decide("retainage_rate", confidence=0.1)
+    assert low.route == "review" and low.held_back_for_audit is False

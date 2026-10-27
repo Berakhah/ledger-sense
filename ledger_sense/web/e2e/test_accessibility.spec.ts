@@ -168,9 +168,37 @@ test('the document pane scrolls internally so the page does not, at 375px', asyn
   await page.setViewportSize({ width: 375, height: 812 })
   await page.goto(`/review/${docId}`)
   await expect(page.getByTestId('document-pane')).toBeVisible()
-  expect(
-    await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth),
-  ).toBe(false)
+  // On failure, name the elements poking past the viewport instead of a bare
+  // true/false, so a Linux-only overflow (font metrics, scrollbar width) can
+  // be diagnosed from the CI log alone.
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+    // Box past the viewport, or content (text, children) spilling out of a box
+    // that does not clip it: the second kind has a harmless-looking rect.
+    offenders: Array.from(document.querySelectorAll('html, body, body *'))
+      .filter((el) => {
+        const box = el.getBoundingClientRect()
+        const clips = getComputedStyle(el).overflowX !== 'visible'
+        return (
+          box.right > window.innerWidth + 0.5 ||
+          (!clips && box.left + el.scrollWidth > window.innerWidth + 0.5)
+        )
+      })
+      .slice(0, 12)
+      .map((el) => {
+        const box = el.getBoundingClientRect()
+        const cs = getComputedStyle(el)
+        return `${el.tagName.toLowerCase()}[${el.getAttribute('data-testid') ?? ''}].${String(el.className).slice(0, 60)} right=${Math.round(box.right)} width=${Math.round(box.width)} scrollW=${el.scrollWidth} clientW=${el.clientWidth} pos=${cs.position} ovx=${cs.overflowX}`
+      }),
+    pseudo: (['body', 'html'] as const).map((tag) => {
+      const before = getComputedStyle(document.querySelector(tag)!, '::before')
+      return `${tag}::before pos=${before.position} inset=${before.inset}`
+    }),
+  }))
+  expect(overflow.scrollWidth, JSON.stringify(overflow, null, 1)).toBeLessThanOrEqual(
+    overflow.innerWidth,
+  )
   expect(
     await page
       .getByTestId('document-pane')

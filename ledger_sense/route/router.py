@@ -41,6 +41,7 @@ class RoutingDecision:
     threshold: float | None
     calibrated_confidence: float | None
     reason: str
+    held_back_for_audit: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -59,17 +60,16 @@ class _AuditHoldBackSampler:
     exact (the very first call is held back) rather than merely likely.
     """
 
-    def __init__(self, fraction: float) -> None:
+    def __init__(self, fraction: float, store: CalibrationStore) -> None:
         self._fraction = fraction
-        self._calls: dict[str, int] = {}
+        self._store = store
 
     def should_hold_back(self, field: str) -> bool:
         if self._fraction <= 0.0:
             return False
         if self._fraction >= 1.0:
             return True
-        n = self._calls.get(field, 0) + 1
-        self._calls[field] = n
+        n = self._store.next_holdback_count(field)
         interval = round(1.0 / self._fraction)
         return n % interval == 0
 
@@ -81,7 +81,7 @@ class Router:
         self._store = store
         self._target = target_accuracy
         self._audit_fraction = audit_fraction
-        self._audit_sampler = _AuditHoldBackSampler(audit_fraction)
+        self._audit_sampler = _AuditHoldBackSampler(audit_fraction, store)
 
     def decide(self, field: str, confidence: float, *,
                method: str = "DETERMINISTIC",
@@ -101,7 +101,7 @@ class Router:
                                     "rule failures block auto-posting: "
                                     f"{', '.join(rule_failures)}")
 
-        if method != "DETERMINISTIC":
+        if method.upper() != "DETERMINISTIC":
             return RoutingDecision(field, "review", curve.state, curve.basis, threshold,
                                     calibrated,
                                     f"claim method is {method}; only DETERMINISTIC "
@@ -136,12 +136,22 @@ class Router:
             return RoutingDecision(field, "review", curve.state, curve.basis, threshold,
                                     calibrated,
                                     f"held back for audit ({self._audit_fraction:.0%} "
-                                    "of auto-eligible fields) so drift stays visible")
+                                    "of auto-eligible fields) so drift stays visible",
+                                    held_back_for_audit=True)
 
         return RoutingDecision(field, "auto", curve.state, curve.basis, threshold,
                                 calibrated,
                                 f"confidence {confidence:.3f} at or above "
                                 f"field-calibrated threshold {threshold:.3f}")
+
+    def decide_claim(self, field: str, confidence: object, *,
+                     method: str = "DETERMINISTIC",
+                     rule_failures: Sequence[str] = ()) -> RoutingDecision:
+        """`decide` for a stored claim, whose confidence column may be NULL.
+        A missing or non-numeric confidence is the lowest confidence, so it
+        can never clear a threshold."""
+        score = float(confidence) if isinstance(confidence, (int, float)) else 0.0
+        return self.decide(field, score, method=method, rule_failures=rule_failures)
 
     def withdraw_if_drifted(self, field: str) -> bool:
         """Refit on audit labels; withdraw the threshold if it can no longer

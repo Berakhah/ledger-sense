@@ -268,6 +268,62 @@ def test_reverse_a_remote_id_belonging_to_a_different_document_same_tenant_is_40
     assert response.status_code == 404, response.text
 
 
+def test_reverse_with_another_documents_idempotency_key_is_refused_and_deletes_nothing(
+        two_tenants: tuple[TenantClient, TenantClient], tmp_path: Path) -> None:
+    """LS-01. The ownership check covers `remote_id`, but the export adapter
+    deletes by `idempotency_key`. A caller who owns document A must not be able
+    to pair A's remote_id with B's key and delete B's export. The key to reverse
+    is the one recorded by the audited write for that remote_id, never the
+    caller's."""
+    alice, bob = two_tenants
+    doc_a = alice.seed_postable_document()
+    doc_b = bob.seed_postable_document(content_sha256="def456")
+    posted_a = alice.post_json(f"/api/writeback/documents/{doc_a}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"}).json()
+    posted_b = bob.post_json(f"/api/writeback/documents/{doc_b}/post",
+                             {"adapter": "export", "vendor_ref": "V-9"}).json()
+    assert posted_a["idempotency_key"] != posted_b["idempotency_key"]
+
+    export_file = next((tmp_path / "writeback").rglob("*.csv"))
+    rows_before = export_file.read_text(encoding="utf-8")
+
+    response = alice.post_json(f"/api/writeback/documents/{doc_a}/reverse",
+                               {"adapter": "export", "remote_id": posted_a["remote_id"],
+                                "idempotency_key": posted_b["idempotency_key"]})
+
+    assert response.status_code == 422, response.text
+    assert export_file.read_text(encoding="utf-8") == rows_before
+    assert bob.get(f"/api/writeback/documents/{doc_b}/status").json()["state"] == "posted"
+    assert alice.get(f"/api/writeback/documents/{doc_a}/status").json()["state"] == "posted"
+
+
+def test_identical_documents_in_two_tenants_are_posted_and_reversed_independently(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-02. Both tenants' documents have the same content hash, contract and
+    application number. The key, the audit lookups and the export must all be
+    tenant-scoped: Bob's post is not a replay of Alice's, and Alice reversing
+    hers neither fails nor touches Bob's."""
+    alice, bob = two_tenants
+    doc_a = alice.seed_postable_document()
+    doc_b = bob.seed_postable_document()
+    body: dict[str, object] = {"adapter": "export", "vendor_ref": "V-9"}
+
+    posted_a = alice.post_json(f"/api/writeback/documents/{doc_a}/post", body).json()
+    posted_b = bob.post_json(f"/api/writeback/documents/{doc_b}/post", body).json()
+
+    assert posted_a["was_replay"] is False
+    assert posted_b["was_replay"] is False
+    assert posted_a["remote_id"] != posted_b["remote_id"]
+
+    response = alice.post_json(f"/api/writeback/documents/{doc_a}/reverse",
+                               {"adapter": "export", "remote_id": posted_a["remote_id"],
+                                "idempotency_key": posted_a["idempotency_key"]})
+    assert response.status_code == 200, response.text
+    assert alice.get(f"/api/writeback/documents/{doc_a}/status").json()["state"] == "not_posted"
+    assert bob.get(f"/api/writeback/documents/{doc_b}/status").json() == {
+        "state": "posted", "remote_id": posted_b["remote_id"]}
+
+
 def test_reverse_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
         two_tenants: tuple[TenantClient, TenantClient], monkeypatch: pytest.MonkeyPatch) -> None:
     """Final whole-branch review, I-2. `reverse()` used to catch only
@@ -329,3 +385,95 @@ def test_post_maps_qbo_rejected_to_502_without_leaking_the_provider_body(
                                {"adapter": "qbo", "vendor_ref": "V-9"})
     assert response.status_code == 502, response.text
     assert "CLIENT_CONFIDENTIAL" not in response.text
+
+
+def test_preview_shows_the_write_amount_beside_the_expected_payable(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-04. The seeded document writes 500.00 (its one line's this_period)
+    while completed 1000.00 less retainage 50.00 less previous 0.00 is 950.00.
+    The preview exposes both and says they do not reconcile; it writes nothing."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    response = alice.get(f"/api/writeback/documents/{doc_id}/preview")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "amount_to_write": "500.00", "total_completed_and_stored": "1000.00",
+        "retainage_total": "50.00", "previous_payments": "0.00",
+        "expected_payable": "950.00", "difference": "-450.00", "reconciles": False}
+    assert alice.get(f"/api/writeback/documents/{doc_id}/status").json()["state"] == "not_posted"
+
+
+def test_preview_on_a_cross_tenant_document_is_404(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    assert bob.get(f"/api/writeback/documents/{doc_id}/preview").status_code == 404
+
+
+def test_preview_on_a_document_with_no_claims_is_422(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, _bob = two_tenants
+    doc_id = alice.seed_unrun_document()
+    assert alice.get(f"/api/writeback/documents/{doc_id}/preview").status_code == 422
+
+
+# --- LS-05: what counts as cleared for writeback ---------------------------------
+
+
+def test_post_accepts_an_extracted_document_that_raised_no_exceptions(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-05. A clean document has zero findings. That is a successful run, not
+    'never run': the gate must read the document's own run status."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document(with_finding=False)
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 200, response.text
+
+
+def test_post_refuses_a_document_whose_extraction_did_not_succeed(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document(with_finding=False)
+    with store_session.app_engine().begin() as conn:
+        conn.execute(sa.text("UPDATE documents SET status = 'cannot_extract' WHERE id = :i"),
+                     {"i": doc_id})
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 422, response.text
+    assert "cannot_extract" in response.json()["detail"]
+
+
+def test_post_refuses_a_document_with_a_rejected_exception(
+        two_tenants: tuple[TenantClient, TenantClient]) -> None:
+    """LS-05. Rejecting a finding is not approval to pay: it must not count as
+    cleared."""
+    alice, _bob = two_tenants
+    doc_id = alice.seed_postable_document()
+    with store_session.app_engine().begin() as conn:
+        conn.execute(sa.text("UPDATE findings SET state = 'rejected', reason = 'wrong' "
+                             "WHERE document_id = :i"), {"i": doc_id})
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 422, response.text
+    assert "rejected" in response.json()["detail"]
+
+
+# --- LS-09: an uncalibrated upload cannot reach posting without field review ----
+
+def test_a_clean_uncalibrated_upload_cannot_be_posted_before_its_fields_are_reviewed(
+    two_tenants: tuple[TenantClient, TenantClient],
+) -> None:
+    from ledger_sense.corpus.generate import generate
+    from tests.api.test_inbox import _register_vendor, _upload
+
+    alice, _bob = two_tenants
+    _, app, pdf = generate(seed=1, error="clean")
+    assert app.vendor_name is not None
+    _register_vendor(alice, app.vendor_name)
+    doc_id = _upload(alice, pdf).json()["id"]
+
+    response = alice.post_json(f"/api/writeback/documents/{doc_id}/post",
+                               {"adapter": "export", "vendor_ref": "V-9"})
+    assert response.status_code == 422, response.text
+    assert "open" in response.json()["detail"]

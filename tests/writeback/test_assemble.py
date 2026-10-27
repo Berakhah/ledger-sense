@@ -58,7 +58,7 @@ def test_derive_idempotency_key_matches_build_idempotency_key(tenant_id: str) ->
         _insert_claim(conn, tenant_id, document_id, field="application_no",
                       value="2", value_type="int")
         key = derive_idempotency_key(conn, document_id=document_id)
-    assert key == build_idempotency_key("abc123", "C-1", 2)
+    assert key == build_idempotency_key("abc123", "C-1", 2, tenant_id=tenant_id)
 
 
 def test_derive_idempotency_key_is_stable_across_two_calls(tenant_id: str) -> None:
@@ -107,7 +107,7 @@ def test_derive_idempotency_key_picks_the_latest_claim_for_a_field(tenant_id: st
         _insert_claim(conn, tenant_id, document_id, field="application_no",
                       value="2", value_type="int")
         key = derive_idempotency_key(conn, document_id=document_id)
-    assert key == build_idempotency_key("abc123", "C-CORRECT", 2)
+    assert key == build_idempotency_key("abc123", "C-CORRECT", 2, tenant_id=tenant_id)
 
 
 _TOP_LEVEL_MONEY_FIELDS = ("total_completed_and_stored", "retainage_total",
@@ -149,7 +149,7 @@ def test_build_write_request_assembles_a_complete_request(tenant_id: str, monkey
     assert line.description == "Sitework"
     assert line.amount == money("500.00")
     assert line.account_ref == "54"
-    assert request.idempotency_key == build_idempotency_key("abc123", "C-1", 2)
+    assert request.idempotency_key == build_idempotency_key("abc123", "C-1", 2, tenant_id=tenant_id)
 
 
 def test_build_write_request_picks_the_latest_claim_for_a_line(tenant_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
