@@ -56,7 +56,10 @@ def _assert_migration_builds_the_schema_the_code_queries() -> None:
 
         command.downgrade(config, "base")
         left = set(sa.inspect(store_session.app_engine()).get_table_names())
-        assert left - {"alembic_version"} == set()
+        # stub_resources is created by the API test fixtures on the same
+        # database (api/_stub_routes.py: "never by a migration"), so it can
+        # legitimately be present depending on test order.
+        assert left - {"alembic_version", "stub_resources"} == set()
     finally:
         store_session.reset_app_engine()
 
