@@ -32,6 +32,10 @@ from ledger_sense.corpus.layouts import (
     HEADER_Y_PT,
     PAGE_HEIGHT_PT,
     PAGE_WIDTH_PT,
+    REMIT_FIELDS,
+    REMIT_LABEL_X_PT,
+    REMIT_TOP_PT,
+    REMIT_VALUE_X_PT,
     ROW_HEIGHT_PT,
     SUMMARY_FIELDS,
     SUMMARY_LABEL_X_PT,
@@ -40,6 +44,7 @@ from ledger_sense.corpus.layouts import (
     SUMMARY_VALUE_X_PT,
     columns_for,
 )
+from ledger_sense.corpus.remit import Remit
 from ledger_sense.domain.models import (
     ContinuationLine,
     Contract,
@@ -156,13 +161,21 @@ def _summary_values(app: PayApplication, contract: Contract) -> dict[str, Money]
         "adjusted_contract_sum": app.adjusted_contract_sum(contract),
         "total_completed_and_stored": app.total_completed_and_stored,
         "retainage_total": app.retainage_total,
-        "total_earned_less_retainage": earned,
+        # A model that carries a REPORTED total prints it, so an error class can
+        # render a figure the components do not support (LS-06); otherwise the
+        # chain's own value is printed.
+        "total_earned_less_retainage": (app.reported_total_earned_less_retainage
+                                        if app.reported_total_earned_less_retainage is not None
+                                        else earned),
         "previous_payments": app.previous_payments,
-        "current_payment_due": money(earned - app.previous_payments),
+        "current_payment_due": (app.reported_current_payment_due
+                                if app.reported_current_payment_due is not None
+                                else money(earned - app.previous_payments)),
     }
 
 
-def _render(app: PayApplication, contract: Contract, layout: str) -> bytes:
+def _render(app: PayApplication, contract: Contract, layout: str,
+            remit: Remit | None = None) -> bytes:
     """Render OUR layout with a real text layer. Extraction depends on the text
     layer existing — a scanned-only corpus would be useless.
 
@@ -176,13 +189,13 @@ def _render(app: PayApplication, contract: Contract, layout: str) -> bytes:
     with PDFIUM_LOCK:
         pdf = pdfium.PdfDocument.new()
         try:
-            return _render_into(pdf, app, contract, layout)
+            return _render_into(pdf, app, contract, layout, remit)
         finally:
             pdf.close()  # inside the lock, not left to a finaliser on another thread
 
 
 def _render_into(pdf: pdfium.PdfDocument, app: PayApplication, contract: Contract,
-                 layout: str) -> bytes:
+                 layout: str, remit: Remit | None) -> bytes:
     columns = columns_for(layout)
 
     if layout == "two_page":
@@ -224,6 +237,14 @@ def _render_into(pdf: pdfium.PdfDocument, app: PayApplication, contract: Contrac
         _insert_text(pages[0], pdf, header_values[field], DOC_HEADER_VALUE_X_PT, y, BODY_FONT_PT)
         y -= DOC_HEADER_ROW_HEIGHT_PT
 
+    if remit is not None:
+        remit_values = {"account": remit.account, "routing": remit.routing}
+        y = REMIT_TOP_PT
+        for label, field in REMIT_FIELDS:
+            _insert_text(pages[0], pdf, label, REMIT_LABEL_X_PT, y, BODY_FONT_PT)
+            _insert_text(pages[0], pdf, remit_values[field], REMIT_VALUE_X_PT, y, BODY_FONT_PT)
+            y -= DOC_HEADER_ROW_HEIGHT_PT
+
     # THE SUMMARY BLOCK (F-10). Defined in layouts.py, drawn here, on page one
     # only — the block belongs to the document, not to a particular grid page.
     summary_values = _summary_values(app, contract)
@@ -245,10 +266,11 @@ def _render_into(pdf: pdfium.PdfDocument, app: PayApplication, contract: Contrac
 
 
 def generate(seed: int, error: ErrorClass,
-             layout: str = "baseline") -> tuple[Contract, PayApplication, bytes]:
+             layout: str = "baseline",
+             remit: Remit | None = None) -> tuple[Contract, PayApplication, bytes]:
     contract, app = _clean(seed)
     contract, mutated = inject(contract, app, error)
-    return contract, mutated, _render(mutated, contract, layout)
+    return contract, mutated, _render(mutated, contract, layout, remit)
 
 
 def ground_truth(seed: int, error: ErrorClass) -> dict[str, str]:

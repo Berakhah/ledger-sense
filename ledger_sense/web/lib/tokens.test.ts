@@ -14,7 +14,7 @@ describe('design tokens', () => {
   it('sets tabular numerals on the numeric class', () => {
     expect(tokens.numeric.fontVariantNumeric).toContain('tabular-nums')
   })
-  it('defines light as the primary mode', () => {
-    expect(tokens.defaultScheme).toBe('light')
+  it('boots in the dark instrument scheme', () => {
+    expect(tokens.defaultScheme).toBe('dark')
   })
 })

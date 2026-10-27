@@ -91,7 +91,7 @@ def ledger(tmp_path: Path) -> Iterator[IdempotencyLedger]:
 
 def _request(application_no: int = 2, txn_date: date = date(2026, 8, 31), vendor_invoice_number: str | None = "INV-4471") -> WriteRequest:
     return WriteRequest(
-        idempotency_key=build_idempotency_key("abc123", "C-1", application_no),
+        idempotency_key=build_idempotency_key("abc123", "C-1", application_no, tenant_id="t-test"),
         doc_id="doc-1", vendor_ref="V-9", vendor_invoice_number=vendor_invoice_number,
         txn_date=txn_date,
         line_items=[LineItem(description="Sitework", amount=money("1000.00"),
@@ -242,7 +242,7 @@ def test_the_bounded_scan_does_not_match_a_different_vendors_bill_same_day(ledge
     client = FakeQBOClient()
     adapter = QBOAdapter(client, ledger, realm_id="r-1")
     other_vendor_request = WriteRequest(
-        idempotency_key=build_idempotency_key("other", "C-2", 1),
+        idempotency_key=build_idempotency_key("other", "C-2", 1, tenant_id="t-test"),
         doc_id="doc-2", vendor_ref="V-OTHER", vendor_invoice_number="INV-9999",
         txn_date=date(2026, 8, 31),
         line_items=[LineItem(description="Demo", amount=money("500.00"),

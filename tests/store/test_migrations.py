@@ -56,7 +56,10 @@ def _assert_migration_builds_the_schema_the_code_queries() -> None:
 
         command.downgrade(config, "base")
         left = set(sa.inspect(store_session.app_engine()).get_table_names())
-        assert left - {"alembic_version"} == set()
+        # stub_resources is created by the API test fixtures on the same
+        # database (api/_stub_routes.py: "never by a migration"), so it can
+        # legitimately be present depending on test order.
+        assert left - {"alembic_version", "stub_resources"} == set()
     finally:
         store_session.reset_app_engine()
 
@@ -312,7 +315,9 @@ def test_0007_adds_vendor_tables_and_the_documents_vendor_id_column(
         detail_cols = {c["name"] for c in inspector.get_columns("payment_details")}
         assert detail_cols == {"id", "tenant_id", "vendor_id", "account_last4",
                                "routing_last4", "account_hmac", "observed_at",
-                               "source_document", "confirmed_by", "confirmed_at"}
+                               "source_document", "confirmed_by", "confirmed_at",
+                               "confirmation_channel", "confirmation_contact",
+                               "confirmation_note", "reversed_by", "reversed_at"}
         doc_cols = {c["name"] for c in inspector.get_columns("documents")}
         assert "vendor_id" in doc_cols
 

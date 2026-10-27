@@ -338,6 +338,10 @@ CREATE TABLE IF NOT EXISTS curves (
   holdout_xs TEXT NOT NULL,
   holdout_ys TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS holdback_counts (
+  field_type TEXT PRIMARY KEY,
+  calls INTEGER NOT NULL
+);
 """
 
 
@@ -393,6 +397,18 @@ class CalibrationStore:
         return CalibrationCurve(row[0], row[1], row[2],
                                 tuple(json.loads(row[3])), tuple(json.loads(row[4])),
                                 row[5], tuple(json.loads(row[6])), tuple(json.loads(row[7])))
+
+    def next_holdback_count(self, field_type: str) -> int:
+        """Atomically count one more auto-eligible decision for this field
+        type and return the running total. Persisted, because the runner
+        builds a Router per document: a counter kept on the Router would
+        restart at zero every run and a 1-in-N audit would never reach N."""
+        row = self._conn.execute(
+            "INSERT INTO holdback_counts VALUES (?, 1) "
+            "ON CONFLICT(field_type) DO UPDATE SET calls = calls + 1 RETURNING calls",
+            (field_type,)).fetchone()
+        self._conn.commit()
+        return int(row[0])
 
     def withdraw_curve(self, field_type: str, *, reason: str) -> None:
         """Remove a field type's stored curve so ``load_curve`` afterward

@@ -13,7 +13,7 @@ cp .env.example .env
 This project follows strict TDD: write the failing test first, confirm it
 fails for the right reason, then write the minimum code to pass. See
 `CLAUDE.md` for the full set of hard constraints (no floats in the money
-path, no client document to a free-tier model, writeback is draft-only,
+path, no client document to a free-tier model, writeback never approves or pays (unpaid bills only),
 etc.) — each one has a test that proves it, and a PR that weakens one of
 those tests without also removing the constraint will be rejected.
 

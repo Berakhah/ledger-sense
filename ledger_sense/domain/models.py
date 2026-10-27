@@ -146,13 +146,19 @@ class PayApplication(_Base):
     retainage_total: Money
     previous_payments: Money
     total_completed_and_stored: Money
+    # The totals the document itself PRINTS for these two lines of the payment
+    # chain (LS-06). None means not extracted, never zero. A5b/A6b compare them
+    # with what the components above imply.
+    reported_total_earned_less_retainage: Money | None = None
+    reported_current_payment_due: Money | None = None
     provenance: dict[str, object] = Field(default_factory=dict)
     prior: "PayApplication | None" = None
     stored_backing: list[StoredMaterialsBacking] = Field(default_factory=list)
     waivers: list[LienWaiver] = Field(default_factory=list)
 
     @field_serializer("change_orders_net", "retainage_total", "previous_payments",
-                      "total_completed_and_stored")
+                      "total_completed_and_stored", "reported_total_earned_less_retainage",
+                      "reported_current_payment_due")
     def _as_string(self, value: Decimal | None) -> str | None:
         return _decimal_to_str(value)
 

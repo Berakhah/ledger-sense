@@ -42,8 +42,11 @@ class ApprovedTransactionError(Exception):
 
 
 def build_idempotency_key(document_hash: str, contract_id: str,
-                          application_no: int) -> str:
-    payload = f"{document_hash}|{contract_id}|{application_no}".encode()
+                          application_no: int, *, tenant_id: str) -> str:
+    """LS-02: the tenant is part of the key, so byte-identical documents in
+    two tenants never share a key (and so never replay, or reverse, each
+    other's write). Required, so a caller cannot silently omit it."""
+    payload = f"{tenant_id}|{document_hash}|{contract_id}|{application_no}".encode()
     return "LS" + hashlib.sha256(payload).hexdigest()[:KEY_LENGTH - 2]
 
 
