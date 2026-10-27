@@ -1,10 +1,9 @@
 """Read-only vendor ledger API — the vendor ledger screen's data source.
 
-payment_history is always [] until a payment-detail ingest path exists (none
-does yet — see docs/superpowers/plans/2026-09-23-vendor-persistence.md's
-Architecture note). The response model is still fully typed rather than a
-bare [] placeholder, so the frontend and any future ingest path share one
-contract; account_hmac is never a field on PaymentDetailOut — it must never
+payment_history is populated by the review queue's confirm-bank-change action
+(a reviewer attests, with evidence, that the details were verified); nothing
+else writes to it. The response model is fully typed so the frontend and the
+ingest path share one contract; account_hmac is never a field on PaymentDetailOut — it must never
 leave the server.
 """
 
@@ -41,6 +40,11 @@ class PaymentDetailOut(BaseModel):
     source_document: str
     confirmed_by: str | None
     confirmed_at: datetime | None
+    confirmation_channel: str | None = None
+    confirmation_contact: str | None = None
+    confirmation_note: str | None = None
+    reversed_by: str | None = None
+    reversed_at: datetime | None = None
 
 
 class VendorLedgerOut(BaseModel):
@@ -65,6 +69,10 @@ def vendor_ledger(vendor_id: str, session: CurrentSession) -> VendorLedgerOut:
         payment_history=[PaymentDetailOut(
             account_last4=p.account_last4, routing_last4=p.routing_last4,
             observed_at=p.observed_at, source_document=p.source_document,
-            confirmed_by=p.confirmed_by, confirmed_at=p.confirmed_at)
+            confirmed_by=p.confirmed_by, confirmed_at=p.confirmed_at,
+            confirmation_channel=p.confirmation_channel,
+            confirmation_contact=p.confirmation_contact,
+            confirmation_note=p.confirmation_note,
+            reversed_by=p.reversed_by, reversed_at=p.reversed_at)
             for p in vendor.payment_history],
     )

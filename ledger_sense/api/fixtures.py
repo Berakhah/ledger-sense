@@ -60,13 +60,14 @@ cookies.
 """
 
 import os
+import threading
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal, Self
 
 import sqlalchemy as sa
 from fastapi import HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import Connection, Engine
 
 from ledger_sense.api._stub_routes import STUB_METADATA
@@ -74,11 +75,13 @@ from ledger_sense.auth.models import create_tenant, create_user
 from ledger_sense.auth.session import SESSION_TTL, issue_session
 from ledger_sense.boundary import Origin, Sensitivity
 from ledger_sense.corpus.generate import generate
-from ledger_sense.domain.vendor import VendorLedger
+from ledger_sense.corpus.remit import remit_for
+from ledger_sense.domain.vendor import Attestation, PaymentDetail, VendorLedger, payment_hmac
 from ledger_sense.ingest.intake import accept_document
 from ledger_sense.provenance import Method
 from ledger_sense.rules.engine import Finding
 from ledger_sense.rules.integrity.vendors import check_vendor_resolution
+from ledger_sense.run.document import run_document
 from ledger_sense.store.blobs import blob_store_from_environment
 from ledger_sense.store.documents import store_document
 from ledger_sense.store.retention import claims, findings
@@ -105,6 +108,9 @@ MAX_EXCEPTIONS = 500
 # seeded document itself. See _seed_known_vendor for why that matters.
 PRIOR_BILL = "corpus://seed/prior-bill"
 
+# Serialises the Argon2 hash in seed(). See the comment there.
+_HASH_LOCK = threading.Lock()
+
 
 def demo_profile_enabled() -> bool:
     """True only for an explicit LEDGER_SENSE_PROFILE=demo.
@@ -127,6 +133,15 @@ class VendorScenario(BaseModel):
     known_vendor: VendorName | None = None
 
 
+class BankScenario(BaseModel):
+    """A real corpus PDF with a remit-to bank block, run through the real
+    pipeline, so the review queue holds a genuine I3 (and, for a vendor the
+    ledger has not seen, a genuine I2). `changed` first gives the tenant a
+    vendor whose confirmed account is the `base` one."""
+    seed: int = Field(ge=0, le=9999)
+    variant: Literal["base", "changed"] = "base"
+
+
 class SeedRequest(BaseModel):
     # No longer a document id: it is the exception-key prefix
     # (_exception_id below) and the filename stem for the seeded document.
@@ -135,6 +150,13 @@ class SeedRequest(BaseModel):
     doc_id: DocId
     exceptions: int = Field(default=0, ge=0, le=MAX_EXCEPTIONS)
     vendor: VendorScenario | None = None
+    bank: BankScenario | None = None
+
+    @model_validator(mode="after")
+    def _bank_is_standalone(self) -> Self:
+        if self.bank is not None and (self.exceptions != 0 or self.vendor is not None):
+            raise ValueError("bank cannot be combined with exceptions or vendor")
+        return self
 
 
 def _exception_id(doc_id: str, index: int | str) -> str:
@@ -191,6 +213,57 @@ def _seed_known_vendor(conn: Connection, tenant_id: str, user_id: str, name: str
     return vendor_id
 
 
+def _store_bank_document(engine: Engine, tenant_id: str, user_id: str, stem: str,
+                         seed_no: int, variant: Literal["base", "changed"]) -> str:
+    _, _, payload = generate(seed=seed_no, error="clean", remit=remit_for(seed_no, variant))
+    doc = accept_document(payload, origin=Origin.CORPUS,
+                          provenance=f"corpus://seed/{tenant_id}/{user_id}")
+    with engine.begin() as conn:
+        document_id = store_document(conn, tenant_id=tenant_id, doc=doc,
+                                     blobs=blob_store_from_environment(),
+                                     received_at=datetime.now(UTC), filename=f"{stem}.pdf")
+    run_document(engine, document_id)
+    return document_id
+
+
+def _seed_confirmed_baseline(engine: Engine, tenant_id: str, user_id: str,
+                             seed_no: int) -> None:
+    """A vendor whose confirmed bank account is the `base` remit for this seed,
+    so the `changed` document stops as a change, not a first sighting."""
+    base_id = _store_bank_document(engine, tenant_id, user_id, "baseline", seed_no, "base")
+    remit = remit_for(seed_no, "base")
+    with engine.begin() as conn:
+        observed = conn.execute(
+            sa.select(claims.c.value).where(claims.c.document_id == base_id,
+                                            claims.c.field == "vendor_name")).scalar_one()
+        ledger = load_vendor_ledger_for_update(conn, tenant_id)
+        vendor_id = ledger.create_confirmed(observed, observed, source_document=base_id,
+                                            confirmed_by=user_id)
+        ledger.record_payment_detail(
+            vendor_id,
+            PaymentDetail(account_last4=remit.account[-4:], routing_last4=remit.routing[-4:],
+                          account_hmac=payment_hmac(remit.account, remit.routing),
+                          observed_at=datetime.now(UTC), source_document=base_id),
+            confirmed_by=user_id,
+            attestation=Attestation(channel="phone", contact="Seeded baseline",
+                                    note="synthetic baseline for the demo"))
+        save_vendor_ledger(conn, tenant_id, ledger)
+
+
+def _set_session_cookie(response: Response, user_id: str, tenant_id: str) -> None:
+    response.set_cookie(
+        "session",
+        issue_session(user_id, tenant_id),
+        max_age=int(SESSION_TTL.total_seconds()),
+        httponly=True,
+        samesite="strict",
+        # Deliberately not Secure. See this module's docstring for why, and for
+        # the four fences that keep it from meaning anything outside the demo.
+        secure=False,
+        path="/",
+    )
+
+
 def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     """Mint one synthetic document plus `exceptions` synthetic exceptions.
 
@@ -225,7 +298,21 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
     # way in than a fixed demo credential would be.
     suffix = uuid.uuid4().hex[:8]
     tenant_id = create_tenant(f"demo-{suffix}")
-    user_id = create_user(tenant_id, f"demo-{suffix}@example.invalid", uuid.uuid4().hex)
+    # One hash at a time. create_user hashes with Argon2's defaults (64 MiB and
+    # several threads each) and this password is thrown away. Eleven concurrent
+    # seeds in the demo container (cpus 1.0, 1 GiB) each took ~30 s, against
+    # ~0.3 s idle, and some dropped. Real logins keep their normal parameters.
+    with _HASH_LOCK:
+        user_id = create_user(tenant_id, f"demo-{suffix}@example.invalid", uuid.uuid4().hex)
+
+    if body.bank is not None:
+        if body.bank.variant == "changed":
+            _seed_confirmed_baseline(engine, tenant_id, user_id, body.bank.seed)
+        document_id = _store_bank_document(engine, tenant_id, user_id, body.doc_id,
+                                           body.bank.seed, body.bank.variant)
+        _set_session_cookie(response, user_id, tenant_id)
+        return {"doc_id": document_id, "exceptions": 0, "sensitivity": SYNTHETIC,
+                "tenant_id": tenant_id, "known_vendor_id": None}
 
     # The document goes through the same door as an upload: accept_document
     # labels it from its origin (CORPUS → SYNTHETIC), store_document writes
@@ -280,17 +367,7 @@ def seed(body: SeedRequest, response: Response) -> dict[str, object]:
         if finding_rows:
             conn.execute(findings.insert(), finding_rows)
 
-    response.set_cookie(
-        "session",
-        issue_session(user_id, tenant_id),
-        max_age=int(SESSION_TTL.total_seconds()),
-        httponly=True,
-        samesite="strict",
-        # Deliberately not Secure. See this module's docstring for why, and for
-        # the four fences that keep it from meaning anything outside the demo.
-        secure=False,
-        path="/",
-    )
+    _set_session_cookie(response, user_id, tenant_id)
     return {"doc_id": document_id, "exceptions": len(finding_rows),
             "sensitivity": SYNTHETIC, "tenant_id": tenant_id,
             "known_vendor_id": known_vendor_id}

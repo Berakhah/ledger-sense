@@ -222,7 +222,22 @@ Nothing in this section is claimed to run automatically that does not.
 - **`LEDGER_SENSE_PAYMENT_HMAC_KEY`** keys the HMAC that fingerprints vendor
   bank details. Account and routing numbers are low-entropy, so the digest is
   only as strong as this key: keep it out of database backups. The API refuses
-  to start if it is empty.
+  to start if it is empty, still the `changeme` placeholder, or shorter than 32
+  characters. Bank account and routing numbers are read from a
+  document in memory only, reduced to last four plus HMAC, and never written to
+  claims, findings, logs or API responses (the `pdfminer` logger is capped
+  because its DEBUG output printed the full account number). The I3 hard stop
+  is cleared only by `confirm-bank-change`, which stores the verifier's channel
+  and contact. The review queue clears and undoes it from a panel that shows last four digits
+  only; accept, edit and reject are inert on I3 in the UI as well as refused by
+  the API, and confirming needs an explicit Ctrl+Enter or button press after
+  naming who was contacted.
+  Known limits of this control: it fires only for a document that carries a
+  recognised "Account Number" and "Routing Number" block, and the extractor
+  reads the text layer as written (invisible or tiny text is not filtered); an
+  unreadable bank block (X0) can only be rejected, which blocks writeback for
+  that document; undo deletes the confirmed detail and its attestation without
+  recording who undid it. See the LS-10 design's "Known limitations" section.
 - **Accounting OAuth tokens** are stored encrypted (Fernet) under their own
   `LEDGER_SENSE_TOKEN_KEY`, in the `client_writeback` volume with the
   idempotency ledger and audit log. It is deliberately not the document KEK:

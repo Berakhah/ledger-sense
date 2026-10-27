@@ -21,7 +21,7 @@ from tests.writeback.test_qbo import FakeQBOClient
 
 def _request() -> WriteRequest:
     return WriteRequest(
-        idempotency_key=build_idempotency_key("abc123", "C-1", 2),
+        idempotency_key=build_idempotency_key("abc123", "C-1", 2, tenant_id="t-test"),
         doc_id="doc-1", vendor_ref="V-9", vendor_invoice_number=None,
         txn_date=date(2026, 8, 31),
         line_items=[LineItem(description="Sitework", amount=money("1000.00"),
@@ -336,7 +336,7 @@ def test_record_write_carries_the_requests_vendor_fields(tmp_path: Path) -> None
     adapter = AuditedAdapter(ExportAdapter(out_dir=str(tmp_path / "export")),
                              audit=audit, approved_by="reviewer@example.test")
     request = WriteRequest(
-        idempotency_key=build_idempotency_key("h1", "C-1", 1), doc_id="doc-1",
+        idempotency_key=build_idempotency_key("h1", "C-1", 1, tenant_id="t-test"), doc_id="doc-1",
         vendor_ref="V-9", vendor_invoice_number="INV-1", txn_date=date(2026, 1, 1),
         line_items=[LineItem(description="Sitework", amount=money("100.00"), account_ref="54")],
         memo="m")
@@ -356,7 +356,7 @@ def test_record_reversal_carries_no_vendor_fields(tmp_path: Path) -> None:
     adapter = AuditedAdapter(ExportAdapter(out_dir=str(tmp_path / "export")),
                              audit=audit, approved_by="reviewer@example.test")
     request = WriteRequest(
-        idempotency_key=build_idempotency_key("h1", "C-1", 1), doc_id="doc-1",
+        idempotency_key=build_idempotency_key("h1", "C-1", 1, tenant_id="t-test"), doc_id="doc-1",
         vendor_ref="V-9", vendor_invoice_number=None, txn_date=date(2026, 1, 1),
         line_items=[LineItem(description="Sitework", amount=money("100.00"), account_ref="54")],
         memo="m")
@@ -393,7 +393,7 @@ def test_write_reverse_write_through_audited_export_adapter_produces_a_new_bill(
 def test_audit_log_from_environment_builds_a_log_under_the_configured_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from ledger_sense.writeback.audit import audit_log_from_environment
     monkeypatch.setenv("LEDGER_SENSE_WRITEBACK_DIR", str(tmp_path))
-    audit = audit_log_from_environment()
+    audit = audit_log_from_environment("t-test")
     assert audit.verify_chain() == []
     assert (tmp_path / "audit.db").exists()
 
@@ -402,4 +402,4 @@ def test_audit_log_from_environment_raises_when_unset(monkeypatch: pytest.Monkey
     from ledger_sense.writeback.audit import audit_log_from_environment
     monkeypatch.delenv("LEDGER_SENSE_WRITEBACK_DIR", raising=False)
     with pytest.raises(RuntimeError, match="LEDGER_SENSE_WRITEBACK_DIR"):
-        audit_log_from_environment()
+        audit_log_from_environment("t-test")

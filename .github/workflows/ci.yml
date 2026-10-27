@@ -144,6 +144,20 @@ jobs:
       - run: npm ci
       # @axe-core/playwright is already a root devDependency — npm ci covers it.
       - run: npx playwright install --with-deps chromium
+      # compose's env_file is `.env`, which is gitignored, so a fresh checkout
+      # has none. Throwaway secrets generated per run: never committed, never
+      # reused, and the demo profile holds only SYNTHETIC data. The two Fernet
+      # keys are distinct on purpose (one key over blobs and tokens is refused).
+      - name: Generate a throwaway .env
+        run: |
+          fernet() { python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())'; }
+          hex() { python3 -c 'import secrets;print(secrets.token_hex(32))'; }
+          cp .env.example .env
+          sed -i "s|^LEDGER_SENSE_ENV=.*|LEDGER_SENSE_ENV=development|" .env
+          sed -i "s|^LEDGER_SENSE_SECRET_KEY=.*|LEDGER_SENSE_SECRET_KEY=$(hex)|" .env
+          sed -i "s|^LEDGER_SENSE_KEK=.*|LEDGER_SENSE_KEK=$(fernet)|" .env
+          sed -i "s|^LEDGER_SENSE_TOKEN_KEY=.*|LEDGER_SENSE_TOKEN_KEY=$(fernet)|" .env
+          sed -i "s|^LEDGER_SENSE_PAYMENT_HMAC_KEY=.*|LEDGER_SENSE_PAYMENT_HMAC_KEY=$(hex)|" .env
       # playwright.config.ts's webServer brings up the demo compose stack
       # (`docker compose --profile demo up --build`) itself; ubuntu-latest
       # ships Docker preinstalled, so no separate compose step is needed.

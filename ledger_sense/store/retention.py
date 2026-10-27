@@ -226,6 +226,13 @@ payment_details = sa.Table(
     sa.Column("source_document", sa.Text, nullable=False),
     sa.Column("confirmed_by", sa.Text, nullable=True),
     sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("confirmation_channel", sa.Text, nullable=True),
+    sa.Column("confirmation_contact", sa.Text, nullable=True),
+    sa.Column("confirmation_note", sa.Text, nullable=True),
+    # Undo stamps these and keeps the row (migration 0010): the attestation is
+    # evidence, and a reversed entry still counts as an account seen on file.
+    sa.Column("reversed_by", sa.Text, nullable=True),
+    sa.Column("reversed_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 SCHEDULED_JOB = "retention-job"

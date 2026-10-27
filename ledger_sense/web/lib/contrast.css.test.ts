@@ -14,8 +14,8 @@ const css = readFileSync(
 
 type Rgb = [number, number, number]
 
-function token(name: string): Rgb {
-  const match = css.match(new RegExp(`--color-${name}: oklch\\(([\\d.]+) ([\\d.]+) ([\\d.]+)\\);`))
+function token(name: string, source: string = css): Rgb {
+  const match = source.match(new RegExp(`--color-${name}: oklch\\(([\\d.]+) ([\\d.]+) ([\\d.]+)\\);`))
   if (!match) throw new Error(`--color-${name} is not an oklch() literal in globals.css`)
   const [, l, c, h] = match
   return oklchToSrgb(Number(l), Number(c), Number(h))
@@ -75,5 +75,32 @@ describe('colour tokens meet WCAG AA for text', () => {
   it('--color-flag reads on its own tint (a discrepant cell: bg-flag/10)', () => {
     const flag = token('flag')
     expect(contrast(flag, tint(flag, token('paper'), 0.1))).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+})
+
+// The app boots dark, so this is the scheme axe and a reader actually meet.
+// Only the tokens the dark block redefines are read from it; the accent is
+// shared and is never text, so it is held to the 3:1 non-text bar instead.
+const dark = css.slice(css.indexOf('[data-scheme="dark"] {'))
+const AA_NON_TEXT = 3
+
+describe('dark scheme tokens meet WCAG AA', () => {
+  for (const name of ['ink', 'ink-muted', 'flag']) {
+    it(`--color-${name} reads on dark paper`, () => {
+      expect(contrast(token(name, dark), token('paper', dark))).toBeGreaterThanOrEqual(AA_TEXT)
+    })
+  }
+
+  it('--color-flag reads on its own tint over dark paper', () => {
+    const flag = token('flag', dark)
+    expect(contrast(flag, tint(flag, token('paper', dark), 0.1))).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+
+  it('the accent rule is visible against dark paper', () => {
+    expect(contrast(token('accent'), token('paper', dark))).toBeGreaterThanOrEqual(AA_NON_TEXT)
+  })
+
+  it('the hairline rule is distinguishable from dark paper', () => {
+    expect(contrast(token('rule', dark), token('paper', dark))).toBeGreaterThanOrEqual(1.3)
   })
 })

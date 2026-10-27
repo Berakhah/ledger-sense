@@ -32,6 +32,7 @@ from ledger_sense.extract.tables import (
     AmbiguousColumnError,
     MissingColumnError,
     find_headers,
+    partial_rows,
     reconstruct_rows,
 )
 from ledger_sense.extract.textlayer import BBox, Word, extract_words
@@ -42,6 +43,12 @@ _LINE_FIELDS = ("scheduled_value", "previous", "this_period", "stored",
                 "total_completed_and_stored", "retainage")
 _SUMMARY_MONEY = ("change_orders_net", "retainage_total", "previous_payments",
                   "total_completed_and_stored")
+# Summary anchor -> PayApplication field, for the printed totals that are checked
+# against the chain rather than feeding it (LS-06).
+_REPORTED_TOTALS = {
+    "total_earned_less_retainage": "reported_total_earned_less_retainage",
+    "current_payment_due": "reported_current_payment_due",
+}
 
 # DOCUMENT HEADER VOCABULARY (Ruling 4/5). extract/ must never import
 # ledger_sense.corpus (a test enforces this with an AST check, F-14's same
@@ -204,6 +211,15 @@ def assemble_pay_application(
         if not rows:
             unextractable.append(UnextractableField(
                 "lines", "continuation grid produced no data rows"))
+        # LS-07: an item row with a missing or unreadable cell used to vanish
+        # without a trace, so the schedule read as complete. Each missing cell is
+        # recorded exactly like a cell that did not parse as money: line-scoped,
+        # which also keeps the footing rules from running on a partial schedule.
+        for partial in partial_rows(words, headers):
+            for missing_field in partial.missing:
+                unextractable.append(UnextractableField(
+                    f"line[{partial.item_no}].{missing_field}",
+                    "cell not found in the row"))
 
     grid_bottom = max((c.bbox.bottom for row in rows for c in row.values()),
                       default=None)
@@ -298,6 +314,28 @@ def assemble_pay_application(
                                         column_unambiguous=field not in ambiguous,
                                         profile_hit=profile_hit))
 
+    # LS-06: the totals the document PRINTS for the rest of the payment chain.
+    # `extract_summary` already finds them; they used to be discarded here, so a
+    # wrong printed payment due produced no finding and no unextractable entry.
+    # A missing or unparseable one is None plus an X0 record -- never zero.
+    reported: dict[str, Money | None] = {}
+    for summary_field, reported_field in _REPORTED_TOTALS.items():
+        printed: Anchored | None = summary.get(summary_field)
+        reported[reported_field] = None
+        if printed is None:
+            if summary_field not in ambiguous:
+                unextractable.append(UnextractableField(reported_field, "label not found on page"))
+            continue
+        try:
+            reported[reported_field] = money(_clean(printed.text))
+        except decimal.InvalidOperation:
+            unextractable.append(UnextractableField(reported_field, "value did not parse as money"))
+            continue
+        provenance[reported_field] = _claim(
+            source_path, printed.page, printed.bbox, reported[reported_field],
+            match_quality=match_quality(label_exact=True, value_unique=True,
+                                        column_unambiguous=True, profile_hit=False))
+
     # NOTHING IS INVENTED — REVISED (F-15). The original wrote contract_id="",
     # application_no=0 and period_to=date.today(). Task 17's own docstring says
     # "a guessed contract sum is a wrong bill with a confident number on it";
@@ -337,7 +375,9 @@ def assemble_pay_application(
         change_orders_net=totals["change_orders_net"],
         retainage_total=totals["retainage_total"],
         previous_payments=totals["previous_payments"],
-        total_completed_and_stored=totals["total_completed_and_stored"])
+        total_completed_and_stored=totals["total_completed_and_stored"],
+        reported_total_earned_less_retainage=reported["reported_total_earned_less_retainage"],
+        reported_current_payment_due=reported["reported_current_payment_due"])
 
 
 def line_hash(lines: list[ContinuationLine]) -> str:
