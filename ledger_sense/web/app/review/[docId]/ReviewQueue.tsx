@@ -701,7 +701,9 @@ export function ReviewQueue({ docId }: { docId: string }) {
               <p className="text-xs uppercase tracking-wide text-ink-muted">
                 Field · {STATE_LABEL[current.state]}
               </p>
-              <h2 className="numeric mt-1 text-base font-semibold" data-testid="current-field">
+              {/* break-words: a field path is one unbreakable token; at 375px it
+                  overflowed its card and widened the whole page (Linux CI). */}
+              <h2 className="numeric mt-1 break-words text-base font-semibold" data-testid="current-field">
                 {current.field}
               </h2>
 
