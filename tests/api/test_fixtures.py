@@ -261,11 +261,12 @@ def test_concurrent_seeds_hash_one_password_at_a_time(
     from fastapi import Response
 
     from ledger_sense.api import fixtures
+    from ledger_sense.auth.models import create_user as real_create_user
 
     active = 0
     peak = 0
     guard = threading.Lock()
-    real = fixtures.create_user
+    real = real_create_user
 
     def spy(*args: object, **kwargs: object) -> object:
         nonlocal active, peak
