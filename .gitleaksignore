@@ -14,3 +14,9 @@ ac10d51b2fa22c80cc892da2ca40ccb95d9ef505:docs/superpowers/plans/2025-03-11-ledge
 # SHA, so a rebase of this branch changes the hash and this line must be
 # updated to match (`git log --oneline -- .gitleaksignore`), not deleted.
 7d4b9bffe4113792645ef1add7df554d1ea7c92d:.gitleaksignore:generic-api-key:5
+
+# Two made-up idempotency-key literals in writeback unit tests (sequential
+# characters in the LS<hex> key format, asserted against themselves). Reviewed
+# 2026-10-27: not credentials. Flagged by the entropy-based generic-api-key rule.
+ba9728537f1588f73585773607cdb5d06dbb1800:tests/writeback/test_qbo.py:generic-api-key:354
+f449662ef67198a034c1a72dc6e9f9192a936f79:tests/writeback/test_idempotency.py:generic-api-key:5
