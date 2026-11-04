@@ -27,3 +27,6 @@ playwright-report/
 # config) is intentionally tracked and stays outside this ignore.
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+
+# Private project briefs (kept outside the public repo)
+Starting_Documents/
