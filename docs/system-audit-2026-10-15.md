@@ -1,7 +1,7 @@
 # Ledger Sense: system blind spots and completion audit
 
 Date: 15 October 2026 (Africa/Nairobi)  
-Reviewed revision: `50e64ff` (`Merge branch 'feat/erase-command'`), plus the working tree, which was clean when review began.  
+Reviewed revision: `3e19a76` (`Merge branch 'feat/erase-command'`), plus the working tree, which was clean when review began.  
 Deliverable: findings and proposed fixes only. No application code was changed.
 
 ## Assessment

@@ -3,7 +3,7 @@
 **Date:** 2026-09-19
 **Status:** approved in brainstorming, awaiting plan
 **Builds on:** `2026-09-15-extraction-run-design.md` (claims/findings schema, runner),
-Phase 5 writeback (`ledger_sense/writeback/`, merged at `d9b48f2`)
+Phase 5 writeback (`ledger_sense/writeback/`, merged at `ee43566`)
 
 ## Problem
 

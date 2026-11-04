@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy Core (no ORM — this codebase does not use one), Alembic, Pydantic v2 (`strict=True, extra="forbid"`), Next.js 15 client components, Vitest + Testing Library, pytest + `hypothesis` where money is touched (none is, in this plan).
 
-**Spec:** `../../../CLAUDE.md` (project root) — validation-layer, confidence-routing, and Never-rule sections apply throughout. No separate design doc exists beyond this plan; the architecture was worked out interactively against the live codebase (see `git log` on this branch's parent commit `168a52a` for the Phase 6 base) rather than written up first.
+**Spec:** `../../../CLAUDE.md` (project root) — validation-layer, confidence-routing, and Never-rule sections apply throughout. No separate design doc exists beyond this plan; the architecture was worked out interactively against the live codebase (see `git log` on this branch's parent commit `07324b8` for the Phase 6 base) rather than written up first.
 
 ## Global Constraints
 

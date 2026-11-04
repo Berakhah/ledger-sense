@@ -22,7 +22,7 @@
 - Every rule ships with a fixture that trips it and a clean control that does not.
 - Run commands from the worktree root. PowerShell: `$env:Path="$env:APPDATA\Python\Python313\Scripts;$env:Path"` first so `uv` resolves. Do not use bare `git stash`.
 - Commit trailer on every commit: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
-- Baseline before this plan: `1040 passed, 10 skipped` on `fix/ls-10-bank-change` at e293fd2.
+- Baseline before this plan: `1040 passed, 10 skipped` on `fix/ls-10-bank-change` at 219f3c8.
 
 ## Spec amendments (discovered while planning)
 
@@ -1380,7 +1380,7 @@ Expected: clean.
 
 - [ ] **Step 4: Security review**
 
-Invoke the `security-review` skill (CLAUDE.md skill map: `PaymentDetail`) on the diff from e293fd2 to HEAD. Required focus: (a) no path writes a plaintext account/routing to DB, logs, API responses or exception text; (b) `confirm-bank-change` cannot be replayed to record a detail for a different vendor or tenant; (c) no route other than confirm-bank-change closes an I3. Fix any finding with its own test before continuing.
+Invoke the `security-review` skill (CLAUDE.md skill map: `PaymentDetail`) on the diff from 219f3c8 to HEAD. Required focus: (a) no path writes a plaintext account/routing to DB, logs, API responses or exception text; (b) `confirm-bank-change` cannot be replayed to record a detail for a different vendor or tenant; (c) no route other than confirm-bank-change closes an I3. Fix any finding with its own test before continuing.
 
 - [ ] **Step 5: Update the spec and security doc**
 
