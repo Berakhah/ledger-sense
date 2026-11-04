@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy + alembic (SQLite in tests), pydantic, pytest, pypdfium2 (corpus), `uv`, `ruff`, `mypy --strict`.
 
-**Spec:** `docs/superpowers/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md` (see "Spec amendments" below — this plan supersedes the spec where they differ).
+**Spec:** `docs/process/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md` (see "Spec amendments" below — this plan supersedes the spec where they differ).
 
 ## Global Constraints
 
@@ -1335,7 +1335,7 @@ git commit -m "feat(review): confirm-bank-change is the only way to clear an I3 
 
 **Files:**
 - Create: `tests/run/test_bank_change_ground_truth.py`
-- Modify: `docs/superpowers/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md` (apply the amendments above), `docs/security.md` (one paragraph)
+- Modify: `docs/process/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md` (apply the amendments above), `docs/security.md` (one paragraph)
 
 - [ ] **Step 1: Write the ground-truth test**
 

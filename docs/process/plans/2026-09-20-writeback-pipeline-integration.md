@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+, FastAPI, SQLAlchemy (Postgres/SQLite via `store/session.py::app_engine()`), the existing `writeback/` package's own SQLite-backed stores (`IdempotencyLedger`, `AuditLog`, `TokenStore`), `httpx` for the QBO sandbox.
 
-**Spec:** `docs/superpowers/specs/2026-09-19-writeback-pipeline-integration-design.md` — read it in full before starting; this plan implements it, including the two rulings resolved after review (vendor-mismatch-on-replay is a 409 conflict, and the single-process constraint is pinned to a source-level `WORKERS` constant).
+**Spec:** `docs/process/specs/2026-09-19-writeback-pipeline-integration-design.md` — read it in full before starting; this plan implements it, including the two rulings resolved after review (vendor-mismatch-on-replay is a 409 conflict, and the single-process constraint is pinned to a source-level `WORKERS` constant).
 
 ## Global Constraints
 

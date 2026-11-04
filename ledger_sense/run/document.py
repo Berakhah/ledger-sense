@@ -1,6 +1,6 @@
 """run_document: one stored document → Claims + Findings + an honest status.
 
-Spec: docs/superpowers/specs/2026-09-15-extraction-run-design.md §2.
+Spec: docs/process/specs/2026-09-15-extraction-run-design.md §2.
 
 The runner owns its transactions (it needs two on failure), so it takes an
 Engine. Its first statement is a WRITE — `run_attempts = run_attempts + 1

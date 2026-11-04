@@ -8,8 +8,8 @@
 
 **Tech Stack:** FastAPI, Next.js 15, `bok-ui`, `pdf.js` (Apache-2.0), Vitest, Playwright, `axe-core`.
 
-**Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §8 items 3–4
-**Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Spec:** `docs/process/specs/2026-08-29-ledger-sense-design.md` §8 items 3–4
+**Parent plan:** `2026-08-29-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
 
 ---
 

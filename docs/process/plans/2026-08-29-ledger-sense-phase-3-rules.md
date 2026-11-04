@@ -8,8 +8,8 @@
 
 **Tech Stack:** Python 3.12+, Pydantic v2, `pytest`, `rapidfuzz` (MIT) for vendor name resolution.
 
-**Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §6.1, §6.3, §6.4
-**Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Spec:** `docs/process/specs/2026-08-29-ledger-sense-design.md` §6.1, §6.3, §6.4
+**Parent plan:** `2026-08-29-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
 **Audit:** `2026-08-29-REVISIONS.md` §2 and §4 — read before Task 21b. Ten defects in this phase were fixed in
 place. Four of the rules were known-wrong as written (C1/C3, C4, C13 and A9), and F-36 lost the fraud
 control's own evidence at the moment two vendor records were merged.

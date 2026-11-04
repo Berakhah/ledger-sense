@@ -1,6 +1,6 @@
 # Ledger Sense — Plan Audit and Revision Register
 
-**Audited:** 2026-08-29 · **Against:** spec `2025-03-11-ledger-sense-design.md` and the six plan documents
+**Audited:** 2026-08-29 · **Against:** spec `2026-08-29-ledger-sense-design.md` and the six plan documents
 **Method:** every claim traced to the brief that authorises it, every code block read as if it were about to run,
 every constant traced to the evidence that set it. Where a claim was checkable by execution, it was executed —
 those findings carry a `verified` marker and the observed output.
@@ -277,7 +277,7 @@ exist.
 into `assemble`, and `ProfileKey` is computed from raw PDF bytes, which the API would have to decrypt
 `CLIENT_CONFIDENTIAL` documents to compute. Ships whole as its own "profile learning" slice after the review
 screen exists, once the reviewer can confirm/move the box — the only edit that carries the geometry `learn()`
-needs. Recorded in the Slice 1 spec (`2025-03-11-ledger-sense-phase-4-review-ui.md`, Task 28).
+needs. Recorded in the Slice 1 spec (`2026-08-29-ledger-sense-phase-4-review-ui.md`, Task 28).
 
 ### F-18 · S1 · The profile cache is shared across clients with no tenant scope
 
@@ -605,7 +605,7 @@ Phase 4 Task 28 / review-queue API Slice 1, is already satisfied — no new work
 table records a `HUMAN` claim with `observed_at` next to the `DETERMINISTIC` claim it judges. Phase 6 derives
 `(predicted, actual)` pairs from that with one query, and basis comes from the document's `sensitivity` column,
 so no caller can spoof it. No separate labels table, no `ReviewAction` class until Phase 6 says what it needs.
-Recorded in the Slice 1 spec (`2025-03-11-ledger-sense-phase-4-review-ui.md`, Task 28).
+Recorded in the Slice 1 spec (`2026-08-29-ledger-sense-phase-4-review-ui.md`, Task 28).
 
 ### F-47 · S1 · `MIN_LABELS_FOR_FIELD = 200` cannot support a 99.5% claim
 
@@ -728,7 +728,7 @@ test and the UI footer. **Fixed in:** Phase 1 Task 12; Phase 6 Task 48.
 ### F-56 · S2 · Task 48's AIA regex fails against Task 12's own code
 
 `test_the_repo_contains_no_form_artifact` forbids `\bG70[23]\b` and `american institute of architects` in every
-`.py` outside `docs/superpowers/` and `CLAUDE.md`. `scripts/aia_guard.py` contains both. The close-out test fails
+`.py` outside `docs/process/` and `CLAUDE.md`. `scripts/aia_guard.py` contains both. The close-out test fails
 against the code the plan tells you to write.
 **Fix:** allowlist `scripts/aia_guard.py`, `ledger_sense/notice.py` and `tests/test_aia_guard.py`; scan for
 rendered form artifacts, not for the letters. **Fixed in:** Phase 6 Task 48.
@@ -823,7 +823,7 @@ silently corrected. A register that only lists the original author's mistakes is
 ### F-66 · S3 · Phase 1 had no plan document
 
 Phases 0 and 2–6 each have a step-level document. **Phase 1 — Tasks 1–13, the entire foundation — was written
-inline in `2025-03-11-ledger-sense-weeks-5-12.md`**, occupying 2,730 of its 3,003 lines. Nothing named `phase-1`
+inline in `2026-08-29-ledger-sense-weeks-5-12.md`**, occupying 2,730 of its 3,003 lines. Nothing named `phase-1`
 existed, so an executor following the phase-document convention could not find the first phase, and the master
 plan was too large to serve as the index it also claims to be.
 
@@ -831,7 +831,7 @@ Every phase document says *"Parent plan: `weeks-5-12.md` — its Global Constrai
 in full"*, which only reads correctly if the parent is constraints plus index. It was constraints, index, **and**
 one phase's full step-level body.
 
-**Fix:** extract Tasks 1–13 to `2025-03-11-ledger-sense-phase-1-foundation.md` with a sibling-shaped header
+**Fix:** extract Tasks 1–13 to `2026-08-29-ledger-sense-phase-1-foundation.md` with a sibling-shaped header
 (goal, architecture, stack, spec, parent, audit, preconditions, exit criteria). The master keeps Global
 Constraints, File Structure, a **Phase documents** index that now lists all seven phases, and a Phase 1 summary
 table in the same shape as the Phase 2–6 tables. Master: 3,003 lines → 302.
@@ -901,9 +901,9 @@ mid-period state trains a reviewer to dismiss everything it says.
 
 | Q | Decision | Why it cannot be defaulted | Status |
 |---|---|---|---|
-| **Q1** | **Re-verify spec §3.1 and §3.2 and re-date them.** | The header says 2025-03-11; the programme is dated August 2026. Either the QBO/Xero gates and every pinned dependency version are 17 months stale, or the spec is mis-dated. QBO-first and the licence deny-list both rest on §3. Two hours; blocks nothing else. | **Resolved (2026-08-29).** Re-verified live and re-dated in `2025-03-11-ledger-sense-design.md` §3. Findings: QBO gate unchanged (turnaround variance now wider — treat "1–3 weeks" as optimistic, not median); **Xero's flat 25-connection ceiling was replaced 2026-03-02 by a 5-tier priced model**, whose free Starter tier (5 connections, no certification) weakens but does not override the settled QBO-first call (`02` §13 Q2); dependency licences all held except `docling`/`docling-ibm-models` version bumps (latter major) and `ocrmypdf`'s Ghostscript dependency, now optional-but-auto-used rather than hard-required — REJECT still stands. |
+| **Q1** | **Re-verify spec §3.1 and §3.2 and re-date them.** | The header says 2025-03-11; the programme is dated August 2026. Either the QBO/Xero gates and every pinned dependency version are 17 months stale, or the spec is mis-dated. QBO-first and the licence deny-list both rest on §3. Two hours; blocks nothing else. | **Resolved (2026-08-29).** Re-verified live and re-dated in `2026-08-29-ledger-sense-design.md` §3. Findings: QBO gate unchanged (turnaround variance now wider — treat "1–3 weeks" as optimistic, not median); **Xero's flat 25-connection ceiling was replaced 2026-03-02 by a 5-tier priced model**, whose free Starter tier (5 connections, no certification) weakens but does not override the settled QBO-first call (`02` §13 Q2); dependency licences all held except `docling`/`docling-ibm-models` version bumps (latter major) and `ocrmypdf`'s Ghostscript dependency, now optional-but-auto-used rather than hard-required — REJECT still stands. |
 | **Q2** | **Does `bok-core` exist by week 7?** If not, adopt the local-protocol fallback (F-61) in week 5. | 31 of 48 tasks depend on it. The plan currently discovers this in week 7. | OPEN — unknowable before week 7. Fallback (F-61) stands as written; no action needed until then. |
-| **Q3** | **`DocNumber`: vendor invoice number, or idempotency key?** (F-40) | Overwriting the vendor's reference disables a control the client already has, in a product sold on catching duplicates. A client-visible product decision, not an implementation detail. | **Resolved (2026-08-29): `DocNumber` stays the vendor's invoice number.** Recorded in `2025-03-11-ledger-sense-phase-5-writeback.md`. |
+| **Q3** | **`DocNumber`: vendor invoice number, or idempotency key?** (F-40) | Overwriting the vendor's reference disables a control the client already has, in a product sold on catching duplicates. A client-visible product decision, not an implementation detail. | **Resolved (2026-08-29): `DocNumber` stays the vendor's invoice number.** Recorded in `2026-08-29-ledger-sense-phase-5-writeback.md`. |
 | **Q4** | **Hold-back audit fraction** (F-49) — 5% proposed. | A direct trade between straight-through rate and drift detection, and the number goes in `docs/methodology.md`. Pick it deliberately. | OPEN — no objection raised to the 5% proposal; treat as the working default until Phase 6 methodology work fixes it in writing. |
 | **Q5** | **Single-tenant or multi-tenant?** (F-18, F-25) | The `CLIENT` compose profile implies one client per deployment, making tenancy free. The bookkeeping-firm buyer in `02` §9 — *"they feel the pain across 20+ clients at once"* — implies the opposite. Sizing G-5 needs the answer. | **Resolved (2026-08-29): multi-tenant.** Already what `2026-08-29-ledger-sense-phase-0-platform.md` Task P2 builds — `tenant_id` on every table, 404-not-403 ownership checks, per-tenant retention. No plan change required. |
 | **Q6** | **Is the week-5 controller session booked?** | Phase 3 is hard-blocked by `registry.py`. If no, Phase 4 runs first — the plan permits this, but the swap must be decided in week 5, not discovered in week 8. | **Resolved (2026-08-29): booked.** Phase 3 proceeds in its planned position; no sequencing swap needed. |

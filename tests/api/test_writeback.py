@@ -112,7 +112,7 @@ def test_post_with_a_different_vendor_ref_after_posting_is_409(
 # NOTE: test_post_after_reversal_with_a_new_vendor_is_not_a_conflict is NOT
 # added here. The brief's original draft included it in this task, but it
 # calls POST .../reverse, which does not exist until Task 11 — a plan defect
-# (see docs/superpowers/plans/2026-09-20-writeback-pipeline-integration.md,
+# (see docs/process/plans/2026-09-20-writeback-pipeline-integration.md,
 # Task 10 step 1). It is relocated to Task 11's test list, where /reverse
 # actually exists to make it true.
 

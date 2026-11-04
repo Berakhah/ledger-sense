@@ -1,7 +1,7 @@
 # Sensitivity Gateway — design (Never #1, Task 13 without `bok-core`)
 
 **Date:** 2026-09-15 · **Status:** approved in brainstorming (§1–§5), plan at
-`docs/superpowers/plans/2026-09-15-sensitivity-gateway.md`.
+`docs/process/plans/2026-09-15-sensitivity-gateway.md`.
 
 ## Why this exists
 

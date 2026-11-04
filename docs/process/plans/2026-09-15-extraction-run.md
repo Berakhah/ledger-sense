@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, SQLAlchemy Core + alembic (SQLite in tests via `batch_alter_table`, Postgres in compose), FastAPI `BackgroundTasks`, existing `pdfplumber`-based `extract/` package, `rules.engine`.
 
-**Spec:** `docs/superpowers/specs/2026-09-15-extraction-run-design.md` — read it first; the plan argues from it.
+**Spec:** `docs/process/specs/2026-09-15-extraction-run-design.md` — read it first; the plan argues from it.
 
 ## Global Constraints
 
@@ -115,7 +115,7 @@ Revision ID: 0005_extraction_run
 Revises: 0004_filename
 Create Date: 2026-09-15
 
-Spec: docs/superpowers/specs/2026-09-15-extraction-run-design.md §1.
+Spec: docs/process/specs/2026-09-15-extraction-run-design.md §1.
 
 `documents.status` keeps its server default ('received'): a row that exists
 is, by definition, received. `run_attempts` keeps its default (0) for the
@@ -880,7 +880,7 @@ Create `ledger_sense/run/document.py`:
 ```python
 """run_document: one stored document → Claims + Findings + an honest status.
 
-Spec: docs/superpowers/specs/2026-09-15-extraction-run-design.md §2.
+Spec: docs/process/specs/2026-09-15-extraction-run-design.md §2.
 
 The runner owns its transactions (it needs two on failure), so it takes an
 Engine. Its first statement is a WRITE — `run_attempts = run_attempts + 1

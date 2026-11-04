@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `uv`, pytest, SQLAlchemy 2 Core, Alembic (batch mode for SQLite), `cryptography` Fernet (existing `BlobStore`), `mypy --strict`, `ruff`.
 
-**Spec:** `docs/superpowers/specs/2026-09-15-sensitivity-gateway-design.md`
+**Spec:** `docs/process/specs/2026-09-15-sensitivity-gateway-design.md`
 
 ## Global Constraints
 

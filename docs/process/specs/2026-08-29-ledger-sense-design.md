@@ -1,6 +1,6 @@
 # Ledger Sense — Design
 
-**Status:** approved 2025-03-11 · **Scope:** weeks 5–12 · **Repo:** `ledger-sense` · **Licence:** Apache-2.0
+**Status:** approved 2026-08-29 · **Scope:** weeks 5–12 · **Repo:** `ledger-sense` · **Licence:** Apache-2.0
 **Depends on:** `../Starting_Documents/00-SHARED-FOUNDATION.md`, `../Starting_Documents/02-LEDGER-SENSE.md`
 
 Vertical document intelligence with confidence routing, for construction progress billing.
@@ -73,7 +73,7 @@ documents. If that sentence has changed, part of §1's argument changes with it.
 
 ---
 
-## 3. Verified external facts (originally verified 2025-03-11; re-verified 2026-08-29)
+## 3. Verified external facts (verified 2026-08-29)
 
 Re-verify on the day. These are snapshots, which is the operating principle of the programme.
 

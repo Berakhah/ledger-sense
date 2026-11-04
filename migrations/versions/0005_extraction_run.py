@@ -4,7 +4,7 @@ Revision ID: 0005_extraction_run
 Revises: 0004_filename
 Create Date: 2026-09-15
 
-Spec: docs/superpowers/specs/2026-09-15-extraction-run-design.md §1.
+Spec: docs/process/specs/2026-09-15-extraction-run-design.md §1.
 
 `documents.status` keeps its server default ('received'): a row that exists
 is, by definition, received. `run_attempts` keeps its default (0) for the

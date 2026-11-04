@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI + SQLAlchemy (pytest, `uv`, `ruff`, `mypy --strict`); Next.js 15 / React 19 / Tailwind 4 (vitest + jsdom, Playwright + `@axe-core/playwright`).
 
-**Spec:** `docs/superpowers/specs/2026-10-19-i3-bank-change-panel-design.md` — read its "Amendments" section: reading the code changed four details (no `useReviewKeys` I3 mode, no auto-focus, no green rule on confirm, confirm waits for the server) and the stale-baseline behaviour (409).
+**Spec:** `docs/process/specs/2026-10-19-i3-bank-change-panel-design.md` — read its "Amendments" section: reading the code changed four details (no `useReviewKeys` I3 mode, no auto-focus, no green rule on confirm, confirm waits for the server) and the stale-baseline behaviour (409).
 
 ## Global Constraints
 
@@ -38,7 +38,7 @@
 | `ledger_sense/web/app/review/[docId]/ReviewQueue.tsx` (modify) | I3 inertness, panel hosting, confirm/undo wiring |
 | `ledger_sense/web/e2e/seed.ts` (modify) | `seedBankDocument` |
 | `ledger_sense/web/e2e/bank_change.spec.ts` (create) | keyboard-only journey, bare-Enter inertness, axe, greyscale screenshot |
-| `docs/security.md`, `docs/superpowers/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md` (modify) | record that the UI landed and what is still out of scope |
+| `docs/security.md`, `docs/process/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md` (modify) | record that the UI landed and what is still out of scope |
 
 ---
 
@@ -1068,7 +1068,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `ledger_sense/web/e2e/bank_change.spec.ts`
-- Modify: `docs/security.md`, `docs/superpowers/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md`
+- Modify: `docs/security.md`, `docs/process/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md`
 
 **Interfaces:**
 - Consumes: `seedBankDocument` (Task 2), `forbidMouse / expectNoMouse / tabTo` from `./keyboard`, test ids from Tasks 3–4.
@@ -1217,12 +1217,12 @@ Open the attached `bank-diff-greyscale` image from the Playwright report (`npx p
 
 - [ ] **Step 5: Docs**
 
-In `docs/security.md`, in the paragraph on the I3 hard stop, add: "The review queue clears and undoes it from a panel that shows last four digits only; accept, edit and reject are inert on I3 in the UI as well as refused by the API, and confirming needs an explicit Ctrl+Enter or button press after naming who was contacted." In the LS-10 spec's "Known limitations and follow-ups", add: "The review-queue panel landed in `docs/superpowers/specs/2026-10-19-i3-bank-change-panel-design.md`; a 'couldn't verify' follow-up action, the rejected-X0 dead end and undo's evidence trail remain open."
+In `docs/security.md`, in the paragraph on the I3 hard stop, add: "The review queue clears and undoes it from a panel that shows last four digits only; accept, edit and reject are inert on I3 in the UI as well as refused by the API, and confirming needs an explicit Ctrl+Enter or button press after naming who was contacted." In the LS-10 spec's "Known limitations and follow-ups", add: "The review-queue panel landed in `docs/process/specs/2026-10-19-i3-bank-change-panel-design.md`; a 'couldn't verify' follow-up action, the rejected-X0 dead end and undo's evidence trail remain open."
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add ledger_sense/web/e2e/bank_change.spec.ts docs/security.md docs/superpowers/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md
+git add ledger_sense/web/e2e/bank_change.spec.ts docs/security.md docs/process/specs/2026-10-18-ls-10-bank-change-hard-stop-design.md
 git commit -m "test(e2e): keyboard-only I3 journey, axe and greyscale; docs (LS-13)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"

@@ -8,8 +8,8 @@
 
 **Tech Stack:** FastAPI, `httpx`, `vcrpy` for recorded cassettes, QuickBooks Online sandbox, `cryptography` for token storage at rest.
 
-**Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §3.1, §4.2
-**Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Spec:** `docs/process/specs/2026-08-29-ledger-sense-design.md` §3.1, §4.2
+**Parent plan:** `2026-08-29-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
 **Audit:** `2026-08-29-REVISIONS.md` §5 — read before Task 34. Eleven defects touch this phase; ten were fixed
 in place and **F-40 is OPEN**, because it is a client-visible product decision (see below). F-39 left a
 reversed bill permanently unwritable, and F-27 made the export a formula-injection vector.
