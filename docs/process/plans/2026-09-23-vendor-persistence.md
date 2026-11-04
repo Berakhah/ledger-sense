@@ -1266,7 +1266,7 @@ Expected: FAIL — `404`/`ModuleNotFoundError`, the route doesn't exist.
 """Read-only vendor ledger API — Task 44's screen reads from here.
 
 payment_history is always [] until a payment-detail ingest path exists (none
-does yet — see docs/superpowers/plans/2026-09-23-vendor-persistence.md's
+does yet — see docs/process/plans/2026-09-23-vendor-persistence.md's
 Architecture note). The response model is still fully typed rather than a
 bare [] placeholder, so the frontend and any future ingest path share one
 contract; account_hmac is never a field on PaymentDetailOut — it must never

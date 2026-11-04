@@ -8,8 +8,8 @@
 
 **Tech Stack:** `pdfplumber` (MIT) for word extraction, `pypdfium2` (BSD-3/Apache-2.0) for rendering and metadata, `rapidocr-onnxruntime` (Apache-2.0) for the OCR tail, stdlib `sqlite3` for the profile cache.
 
-**Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §4.3
-**Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Spec:** `docs/process/specs/2026-08-29-ledger-sense-design.md` §4.3
+**Parent plan:** `2026-08-29-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
 **Audit:** `2026-08-29-REVISIONS.md` — read §3 before Task 14. Eleven defects in this phase were fixed in place;
 two of them (F-09, F-12) returned a wrong value with a confident bounding box.
 
@@ -17,7 +17,7 @@ two of them (F-09, F-12) returned a wrong value with a confident bounding box.
 
 ## Phase preconditions
 
-- Phase 1 Tasks 1–12 complete (`2025-03-11-ledger-sense-phase-1-foundation.md`). Phase 0 Tasks P1–P4 complete.
+- Phase 1 Tasks 1–12 complete (`2026-08-29-ledger-sense-phase-1-foundation.md`). Phase 0 Tasks P1–P4 complete.
 - **Task 13 (boundary) is not required, but `ledger_sense/provenance.py` is.** Corrected from the original text
   (F-61): Task 18 imports `Claim`, `FileSource` and `Method`, which the original sourced from `bok_core` — so
   "Task 13 is not required" was true while the phase was blocked on `bok-core` regardless. The provenance

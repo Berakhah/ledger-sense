@@ -3,7 +3,7 @@
 **Date:** 2026-09-15
 **Status:** approved in brainstorming, awaiting plan
 **Builds on:** `2026-09-15-inbox-route-design.md`, `2026-09-15-sensitivity-gateway-design.md`,
-`2025-03-11-ledger-sense-design.md` §4.3 (extraction), §6 (rules)
+`2026-08-29-ledger-sense-design.md` §4.3 (extraction), §6 (rules)
 
 ## Problem
 

@@ -107,7 +107,7 @@ scope-statement docs, two-person rule.
   sighting). That is the same kind of dead end for that document: re-ingest it so
   it is assessed against the vendor.
 - The review-queue panel landed in
-  `docs/superpowers/specs/2026-10-19-i3-bank-change-panel-design.md`; a "couldn't
+  `docs/process/specs/2026-10-19-i3-bank-change-panel-design.md`; a "couldn't
   verify" follow-up action, the rejected-X0 dead end and undo's evidence trail
   remain open.
 - Undo hard-deletes the confirmed detail (including the attestation) and records

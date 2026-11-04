@@ -3,7 +3,7 @@
 Every accept and edit writes a HUMAN-method Claim against the real `claims`
 table Phase 2 already built — these are the labels Phase 6 fits a calibration
 curve on, and why the product can honestly say it improves with use (F-46;
-see docs/superpowers/plans/2026-08-29-REVISIONS.md's follow-up). Reject writes
+see docs/process/plans/2026-08-29-REVISIONS.md's follow-up). Reject writes
 no claim: it asserts nothing about the field's value, only that a human
 judged the flagged discrepancy a false positive, and the reason goes on the
 finding itself (migration 0006).

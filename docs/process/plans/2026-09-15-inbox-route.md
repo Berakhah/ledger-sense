@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy Core + alembic (SQLite in tests, Postgres in deployment), `python-multipart`, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-09-15-inbox-route-design.md`
+**Spec:** `docs/process/specs/2026-09-15-inbox-route-design.md`
 
 ## Global Constraints
 

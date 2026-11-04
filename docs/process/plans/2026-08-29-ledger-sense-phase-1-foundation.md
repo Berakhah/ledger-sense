@@ -8,8 +8,8 @@
 
 **Tech Stack:** Python 3.12+, `uv`, `ruff`, `mypy --strict`, Pydantic v2 (`strict=True`), `pytest` + `hypothesis`, `reportlab` for corpus rendering, stdlib `ast` for the source guards.
 
-**Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §5, §6.2, §8 item 1
-**Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Spec:** `docs/process/specs/2026-08-29-ledger-sense-design.md` §5, §6.2, §8 item 1
+**Parent plan:** `2026-08-29-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
 **Audit:** `2026-08-29-REVISIONS.md` — read §2 and §7 before Task 1. Eighteen defects in this phase were fixed in
 place; four of them (F-01, F-03, F-09, F-52) would have put a wrong number in front of a client, and F-01 was
 verified by execution against Pydantic 2.13.5.
@@ -2781,5 +2781,5 @@ git commit -m "feat(ingest): single labelled intake door, boundary re-tested aga
       Task P1), and Task 12's guard imports it — **F-55.** Two different wordings, each asserted by a
       different test in the same suite, could not both pass
 
-**Then Phase 2** (`2025-03-11-ledger-sense-phase-2-extraction.md`), and **Phase 3 only if the week-5
+**Then Phase 2** (`2026-08-29-ledger-sense-phase-2-extraction.md`), and **Phase 3 only if the week-5
 controller session has closed.** `rules/registry.py` enforces that; it is not a formality you can route around.

@@ -8,8 +8,8 @@
 
 **Tech Stack:** Python stdlib only for the calibration maths (PAVA, ~15 lines), SQLite for labels and curves, FastAPI, React, Playwright.
 
-**Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` §7, §8, §12
-**Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
+**Spec:** `docs/process/specs/2026-08-29-ledger-sense-design.md` §7, §8, §12
+**Parent plan:** `2026-08-29-ledger-sense-weeks-5-12.md` — its Global Constraints and File Structure apply here in full.
 **Audit:** `2026-08-29-REVISIONS.md` §6 — read it before Task 40. Nine defects in this phase were fixed in place.
 Three of them (F-46, F-47, F-49) meant the phase built to refuse unearned automation would have granted it.
 
@@ -1621,7 +1621,7 @@ def test_the_repo_contains_no_form_artifact():
     """
     bad = re.compile(r"\bG70[23]\b|american institute of architects", re.I)
     allowed = {
-        "docs/superpowers",              # the design record explains the exclusion
+        "docs/process",              # the design record explains the exclusion
         "CLAUDE.md",
         "scripts/aia_guard.py",          # the guard must name what it guards
         "ledger_sense/notice.py",        # the notice names the trademarks

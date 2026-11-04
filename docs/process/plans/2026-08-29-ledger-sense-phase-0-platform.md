@@ -18,8 +18,8 @@ P6 and P7 land before Phase 4 begins. Nothing here blocks Tasks 2–12, which to
 **Tech Stack:** FastAPI, Postgres 16 + `alembic`, `argon2-cffi`, `cryptography`, Next.js 15 + Tailwind v4,
 `pdf.js`, Playwright, Vitest, `gitleaks`, `pip-audit`, `cyclonedx-py`.
 
-**Spec:** `2025-03-11-ledger-sense-design.md` §4.1, §4.2, §8, §12 · **Audit:** `2026-08-29-REVISIONS.md`
-**Parent plan:** `2025-03-11-ledger-sense-weeks-5-12.md` — its Global Constraints apply here in full.
+**Spec:** `2026-08-29-ledger-sense-design.md` §4.1, §4.2, §8, §12 · **Audit:** `2026-08-29-REVISIONS.md`
+**Parent plan:** `2026-08-29-ledger-sense-weeks-5-12.md` — its Global Constraints apply here in full.
 
 ---
 

@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.12+, `uv`, `ruff`, `mypy --strict`, FastAPI, Pydantic v2, `pytest` + `hypothesis`, Postgres + `alembic`, Next.js 15 + `bok-ui`, `pypdfium2` / `pdfplumber` / `docling[rapidocr]`, Playwright, `axe-core`.
 
-**Spec:** `docs/superpowers/specs/2025-03-11-ledger-sense-design.md` — read it before Task 1. The plan argues from the spec; executors read both.
+**Spec:** `docs/process/specs/2026-08-29-ledger-sense-design.md` — read it before Task 1. The plan argues from the spec; executors read both.
 
 > **REVISED 2026-08-29.** This plan was audited; sixty-five defects were found and fixed in place, and
 > Phase 1 — which had been written inline in this file, so no `phase-1` document existed — was extracted to
-> **`2025-03-11-ledger-sense-phase-1-foundation.md`**, where every other phase already lived. Read
+> **`2026-08-29-ledger-sense-phase-1-foundation.md`**, where every other phase already lived. Read
 > **`2026-08-29-REVISIONS.md`** before Task 1 — it carries the evidence for every change, and §11 lists seven
 > decisions only the operator can make. **`2026-08-29-ledger-sense-phase-0-platform.md`** adds the platform work
 > that had no task at all: authentication, tenancy, hardened intake, persistence, encryption and retention, the
@@ -157,12 +157,12 @@ Structure that all of them inherit, plus the index below. Read this file first, 
 | Phase | Weeks | Tasks | Document |
 |---|---|---|---|
 | **0 — Platform** | **5, concurrent with Task 1** | **P1–P7** | **`2026-08-29-ledger-sense-phase-0-platform.md`** |
-| 1 — Foundation | 5–6 | 1–13 | `2025-03-11-ledger-sense-phase-1-foundation.md` |
-| 2 — Extraction | 7 | 13b, 14–21 | `2025-03-11-ledger-sense-phase-2-extraction.md` |
-| 3 — Rules | 8 | 22–27 | `2025-03-11-ledger-sense-phase-3-rules.md` |
-| 4 — Review UI | 9 | 28–33 | `2025-03-11-ledger-sense-phase-4-review-ui.md` |
-| 5 — Writeback | 10 | 34–39 | `2025-03-11-ledger-sense-phase-5-writeback.md` |
-| 6 — Routing & close-out | 11–12 | 40–48 | `2025-03-11-ledger-sense-phase-6-routing-closeout.md` |
+| 1 — Foundation | 5–6 | 1–13 | `2026-08-29-ledger-sense-phase-1-foundation.md` |
+| 2 — Extraction | 7 | 13b, 14–21 | `2026-08-29-ledger-sense-phase-2-extraction.md` |
+| 3 — Rules | 8 | 22–27 | `2026-08-29-ledger-sense-phase-3-rules.md` |
+| 4 — Review UI | 9 | 28–33 | `2026-08-29-ledger-sense-phase-4-review-ui.md` |
+| 5 — Writeback | 10 | 34–39 | `2026-08-29-ledger-sense-phase-5-writeback.md` |
+| 6 — Routing & close-out | 11–12 | 40–48 | `2026-08-29-ledger-sense-phase-6-routing-closeout.md` |
 
 The audit register `2026-08-29-REVISIONS.md` is normative over all of them.
 
@@ -171,7 +171,7 @@ The audit register `2026-08-29-REVISIONS.md` is normative over all of them.
 # PHASE 1 — Weeks 5–6: Foundation
 
 
-**Phase 1 has its own step-level plan document:** `2025-03-11-ledger-sense-phase-1-foundation.md`.
+**Phase 1 has its own step-level plan document:** `2026-08-29-ledger-sense-phase-1-foundation.md`.
 
 It was written inline in this file until 2026-08-29, which made it the one phase nobody could find — every
 other phase is a sibling document, and a reader looking for `phase-1` found nothing. The step-level TDD cycles,
