@@ -9,6 +9,28 @@ extracted field carries a `Claim` with a method and a confidence score, and
 nothing routes past review until that confidence is calibrated against ground
 truth.
 
+## How a document moves through it
+
+```mermaid
+flowchart LR
+    A[Pay application] --> B[Classify] --> C[Parse] --> D[Extract] --> E[Validate] --> F{Route}
+    F -- "calibrated and clean" --> G[Writeback or CSV/IIF export]
+    F -- "doubtful or uncalibrated" --> H[Human review]
+    H --> G
+```
+
+## Status and known limitations
+
+The [15 October 2026 self-audit](docs/system-audit-2026-10-15.md) assessed this as an engineering prototype, not yet ready for client accounting writeback. Fixes have landed since, and these findings were still open when last checked on 4 November 2026:
+
+- **LS-11:** extraction still runs outside the parser's resource boundary.
+- **LS-12:** the parser queue can reject valid text-rich PDFs.
+- **LS-14:** reconciliation reads demo-only state.
+- **LS-15:** baseline studies aren't durable or resumable yet.
+- **LS-34:** QuickBooks reversal has no durable recovery.
+
+The synthetic corpus is the demo. There are no published results on real documents.
+
 ## Quickstart
 
 ```bash
