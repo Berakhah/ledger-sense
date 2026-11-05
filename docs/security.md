@@ -279,8 +279,8 @@ document carries. They are deleted with the document by the retention purge
 
 ## Coordinated disclosure
 
-Report a suspected vulnerability by email to the maintainer at
-77killuazoldic@gmail.com, the same address given in `SECURITY.md`. Include a
+Report a suspected vulnerability privately through GitHub
+([Security → Report a vulnerability](https://github.com/Berakhah/ledger-sense/security/advisories/new)), the same channel given in `SECURITY.md`. Include a
 description, steps to reproduce, and the impact you believe it has. Do not
 open a public issue for a suspected vulnerability, and do not test against a
 deployment holding another party's documents.
