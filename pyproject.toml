@@ -5,7 +5,7 @@ description = "Document intelligence with confidence routing, for construction p
 requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [
-    { name = "Berakhah", email = "[email redacted]" }
+    { name = "Berakhah", email = "97037825+Berakhah@users.noreply.github.com" }
 ]
 dependencies = [
     "alembic>=1.19.1",

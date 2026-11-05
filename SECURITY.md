@@ -7,7 +7,8 @@ priority.
 
 ## Reporting a vulnerability
 
-Email the maintainer at [email redacted] with a description, steps
+Report it privately through GitHub
+([Security → Report a vulnerability](https://github.com/Berakhah/ledger-sense/security/advisories/new)) with a description, steps
 to reproduce, and impact. Do not open a public issue for a suspected
 vulnerability. We aim to acknowledge within 5 business days.
 
