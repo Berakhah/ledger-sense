@@ -28,6 +28,9 @@ The [15 October 2026 self-audit](docs/system-audit-2026-10-15.md) assessed this 
 - **LS-14:** reconciliation reads demo-only state.
 - **LS-15:** baseline studies aren't durable or resumable yet.
 - **LS-34:** QuickBooks reversal has no durable recovery.
+- **LS-16 to LS-33:** all 18 Medium findings from the self-audit.
+
+Of the 16 Critical and High findings, 11 have fix commits (LS-01, the cross-tenant bug, was fixed in commit 2feb706); the five above are still open.
 
 The synthetic corpus is the demo. There are no published results on real documents.
 
