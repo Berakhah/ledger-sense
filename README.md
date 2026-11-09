@@ -9,6 +9,8 @@ extracted field carries a `Claim` with a method and a confidence score, and
 nothing routes past review until that confidence is calibrated against ground
 truth.
 
+[![ci](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml) [![license](https://img.shields.io/github/license/Berakhah/ledger-sense)](LICENSE)
+
 ## How this was built
 
 I designed it, wrote the specifications with Claude Code, set the evaluation criteria, directed the implementation, and reviewed and tested the changes. Claude Code generated a substantial part of the code under my direction. Counted on 7 Nov 2026: 252 of 267 commits were made through my second account, [@Berakhah-sys](https://github.com/Berakhah-sys), and 238 carry a `Co-Authored-By: Claude` trailer. The self-audit in `docs/` is my own review of this code, not a third-party one. The first commit was originally dated 11 Mar 2025, and its spec files carried that date in their names. The date was wrong: the commit is co-authored by Claude Opus 5, which didn't exist then, and its plans refer to August 2026. On 4 Nov 2026 I re-dated it to one hour before the second commit (29 Aug 2026) and renamed the files; the follow-up commit says so.
