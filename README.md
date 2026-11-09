@@ -9,36 +9,7 @@ extracted field carries a `Claim` with a method and a confidence score, and
 nothing routes past review until that confidence is calibrated against ground
 truth.
 
-[![ci](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml) [![license](https://img.shields.io/github/license/Berakhah/ledger-sense)](LICENSE)
-
-## How this was built
-
-I designed it, wrote the specifications with Claude Code, set the evaluation criteria, directed the implementation, and reviewed and tested the changes. Claude Code generated a substantial part of the code under my direction. Counted on 7 Nov 2026: 252 of 267 commits were made through my second account, [@Berakhah-sys](https://github.com/Berakhah-sys), and 238 carry a `Co-Authored-By: Claude` trailer. The self-audit in `docs/` is my own review of this code, not a third-party one. The first commit was originally dated 11 Mar 2025, and its spec files carried that date in their names. The date was wrong: the commit is co-authored by Claude Opus 5, which didn't exist then, and its plans refer to August 2026. On 4 Nov 2026 I re-dated it to one hour before the second commit (29 Aug 2026) and renamed the files; the follow-up commit says so.
-
-## How a document moves through it
-
-```mermaid
-flowchart LR
-    A[Pay application] --> B[Classify] --> C[Parse] --> D[Extract] --> E[Validate] --> F{Route}
-    F -- "calibrated and clean" --> G[Writeback or CSV/IIF export]
-    F -- "doubtful or uncalibrated" --> H[Human review]
-    H --> G
-```
-
-## Status and known limitations
-
-The [15 October 2026 self-audit](docs/system-audit-2026-10-15.md) assessed this as an engineering prototype, not yet ready for client accounting writeback. Fixes have landed since, and these findings were still open when last checked on 4 November 2026:
-
-- **LS-11:** extraction still runs outside the parser's resource boundary.
-- **LS-12:** the parser queue can reject valid text-rich PDFs.
-- **LS-14:** reconciliation reads demo-only state.
-- **LS-15:** baseline studies aren't durable or resumable yet.
-- **LS-34:** QuickBooks reversal has no durable recovery.
-- **LS-16 to LS-33:** all 18 Medium findings from the self-audit.
-
-Of the 16 Critical and High findings, 11 have fix commits (LS-01, the cross-tenant bug, was fixed in commit 2feb706); the five above are still open.
-
-The synthetic corpus is the demo. There are no published results on real documents.
+[![ci](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/Berakhah/ledger-sense)](https://github.com/Berakhah/ledger-sense/releases) [![license](https://img.shields.io/github/license/Berakhah/ledger-sense)](LICENSE)
 
 ## Quickstart
 
@@ -59,6 +30,35 @@ so the browser suite can mint the synthetic documents it navigates to. Under
 (`app-demo` vs `app`) rather than flipping an environment variable, so which
 one you are running is a property of what started, not of what you remembered
 to export.
+
+## Status and known limitations
+
+The [15 October 2026 self-audit](docs/system-audit-2026-10-15.md) assessed this as an engineering prototype, not yet ready for client accounting writeback. Fixes have landed since, and these findings were still open when last checked on 4 November 2026:
+
+- **LS-11:** extraction still runs outside the parser's resource boundary.
+- **LS-12:** the parser queue can reject valid text-rich PDFs.
+- **LS-14:** reconciliation reads demo-only state.
+- **LS-15:** baseline studies aren't durable or resumable yet.
+- **LS-34:** QuickBooks reversal has no durable recovery.
+- **LS-16 to LS-33:** all 18 Medium findings from the self-audit.
+
+Of the 16 Critical and High findings, 11 have fix commits (LS-01, the cross-tenant bug, was fixed in commit 2feb706); the five above are still open.
+
+The synthetic corpus is the demo. There are no published results on real documents.
+
+## How a document moves through it
+
+```mermaid
+flowchart LR
+    A[Pay application] --> B[Classify] --> C[Parse] --> D[Extract] --> E[Validate] --> F{Route}
+    F -- "calibrated and clean" --> G[Writeback or CSV/IIF export]
+    F -- "doubtful or uncalibrated" --> H[Human review]
+    H --> G
+```
+
+## How this was built
+
+I designed it, wrote the specifications with Claude Code, set the evaluation criteria, directed the implementation, and reviewed and tested the changes. Claude Code generated a substantial part of the code under my direction. Counted on 7 Nov 2026: 252 of 267 commits were made through my second account, [@Berakhah-sys](https://github.com/Berakhah-sys), and 238 carry a `Co-Authored-By: Claude` trailer. The self-audit in `docs/` is my own review of this code, not a third-party one. The first commit was originally dated 11 Mar 2025, and its spec files carried that date in their names. The date was wrong: the commit is co-authored by Claude Opus 5, which didn't exist then, and its plans refer to August 2026. On 4 Nov 2026 I re-dated it to one hour before the second commit (29 Aug 2026) and renamed the files; the follow-up commit says so.
 
 ## Frontend
 
