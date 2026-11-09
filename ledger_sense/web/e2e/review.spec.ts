@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { expectNoMouse, forbidMouse } from './keyboard'
 import { API_URL, seedDocument } from './seed'
 
@@ -13,6 +13,32 @@ import { API_URL, seedDocument } from './seed'
  *  under its own key. Tests in one worker run sequentially and may reuse it. */
 function docKey(stem: string): string {
   return `${stem}-w${test.info().workerIndex}`
+}
+
+/** A 500 for every request matching `pattern` while armed; passed through to
+ *  the network otherwise. Call it BEFORE page.goto, and arm/disarm instead of
+ *  page.route/page.unroute mid-test.
+ *
+ *  Why: the first page.route on a page that has already loaded switches on
+ *  Chromium's request interception, and that reaches the renderer
+ *  asynchronously — page.route() resolves before the renderer's loader is
+ *  swapped. A fetch issued inside that window goes straight to the network,
+ *  unseen by Playwright: no route handler, no `request` event. On main
+ *  (77831b55) the "resync also fails" test's accept slipped through that way
+ *  and really succeeded (server log: OPTIONS + POST …/accept 200; page:
+ *  "Cleared 1 / 2"). Measured locally with routes added after load: 6 of 150
+ *  runs leaked; with interception already on at navigation: 0 of 150.
+ *  bank_change.spec.ts registers its route before goto for the same reason. */
+async function failWhenArmed(page: Page, pattern: string) {
+  let armed = false
+  await page.route(pattern, (route) =>
+    armed
+      ? route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+      : route.fallback())
+  return {
+    arm: () => { armed = true },
+    disarm: () => { armed = false },
+  }
 }
 
 /** How long the server's own count may take to reach 50 / 50. One reviewer's
@@ -148,12 +174,12 @@ test('Enter before the queue has loaded accepts nothing', async ({ page }) => {
 
 test('a write that fails leaves a marker on the item until it is retried', async ({ page }) => {
   const docId = await seedDocument(page, docKey('doc-3'), 3)
+  const accept = await failWhenArmed(page, '**/api/review/exceptions/*/accept')
   await page.goto(`/review/${docId}`)
   await expect(page.getByTestId('progress')).toHaveText('0 / 3')
 
   // The accept fails; the resync GETs that follow are untouched and succeed.
-  await page.route('**/api/review/exceptions/*/accept', (route) =>
-    route.fulfill({ status: 500, contentType: 'application/json', body: '{}' }))
+  accept.arm()
   await page.keyboard.press('Enter')
 
   // Advanced on the keystroke; the failure shows up where the reviewer is
@@ -165,7 +191,7 @@ test('a write that fails leaves a marker on the item until it is retried', async
   await expect(page.getByTestId('item-failure')).toBeVisible()
   await expect(page.getByTestId('failed-count')).toHaveCount(0)
 
-  await page.unroute('**/api/review/exceptions/*/accept')
+  accept.disarm()
   await page.keyboard.press('Enter')
   await expect(page.getByTestId('progress')).toHaveText('1 / 3')
   await expect(page.getByTestId('item-failure')).toHaveCount(0)
@@ -174,21 +200,26 @@ test('a write that fails leaves a marker on the item until it is retried', async
 
 test('a failed write whose resync also fails is never reported as cleared', async ({ page }) => {
   const docId = await seedDocument(page, docKey('doc-2'), 2)
+  const accept = await failWhenArmed(page, '**/api/review/exceptions/*/accept')
+  const reload = await failWhenArmed(page, '**/api/review/documents/*/exceptions')
   await page.goto(`/review/${docId}`)
   await expect(page.getByTestId('progress')).toHaveText('0 / 2')
 
-  const fail = (route: import('@playwright/test').Route) =>
-    route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
-  await page.route('**/api/review/exceptions/*/accept', fail)
-  await page.route('**/api/review/documents/*/exceptions', fail)
+  accept.arm()
+  reload.arm()
+  // The write must really have been refused — if it ever reaches the server
+  // again, fail here, naming that, rather than on a missing marker.
+  const refused = page.waitForResponse((r) =>
+    r.request().method() === 'POST' && r.url().endsWith('/accept'))
   await page.keyboard.press('Enter')
+  expect((await refused).status()).toBe(500)
   await expect(page.getByTestId('unverified-count')).toBeVisible()
   await expect(page.getByTestId('all-cleared')).toHaveCount(0)
 
   // Writes work again: the next successful one resyncs rather than merely
   // recounting, so the unverified item surfaces as a marked, open exception.
-  await page.unroute('**/api/review/exceptions/*/accept')
-  await page.unroute('**/api/review/documents/*/exceptions')
+  accept.disarm()
+  reload.disarm()
   await page.keyboard.press('Enter')
   await expect(page.getByTestId('progress')).toHaveText('1 / 2')
   await expect(page.getByTestId('unverified-count')).toHaveCount(0)
