@@ -23,3 +23,12 @@
 
 # Same reviewed false positive, at its new path after the docs/process move.
 88ba8033618693d395db4120d8f307b20d0195e1:docs/process/plans/2026-08-29-ledger-sense-phase-5-writeback.md:generic-api-key:266
+
+# The same three reviewed false positives (the LS<hex> idempotency-key literals above), at the
+# commit SHAs they carry after the root commit was re-dated on 4 Nov 2026. Rewriting history
+# changed every SHA, so the pins above stopped matching and CI's `secrets` job went red on main.
+# Found 9 Nov 2026 by running `gitleaks detect --redact` over full history: exactly these three,
+# nothing new.
+d3368d617788d6af4afb8e7f62f4b4fc36becfc4:tests/writeback/test_idempotency.py:generic-api-key:5
+f6012f28ba20c8d1e321ab629e71fbcf8dd0d637:tests/writeback/test_qbo.py:generic-api-key:354
+820e71daacd5db10c94f79cc456232657cd01aef:docs/superpowers/plans/2025-03-11-ledger-sense-phase-5-writeback.md:generic-api-key:266
