@@ -9,6 +9,10 @@ extracted field carries a `Claim` with a method and a confidence score, and
 nothing routes past review until that confidence is calibrated against ground
 truth.
 
+![Reconciliation screen for a synthetic pay application: line 010's total completed and stored is flagged as a discrepancy, with the sum shown inline (8271.00 + 66864.00 + 0.00 = 75135.00, sheet shows 75140.00), and the summary total is flagged with its own sum](docs/assets/hero.png)
+
+*The Reconciliation screen on a synthetic pay application from the demo corpus, with one injected line-sum error (`A2_line_sum`). Not a client document.*
+
 [![ci](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Berakhah/ledger-sense/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/Berakhah/ledger-sense)](https://github.com/Berakhah/ledger-sense/releases) [![license](https://img.shields.io/github/license/Berakhah/ledger-sense)](LICENSE)
 
 ## Quickstart
